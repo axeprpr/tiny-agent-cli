@@ -30,6 +30,7 @@ go run ./cmd/onek run "inspect this repo and summarize the next steps"
 ```bash
 go run ./cmd/onek models
 go run ./cmd/onek ping
+go run ./cmd/onek version
 ```
 
 ## Environment Variables
@@ -57,6 +58,8 @@ go run ./cmd/onek ping
   List models exposed by the OpenAI-compatible endpoint
 - `onek ping [flags]`
   Send a minimal completion request to validate the endpoint and selected model
+- `onek version`
+  Print the CLI version embedded at build time
 
 ## Layout
 
@@ -68,12 +71,26 @@ go run ./cmd/onek ping
   Runtime configuration
 - `internal/model`
   Shared request and response types
-- `internal/model/ollama`
-  Ollama-compatible API client
+- `internal/model/openaiapi`
+  OpenAI-compatible API client
 - `internal/tools`
   Built-in tools and workspace guardrails
 - `docs/plan.md`
   Iteration plan for the next versions
+
+## Release
+
+Local multi-arch packages:
+
+```bash
+./scripts/build-release.sh v0.1.0
+```
+
+GitHub Actions multi-arch release:
+
+- Push a tag like `v0.1.0`
+- The workflow builds `linux`, `darwin`, and `windows` packages for `amd64` and `arm64`
+- It uploads all archives to a GitHub Release for that tag
 
 ## Status
 

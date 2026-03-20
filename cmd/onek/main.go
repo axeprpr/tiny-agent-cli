@@ -14,6 +14,8 @@ import (
 	"onek-agent/internal/tools"
 )
 
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -31,6 +33,9 @@ func run(args []string) int {
 		return pingModel(args[1:])
 	case "models":
 		return listModels(args[1:])
+	case "version", "--version", "-version":
+		fmt.Println(version)
+		return 0
 	case "help", "-h", "--help":
 		printUsage()
 		return 0
@@ -183,6 +188,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  onek run [flags] <task>")
 	fmt.Fprintln(os.Stderr, "  onek ping [flags]")
 	fmt.Fprintln(os.Stderr, "  onek models [flags]")
+	fmt.Fprintln(os.Stderr, "  onek version")
 	fmt.Fprintln(os.Stderr)
 	printRunUsage()
 }
