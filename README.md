@@ -175,9 +175,11 @@ Optional install variables:
 On interactive terminals, `chat` now opens a full-screen TUI with:
 
 - scrollable conversation view
+- activity pane for tool execution logs
 - multiline input box
 - footer status bar for model, approval mode, session, and approximate context remaining
 - inline tool logs and approval prompts
+- `Tab` to switch focus between panes
 
 Built-in chat commands:
 
