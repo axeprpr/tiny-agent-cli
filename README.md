@@ -25,6 +25,13 @@ export MODEL_NAME=qwen2.5-coder:7b
 go run ./cmd/onek run "inspect this repo and summarize the next steps"
 ```
 
+4. Check endpoint compatibility:
+
+```bash
+go run ./cmd/onek models
+go run ./cmd/onek ping
+```
+
 ## Environment Variables
 
 - `MODEL_BASE_URL`
@@ -41,6 +48,15 @@ go run ./cmd/onek run "inspect this repo and summarize the next steps"
   Default: `30s`
 - `AGENT_SHELL`
   Default: platform shell (`bash` on Linux, `powershell.exe` on Windows)
+
+## Commands
+
+- `onek run [flags] <task>`
+  Run one task with the agent loop
+- `onek models [flags]`
+  List models exposed by the OpenAI-compatible endpoint
+- `onek ping [flags]`
+  Send a minimal completion request to validate the endpoint and selected model
 
 ## Layout
 

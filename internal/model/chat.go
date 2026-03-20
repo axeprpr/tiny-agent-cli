@@ -1,6 +1,10 @@
 package model
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 type Request struct {
 	Model       string    `json:"model"`
@@ -53,6 +57,28 @@ func ContentString(value any) string {
 		return ""
 	case string:
 		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			if text := ContentString(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		if text, ok := v["text"].(string); ok {
+			return text
+		}
+		if content, ok := v["content"]; ok {
+			return ContentString(content)
+		}
+		if content, ok := v["value"]; ok {
+			return ContentString(content)
+		}
+		if marshaled, err := json.Marshal(v); err == nil {
+			return string(marshaled)
+		}
+		return fmt.Sprintf("%v", v)
 	default:
 		return fmt.Sprintf("%v", v)
 	}
