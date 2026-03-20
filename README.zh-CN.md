@@ -104,37 +104,43 @@ onek chat --dangerously
 Linux x86_64:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 Linux arm64:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+```
+
+Linux x86_64 `wget`：
+
+```bash
+wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 macOS Intel:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 macOS Apple Silicon:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 Windows PowerShell x64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
 ```
 
 Windows PowerShell arm64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
 ```
 
 ## 一句话安装
@@ -142,29 +148,13 @@ $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; I
 Linux 或 macOS：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
-```
-
-国内网络可选加速：
-
-如果你有自己可用的 `gh-proxy` 前缀，可以直接把它加在 GitHub 链接前面。`onek-agent` 不内置第三方代理地址，但命令格式就是这一种。
-
-Linux 或 macOS：
-
-```bash
-GH_PROXY='https://your-gh-proxy/' && curl -fsSL "${GH_PROXY}https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh" | bash
-```
-
-Windows PowerShell：
-
-```powershell
-$env:GH_PROXY='https://your-gh-proxy/'; iwr ($env:GH_PROXY + 'https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1') -UseBasicParsing | iex
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
 安装后立即启动：
@@ -172,21 +162,13 @@ $env:GH_PROXY='https://your-gh-proxy/'; iwr ($env:GH_PROXY + 'https://raw.github
 Linux 或 macOS：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
-```
-
-如果你用 `gh-proxy` 加速 release 二进制，命令格式同样是：
-
-Linux x86_64：
-
-```bash
-GH_PROXY='https://your-gh-proxy/' && curl -L "${GH_PROXY}https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64" -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
 ```
 
 可选安装变量：
@@ -211,8 +193,9 @@ GH_PROXY='https://your-gh-proxy/' && curl -L "${GH_PROXY}https://github.com/axep
 - 底部状态栏
 - 模型、审批模式、会话名、上下文剩余估算
 - 结构化命令 / 文件写入审批弹窗
-- `Tab` 可在消息区和活动面板之间切换焦点
-- `f` 可切换活动日志过滤器
+- `Ctrl+O` 可在消息区和活动面板之间切换焦点
+- `Ctrl+G` 可切换活动日志过滤器
+- `F1` 可展开或收起帮助
 
 内置控制命令：
 

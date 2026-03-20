@@ -100,37 +100,43 @@ Replace the endpoint and model with your own values. The examples below do not d
 Linux x86_64:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 Linux arm64:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+```
+
+Linux x86_64 with `wget`:
+
+```bash
+wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 macOS Intel:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 macOS Apple Silicon:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 Windows PowerShell x64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
 ```
 
 Windows PowerShell arm64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
 ```
 
 ## One-Line Install
@@ -138,13 +144,13 @@ $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; I
 Linux or macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
 Install and start immediately:
@@ -152,13 +158,13 @@ Install and start immediately:
 Linux or macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
 ```
 
 Optional install variables:
@@ -182,8 +188,9 @@ On interactive terminals, `chat` now opens a full-screen TUI with:
 - richer assistant rendering for markdown-style answers and code blocks
 - footer status bar for model, approval mode, session, and approximate context remaining
 - structured command/file approval prompts
-- `Tab` to switch focus between panes
-- `f` to cycle activity filters
+- `Ctrl+O` to switch focus between panes
+- `Ctrl+G` to cycle activity filters
+- `F1` to toggle help
 
 Built-in chat commands:
 

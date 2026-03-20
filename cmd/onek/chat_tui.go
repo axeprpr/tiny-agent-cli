@@ -202,38 +202,28 @@ var (
 	panelGap = 1
 
 	headerStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Background(lipgloss.Color("235")).
-			Padding(0, 1)
+			Padding(0, 0, 1, 0)
 
 	titleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("25")).
-			Bold(true).
-			Padding(0, 1)
-
-	subtitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
 			Bold(true)
 
+	subtitleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("246"))
+
 	tagStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("248"))
+			Foreground(lipgloss.Color("241"))
 
 	chipMutedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("251")).
-			Background(lipgloss.Color("238")).
-			Padding(0, 1)
+			Foreground(lipgloss.Color("244"))
 
 	chipAccentStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("31")).
-			Padding(0, 1)
+			Foreground(lipgloss.Color("81")).
+			Bold(true)
 
 	chipWarnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("235")).
-			Background(lipgloss.Color("214")).
-			Padding(0, 1)
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
 
 	userLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("81")).
@@ -247,25 +237,10 @@ var (
 				Foreground(lipgloss.Color("214")).
 				Bold(true)
 
-	userCardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("81")).
-			Padding(0, 1)
-
-	assistantCardStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("42")).
-				Padding(0, 1)
-
-	systemCardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("214")).
-			Padding(0, 1)
-
-	errorCardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("203")).
-			Padding(0, 1)
+	userCardStyle      = lipgloss.NewStyle()
+	assistantCardStyle = lipgloss.NewStyle()
+	systemCardStyle    = lipgloss.NewStyle()
+	errorCardStyle     = lipgloss.NewStyle()
 
 	logLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -281,22 +256,19 @@ var (
 	codeBodyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("230")).
-			Background(lipgloss.Color("238")).
-			Padding(0, 1)
+			Foreground(lipgloss.Color("244")).
+			Padding(1, 0, 1, 0)
 
 	paneStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240"))
+			Padding(0, 0)
 
 	activePaneStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("81"))
+			Padding(0, 0)
 
 	paneTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
+			Foreground(lipgloss.Color("246")).
 			Bold(true).
-			Padding(0, 1)
+			Padding(0, 0, 1, 0)
 
 	approvalStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -305,12 +277,10 @@ var (
 			Background(lipgloss.Color("236"))
 
 	inputPaneStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("81")).
-			Padding(0, 1)
+			Padding(0, 0, 1, 0)
 
 	inputTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
+			Foreground(lipgloss.Color("246")).
 			Bold(true)
 
 	inputHintStyle = lipgloss.NewStyle().
@@ -353,9 +323,9 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		keys: chatKeyMap{
 			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:  key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Switch:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch pane")),
-			Filter:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter logs")),
-			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+			Switch:   key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "switch pane")),
+			Filter:   key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "filter logs")),
+			Help:     key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 			PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
 			PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
@@ -656,32 +626,32 @@ func (m *chatTUIModel) renderEntries() string {
 		return ""
 	}
 	var rendered []string
-	bodyWidth := max(20, m.chatViewport.Width-4)
+	bodyWidth := max(20, m.chatViewport.Width-3)
 	for _, entry := range m.entries {
 		var label lipgloss.Style
 		var body lipgloss.Style
-		var card lipgloss.Style
+		prefix := ""
 		switch entry.role {
 		case "user":
 			label = userLabelStyle
 			body = messageBodyStyle
-			card = userCardStyle
+			prefix = "> "
 		case "assistant":
 			label = assistantLabelStyle
 			body = codeBodyStyle
-			card = assistantCardStyle
+			prefix = ""
 		case "system":
 			label = systemLabelStyle
 			body = messageBodyStyle
-			card = systemCardStyle
+			prefix = ""
 		case "error":
 			label = errorLabelStyle
 			body = errorBodyStyle
-			card = errorCardStyle
+			prefix = ""
 		default:
 			label = logLabelStyle
 			body = logBodyStyle
-			card = systemCardStyle
+			prefix = ""
 		}
 		text := strings.TrimSpace(entry.text)
 		if text == "" {
@@ -690,10 +660,12 @@ func (m *chatTUIModel) renderEntries() string {
 		if entry.role == "assistant" {
 			text = renderMarkdown(text, bodyWidth)
 		}
-		rendered = append(rendered, card.Width(max(24, m.chatViewport.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
+		block := lipgloss.JoinVertical(
+			lipgloss.Left,
 			label.Render(strings.ToUpper(entry.role)),
-			body.Width(bodyWidth).Render(text),
-		)))
+			body.Width(bodyWidth).Render(prefix+text),
+		)
+		rendered = append(rendered, block)
 	}
 	return strings.Join(rendered, "\n\n")
 }
@@ -737,17 +709,16 @@ func (m *chatTUIModel) renderLogs() string {
 
 func (m chatTUIModel) renderPane(title, content string, active bool, width int) string {
 	style := paneStyle
+	prefix := " "
 	if active {
 		style = activePaneStyle
-		title = "● " + title
-	} else {
-		title = "○ " + title
+		prefix = "›"
 	}
 	if width <= 0 {
 		width = 20
 	}
 	return style.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left,
-		paneTitleStyle.Render(title),
+		paneTitleStyle.Width(width).Render(prefix+" "+title),
 		content,
 	))
 }
@@ -973,7 +944,7 @@ func (m chatTUIModel) renderHeader() string {
 		titleStyle.Render("onek-agent"),
 		" ",
 		subtitleStyle.Render("cheap codex for offline shells"),
-		" ",
+		"  ",
 		tagStyle.Render("single binary"),
 	)
 
@@ -988,7 +959,11 @@ func (m chatTUIModel) renderHeader() string {
 		chips = append(chips, chipMutedStyle.Render("confirm"))
 	}
 	return headerStyle.Width(max(20, m.width-2)).Render(
-		lipgloss.JoinVertical(lipgloss.Left, titleRow, strings.Join(chips, " ")),
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			titleRow,
+			chipMutedStyle.Render(strings.Join(chips, "  ·  ")),
+		),
 	)
 }
 
@@ -1003,7 +978,12 @@ func (m chatTUIModel) renderComposer() string {
 	title := inputTitleStyle.Render("Composer")
 	hints := inputHintStyle.Render("Enter send  Ctrl+J newline  /help commands")
 	return inputPaneStyle.Width(max(20, m.width-2)).Render(
-		lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", hints), m.input.View()),
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", hints),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
+			m.input.View(),
+		),
 	)
 }
 
