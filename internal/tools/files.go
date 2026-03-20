@@ -10,8 +10,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"onek-agent/internal/model"
+)
+
+const (
+	maxReadFileBytes    = 32 * 1024
+	maxReadPreviewRunes = 6000
 )
 
 type listFilesTool struct {
@@ -163,10 +169,25 @@ func (t *readFileTool) Call(_ context.Context, raw json.RawMessage) (string, err
 	if err != nil {
 		return "", err
 	}
-	if len(data) > 128*1024 {
-		data = data[:128*1024]
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
 	}
-	return string(data), nil
+	if looksBinary(data) {
+		return fmt.Sprintf("binary file: %s (%d bytes). read_file only returns text files. Use run_command for metadata inspection instead.", args.Path, info.Size()), nil
+	}
+
+	truncated := false
+	if len(data) > maxReadFileBytes {
+		data = data[:maxReadFileBytes]
+		truncated = true
+	}
+	text := string(data)
+	text = truncateRunes(text, maxReadPreviewRunes)
+	if truncated || int64(len(data)) < info.Size() {
+		return fmt.Sprintf("%s\n\n...[truncated; file size %d bytes]", text, info.Size()), nil
+	}
+	return text, nil
 }
 
 type writeFileTool struct {
@@ -350,6 +371,9 @@ func grepFile(path, workDir string, re *regexp.Regexp) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if looksBinary(data) {
+		return "", nil
+	}
 
 	lines := strings.Split(string(data), "\n")
 	var out []string
@@ -368,4 +392,50 @@ func grepFile(path, workDir string, re *regexp.Regexp) (string, error) {
 	}
 
 	return strings.Join(out, "\n"), nil
+}
+
+func looksBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	sample := data
+	if len(sample) > 4096 {
+		sample = sample[:4096]
+	}
+	if !utf8.Valid(sample) {
+		return true
+	}
+
+	control := 0
+	for _, b := range sample {
+		switch {
+		case b == 0:
+			return true
+		case b < 0x09:
+			control++
+		case b > 0x0d && b < 0x20:
+			control++
+		}
+	}
+	return control > len(sample)/20
+}
+
+func truncateRunes(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(text) <= limit {
+		return text
+	}
+
+	var b strings.Builder
+	count := 0
+	for _, r := range text {
+		if count >= limit {
+			break
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return b.String()
 }

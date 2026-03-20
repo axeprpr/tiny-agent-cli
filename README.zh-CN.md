@@ -151,6 +151,22 @@ Windows PowerShell：
 iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
+国内网络可选加速：
+
+如果你有自己可用的 `gh-proxy` 前缀，可以直接把它加在 GitHub 链接前面。`onek-agent` 不内置第三方代理地址，但命令格式就是这一种。
+
+Linux 或 macOS：
+
+```bash
+GH_PROXY='https://your-gh-proxy/' && curl -fsSL "${GH_PROXY}https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh" | bash
+```
+
+Windows PowerShell：
+
+```powershell
+$env:GH_PROXY='https://your-gh-proxy/'; iwr ($env:GH_PROXY + 'https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1') -UseBasicParsing | iex
+```
+
 安装后立即启动：
 
 Linux 或 macOS：
@@ -163,6 +179,14 @@ Windows PowerShell：
 
 ```powershell
 iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
+```
+
+如果你用 `gh-proxy` 加速 release 二进制，命令格式同样是：
+
+Linux x86_64：
+
+```bash
+GH_PROXY='https://your-gh-proxy/' && curl -L "${GH_PROXY}https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64" -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
 ```
 
 可选安装变量：

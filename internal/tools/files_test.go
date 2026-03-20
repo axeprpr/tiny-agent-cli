@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,42 @@ func TestWriteFileToolWritesWhenApproved(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("unexpected file contents: %q", data)
+	}
+}
+
+func TestReadFileToolRejectsBinaryContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "onek")
+	if err := os.WriteFile(path, []byte{0x7f, 'E', 'L', 'F', 0x00, 0x01}, 0o644); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	tool := newReadFileTool(dir)
+	raw := json.RawMessage(`{"path":"onek"}`)
+	got, err := tool.Call(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "binary file: onek") {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestReadFileToolTruncatesLargeText(t *testing.T) {
+	dir := t.TempDir()
+	text := strings.Repeat("hello world\n", 8000)
+	path := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	tool := newReadFileTool(dir)
+	raw := json.RawMessage(`{"path":"big.txt"}`)
+	got, err := tool.Call(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "...[truncated; file size") {
+		t.Fatalf("expected truncation marker, got: %q", got)
 	}
 }

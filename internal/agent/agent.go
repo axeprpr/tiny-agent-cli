@@ -12,6 +12,12 @@ import (
 	"onek-agent/internal/tools"
 )
 
+const (
+	maxToolMessageChars    = 6000
+	maxConversationChars   = 24000
+	retryConversationChars = 12000
+)
+
 const systemPrompt = `You are a small terminal agent.
 
 Constraints:
@@ -122,6 +128,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	})
 
 	for step := 1; step <= s.agent.maxSteps; step++ {
+		s.messages = compactConversation(s.messages, maxConversationChars)
 		s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
 
 		resp, err := s.agent.client.Complete(ctx, model.Request{
@@ -129,6 +136,20 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			Tools:      s.agent.registry.Definitions(),
 			ToolChoice: "auto",
 		})
+		if err != nil {
+			if isContextLengthError(err) {
+				trimmed := compactConversation(s.messages, retryConversationChars)
+				if len(trimmed) < len(s.messages) {
+					s.messages = trimmed
+					s.agent.logf("[step %d/%d] context too long, retrying with shorter history\n", step, s.agent.maxSteps)
+					resp, err = s.agent.client.Complete(ctx, model.Request{
+						Messages:   s.messages,
+						Tools:      s.agent.registry.Definitions(),
+						ToolChoice: "auto",
+					})
+				}
+			}
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -163,6 +184,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 
 			started := time.Now()
 			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
+			output = truncateToolMessage(output, maxToolMessageChars)
 			s.agent.logToolFinish(time.Since(started), output, err)
 			if err != nil {
 				output = "tool error: " + err.Error()
@@ -177,6 +199,83 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	}
 
 	return Result{}, fmt.Errorf("max steps reached without final response")
+}
+
+func truncateToolMessage(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 || len(text) <= limit {
+		return text
+	}
+
+	head := limit * 3 / 4
+	tail := limit / 4
+	if head <= 0 || tail <= 0 {
+		return text[:limit] + "\n...[truncated]"
+	}
+	return text[:head] + "\n...[truncated]...\n" + text[len(text)-tail:]
+}
+
+func compactConversation(messages []model.Message, limit int) []model.Message {
+	compacted := make([]model.Message, len(messages))
+	copy(compacted, messages)
+
+	for i := 1; i < len(compacted)-2; i++ {
+		switch compacted[i].Role {
+		case "assistant":
+			if len(compacted[i].ToolCalls) > 0 {
+				compacted[i].Content = ""
+			} else {
+				compacted[i].Content = truncateToolMessage(model.ContentString(compacted[i].Content), 1200)
+			}
+		case "tool":
+			compacted[i].Content = truncateToolMessage(model.ContentString(compacted[i].Content), 900)
+		}
+	}
+
+	return pruneConversation(compacted, limit)
+}
+
+func pruneConversation(messages []model.Message, limit int) []model.Message {
+	if len(messages) <= 2 || limit <= 0 {
+		return messages
+	}
+
+	kept := make([]model.Message, 0, len(messages))
+	kept = append(kept, messages[0])
+	total := messageSize(messages[0])
+
+	var tail []model.Message
+	for i := len(messages) - 1; i >= 1; i-- {
+		size := messageSize(messages[i])
+		if total+size > limit {
+			continue
+		}
+		tail = append(tail, messages[i])
+		total += size
+	}
+
+	for i := len(tail) - 1; i >= 0; i-- {
+		kept = append(kept, tail[i])
+	}
+	return kept
+}
+
+func messageSize(msg model.Message) int {
+	size := len(model.ContentString(msg.Content)) + len(msg.Role) + len(msg.ToolCallID)
+	for _, call := range msg.ToolCalls {
+		size += len(call.ID) + len(call.Type) + len(call.Function.Name) + len(call.Function.Arguments)
+	}
+	return size
+}
+
+func isContextLengthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "context length") ||
+		strings.Contains(text, "input tokens") ||
+		strings.Contains(text, "maximum input length")
 }
 
 func (a *Agent) logf(format string, args ...any) {
