@@ -70,7 +70,7 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 - `onek run [flags] <task>`
   Run one task
 - `onek chat [flags]`
-  Stay in a lightweight multi-turn session
+  Stay in a lightweight multi-turn session with a full-screen terminal UI on interactive terminals
 - `onek models`
   List available models from the endpoint
 - `onek ping`
@@ -171,6 +171,13 @@ Optional install variables:
 ## Interactive Chat
 
 `chat` keeps context across turns, so it behaves much more like a small coding assistant than a one-shot CLI.
+
+On interactive terminals, `chat` now opens a full-screen TUI with:
+
+- scrollable conversation view
+- multiline input box
+- footer status bar for model, approval mode, session, and approximate context remaining
+- inline tool logs and approval prompts
 
 Built-in chat commands:
 

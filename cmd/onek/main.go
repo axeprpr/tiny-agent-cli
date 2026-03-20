@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -31,7 +32,7 @@ type runtimeOptions struct {
 type chatRuntime struct {
 	cfg            config.Config
 	reader         *bufio.Reader
-	approver       *tools.TerminalApprover
+	approver       tools.Approver
 	loop           *agent.Agent
 	session        *agent.Session
 	sessionName    string
@@ -126,15 +127,10 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		fmt.Fprintf(os.Stderr, "Interactive mode. session=%s output=%s approval=%s model=%s\n", runtime.sessionName, runtime.outputMode, runtime.approver.Mode(), runtime.cfg.Model)
-		fmt.Fprintln(os.Stderr, "Type /help for commands.")
+		return runChatTUI(runtime)
 	}
 
 	for {
-		if interactive {
-			fmt.Fprint(os.Stderr, "onek> ")
-		}
-
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && len(line) == 0 {
 			return 0
@@ -149,11 +145,14 @@ func runChat(args []string) int {
 		}
 
 		if strings.HasPrefix(task, "/") {
-			handled, exitCode := runtime.handleCommand(task)
-			if handled {
-				if exitCode >= 0 {
+			result := runtime.executeCommand(task)
+			if result.handled {
+				if strings.TrimSpace(result.output) != "" {
+					fmt.Fprintln(os.Stderr, result.output)
+				}
+				if result.exitCode >= 0 {
 					runtime.beforeExit()
-					return exitCode
+					return result.exitCode
 				}
 				if readErr != nil {
 					runtime.beforeExit()
@@ -163,17 +162,11 @@ func runChat(args []string) int {
 			}
 		}
 
-		_ = session.AppendTranscript(runtime.transcriptPath, "user", task)
-		result, err := runtime.session.RunTask(context.Background(), task)
-		runtime.dirtySession = true
+		output, err := runtime.executeTask(context.Background(), task)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
-			_ = session.AppendTranscript(runtime.transcriptPath, "error", err.Error())
 		} else {
-			output := formatRunOutput(result.Final, runtime.outputMode)
 			fmt.Println(output)
-			_ = session.AppendTranscript(runtime.transcriptPath, "assistant", output)
-			_ = runtime.save()
 		}
 
 		if readErr != nil {
@@ -230,151 +223,142 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	return r, nil
 }
 
-func (r *chatRuntime) handleCommand(input string) (bool, int) {
+type runtimeCommandResult struct {
+	handled  bool
+	output   string
+	exitCode int
+}
+
+func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	fields := strings.Fields(strings.TrimSpace(input))
 	if len(fields) == 0 {
-		return true, -1
+		return runtimeCommandResult{handled: true, exitCode: -1}
 	}
 
 	switch fields[0] {
 	case "/exit", "/quit":
-		return true, 0
+		return runtimeCommandResult{handled: true, exitCode: 0}
 	case "/reset":
 		r.session = r.newSession()
 		_ = r.save()
-		fmt.Fprintln(os.Stderr, "context reset")
-		return true, -1
+		return runtimeCommandResult{handled: true, output: "context reset", exitCode: -1}
 	case "/help":
-		fmt.Fprintln(os.Stderr, "/help                     show commands")
-		fmt.Fprintln(os.Stderr, "/exit                     quit")
-		fmt.Fprintln(os.Stderr, "/reset                    clear conversation context")
-		fmt.Fprintln(os.Stderr, "/status                   show session settings")
-		fmt.Fprintln(os.Stderr, "/approval confirm|dangerously")
-		fmt.Fprintln(os.Stderr, "/output raw|terminal")
-		fmt.Fprintln(os.Stderr, "/model <name>")
-		fmt.Fprintln(os.Stderr, "/scope                    show current memory scope")
-		fmt.Fprintln(os.Stderr, "/memory                   show saved memory")
-		fmt.Fprintln(os.Stderr, "/remember <text>           add a project memory note")
-		fmt.Fprintln(os.Stderr, "/remember-global <text>    add a global memory note")
-		fmt.Fprintln(os.Stderr, "/forget <query>            remove matching project memory notes")
-		fmt.Fprintln(os.Stderr, "/forget-global <query>     remove matching global memory notes")
-		fmt.Fprintln(os.Stderr, "/memorize                  summarize this session into project memory")
-		return true, -1
+		return runtimeCommandResult{handled: true, output: strings.Join([]string{
+			"/help                     show commands",
+			"/exit                     quit",
+			"/reset                    clear conversation context",
+			"/status                   show session settings",
+			"/approval confirm|dangerously",
+			"/output raw|terminal",
+			"/model <name>",
+			"/scope                    show current memory scope",
+			"/memory                   show saved memory",
+			"/remember <text>           add a project memory note",
+			"/remember-global <text>    add a global memory note",
+			"/forget <query>            remove matching project memory notes",
+			"/forget-global <query>     remove matching global memory notes",
+			"/memorize                  summarize this session into project memory",
+		}, "\n"), exitCode: -1}
 	case "/status":
-		fmt.Fprintf(os.Stderr, "session=%s\n", r.sessionName)
-		fmt.Fprintf(os.Stderr, "model=%s\n", r.cfg.Model)
-		fmt.Fprintf(os.Stderr, "approval=%s\n", r.approver.Mode())
-		fmt.Fprintf(os.Stderr, "output=%s\n", r.outputMode)
-		fmt.Fprintf(os.Stderr, "memory_scope=%s\n", r.scopeKey)
-		fmt.Fprintf(os.Stderr, "global_memory_notes=%d\n", len(r.globalMemory))
-		fmt.Fprintf(os.Stderr, "project_memory_notes=%d\n", len(r.projectMemory))
-		fmt.Fprintf(os.Stderr, "state=%s\n", r.statePath)
-		fmt.Fprintf(os.Stderr, "transcript=%s\n", r.transcriptPath)
-		fmt.Fprintf(os.Stderr, "memory=%s\n", r.memoryPath)
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmodel=%s\napproval=%s\noutput=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s",
+			r.sessionName, r.cfg.Model, r.approver.Mode(), r.outputMode, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath), exitCode: -1}
 	case "/scope":
-		fmt.Fprintln(os.Stderr, r.scopeKey)
-		return true, -1
+		return runtimeCommandResult{handled: true, output: r.scopeKey, exitCode: -1}
 	case "/approval":
 		if len(fields) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: /approval confirm|dangerously")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /approval confirm|dangerously", exitCode: -1}
 		}
 		if err := r.approver.SetMode(fields[1]); err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			return true, -1
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		r.cfg.ApprovalMode = r.approver.Mode()
-		fmt.Fprintf(os.Stderr, "approval mode set to %s\n", r.approver.Mode())
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("approval mode set to %s", r.approver.Mode()), exitCode: -1}
 	case "/output":
 		if len(fields) != 2 || (fields[1] != "raw" && fields[1] != "terminal") {
-			fmt.Fprintln(os.Stderr, "usage: /output raw|terminal")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /output raw|terminal", exitCode: -1}
 		}
 		r.outputMode = fields[1]
-		fmt.Fprintf(os.Stderr, "output mode set to %s\n", r.outputMode)
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("output mode set to %s", r.outputMode), exitCode: -1}
 	case "/model":
 		if len(fields) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: /model <name>")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /model <name>", exitCode: -1}
 		}
 		r.cfg.Model = strings.Join(fields[1:], " ")
 		r.rebuildLoop()
-		fmt.Fprintf(os.Stderr, "model set to %s\n", r.cfg.Model)
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("model set to %s", r.cfg.Model), exitCode: -1}
 	case "/memory":
-		fmt.Fprintln(os.Stderr, memory.FormatNotes(r.globalMemory, r.projectMemory))
-		return true, -1
+		return runtimeCommandResult{handled: true, output: memory.FormatNotes(r.globalMemory, r.projectMemory), exitCode: -1}
 	case "/remember":
 		if len(fields) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: /remember <text>")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /remember <text>", exitCode: -1}
 		}
 		r.projectMemory = memory.Add(r.projectMemory, strings.TrimSpace(input[len("/remember"):]))
-		fmt.Fprintln(os.Stderr, "project memory saved")
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: "project memory saved", exitCode: -1}
 	case "/remember-global":
 		if len(fields) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: /remember-global <text>")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /remember-global <text>", exitCode: -1}
 		}
 		r.globalMemory = memory.Add(r.globalMemory, strings.TrimSpace(input[len("/remember-global"):]))
-		fmt.Fprintln(os.Stderr, "global memory saved")
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: "global memory saved", exitCode: -1}
 	case "/forget":
 		if len(fields) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: /forget <query>")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /forget <query>", exitCode: -1}
 		}
 		updated, removed := memory.ForgetMatching(r.projectMemory, strings.TrimSpace(input[len("/forget"):]))
 		r.projectMemory = updated
-		fmt.Fprintf(os.Stderr, "removed %d project memory note(s)\n", removed)
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("removed %d project memory note(s)", removed), exitCode: -1}
 	case "/forget-global":
 		if len(fields) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: /forget-global <query>")
-			return true, -1
+			return runtimeCommandResult{handled: true, output: "usage: /forget-global <query>", exitCode: -1}
 		}
 		updated, removed := memory.ForgetMatching(r.globalMemory, strings.TrimSpace(input[len("/forget-global"):]))
 		r.globalMemory = updated
-		fmt.Fprintf(os.Stderr, "removed %d global memory note(s)\n", removed)
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("removed %d global memory note(s)", removed), exitCode: -1}
 	case "/memorize":
 		added, err := r.summarizeMemory()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "memorize error: %v\n", err)
-			return true, -1
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("memorize error: %v", err), exitCode: -1}
 		}
-		fmt.Fprintf(os.Stderr, "added %d memory note(s)\n", added)
-		return true, -1
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("added %d memory note(s)", added), exitCode: -1}
 	default:
-		return false, -1
+		return runtimeCommandResult{handled: false, exitCode: -1}
 	}
 }
 
 func (r *chatRuntime) rebuildLoop() {
-	loop, approver := buildAgent(r.cfg, r.reader)
-	r.loop = loop
-	r.approver = approver
-	r.session.SetAgent(loop)
+	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr)
+	r.session.SetAgent(r.loop)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
+}
+
+func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, error) {
+	_ = session.AppendTranscript(r.transcriptPath, "user", task)
+	result, err := r.session.RunTask(ctx, task)
+	r.dirtySession = true
+	if err != nil {
+		_ = session.AppendTranscript(r.transcriptPath, "error", err.Error())
+		return "", err
+	}
+
+	output := formatRunOutput(result.Final, r.outputMode)
+	_ = session.AppendTranscript(r.transcriptPath, "assistant", output)
+	_ = r.save()
+	return output, nil
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
@@ -775,6 +759,7 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "OpenAI-compatible API base URL")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "optional API key")
+	fs.IntVar(&cfg.ContextWindow, "context-window", cfg.ContextWindow, "approximate model context window for UI status")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "workspace root")
 	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "state directory for sessions and transcripts")
 	fs.IntVar(&cfg.MaxSteps, "max-steps", cfg.MaxSteps, "maximum agent steps")
@@ -818,12 +803,16 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	return cfg, opts, fs.Args(), bufio.NewReader(os.Stdin), nil
 }
 
-func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, *tools.TerminalApprover) {
+func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	approver := tools.NewTerminalApprover(reader, os.Stderr, cfg.ApprovalMode, interactive)
+	return buildAgentWith(cfg, approver, os.Stderr), approver
+}
+
+func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer) *agent.Agent {
 	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
 	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver)
-	return agent.New(client, registry, cfg.MaxSteps, os.Stderr), approver
+	return agent.New(client, registry, cfg.MaxSteps, log)
 }
 
 func modelContent(content any) string {

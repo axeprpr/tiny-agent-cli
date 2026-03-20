@@ -14,6 +14,7 @@ type Config struct {
 	BaseURL        string
 	Model          string
 	APIKey         string
+	ContextWindow  int
 	WorkDir        string
 	StateDir       string
 	MaxSteps       int
@@ -32,6 +33,7 @@ func FromEnv() Config {
 		BaseURL:        firstEnv("MODEL_BASE_URL", "OPENAI_BASE_URL", "OLLAMA_BASE_URL"),
 		Model:          firstEnv("MODEL_NAME", "OPENAI_MODEL", "OLLAMA_MODEL"),
 		APIKey:         firstEnv("MODEL_API_KEY", "OPENAI_API_KEY"),
+		ContextWindow:  getEnvInt("MODEL_CONTEXT_WINDOW", 32768),
 		WorkDir:        getEnv("AGENT_WORKDIR", workDir),
 		StateDir:       getEnv("AGENT_STATE_DIR", filepath.Join(workDir, ".onek-agent")),
 		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", 8),
@@ -67,6 +69,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxSteps <= 0 {
 		return fmt.Errorf("max steps must be > 0")
+	}
+	if c.ContextWindow <= 0 {
+		return fmt.Errorf("context window must be > 0")
 	}
 	if c.CommandTimeout <= 0 {
 		return fmt.Errorf("command timeout must be > 0")

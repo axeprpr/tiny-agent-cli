@@ -74,7 +74,7 @@
 - `onek run [flags] <task>`
   跑一次任务
 - `onek chat [flags]`
-  进入等待模式，可以连续提问
+  进入等待模式，可以连续提问；在交互终端里会默认进入全屏 TUI
 - `onek models`
   查看模型列表
 - `onek ping`
@@ -199,6 +199,14 @@ GH_PROXY='https://your-gh-proxy/' && curl -L "${GH_PROXY}https://github.com/axep
 ## 等待模式
 
 `chat` 会保留上下文，所以它已经不只是“一次一问”的工具，而是一个轻量的持续会话 agent。
+
+在交互终端里，`chat` 现在会直接打开全屏 TUI，包含：
+
+- 可滚动消息区
+- 多行输入框
+- 底部状态栏
+- 模型、审批模式、会话名、上下文剩余估算
+- 内联工具日志和审批提示
 
 内置控制命令：
 
