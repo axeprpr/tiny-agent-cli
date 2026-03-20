@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"onek-agent/internal/model"
@@ -21,6 +22,7 @@ import (
 )
 
 type tuiLogMsg struct {
+	kind string
 	text string
 }
 
@@ -40,6 +42,11 @@ type tuiEntry struct {
 	text string
 }
 
+type tuiLogEntry struct {
+	kind string
+	text string
+}
+
 type tuiLogWriter struct {
 	events chan tea.Msg
 }
@@ -52,7 +59,7 @@ func (w *tuiLogWriter) Write(p []byte) (int, error) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			w.events <- tuiLogMsg{text: line}
+			w.events <- tuiLogMsg{kind: classifyLogKind(line), text: line}
 		}
 	}
 	return len(p), nil
@@ -151,17 +158,18 @@ type chatKeyMap struct {
 	Quit     key.Binding
 	Help     key.Binding
 	Switch   key.Binding
+	Filter   key.Binding
 	PageDown key.Binding
 	PageUp   key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Switch, k.Help, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Switch, k.Filter, k.Quit}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Switch, k.Help, k.Quit},
+		{k.Send, k.Newline, k.Switch, k.Filter, k.Help, k.Quit},
 		{k.PageUp, k.PageDown},
 	}
 }
@@ -176,7 +184,7 @@ type chatTUIModel struct {
 	help         help.Model
 	keys         chatKeyMap
 	entries      []tuiEntry
-	logs         []string
+	logs         []tuiLogEntry
 	approval     *tuiApprovalMsg
 	width        int
 	height       int
@@ -185,6 +193,7 @@ type chatTUIModel struct {
 	statusText   string
 	showFullHelp bool
 	activePane   string
+	logFilter    string
 }
 
 var (
@@ -244,6 +253,7 @@ var (
 	messageBodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	logBodyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	errorBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	codeBodyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("230")).
@@ -296,10 +306,12 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		logViewport:  logVP,
 		help:         help.New(),
 		activePane:   "chat",
+		logFilter:    "all",
 		keys: chatKeyMap{
 			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:  key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
 			Switch:   key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch pane")),
+			Filter:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "filter logs")),
 			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 			PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
@@ -396,6 +408,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.activePane = "chat"
 			}
+		case key.Matches(msg, m.keys.Filter):
+			m.logFilter = nextLogFilter(m.logFilter)
+			m.statusText = "log filter: " + m.logFilter
+			m.refreshViewports()
 		case key.Matches(msg, m.keys.PageUp):
 			if m.activePane == "log" {
 				m.logViewport.HalfViewUp()
@@ -439,12 +455,14 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tuiLogMsg:
 		m.stepText = msg.text
-		m.logs = append(m.logs, msg.text)
+		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
 		m.approval = &msg
+		m.logs = append(m.logs, tuiLogEntry{kind: "approval", text: msg.title + ": " + strings.ReplaceAll(msg.body, "\n", " | ")})
 		m.statusText = "approval required"
+		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiTaskDoneMsg:
 		m.busy = false
@@ -502,7 +520,7 @@ func (m chatTUIModel) View() string {
 	}
 
 	mainPane := m.renderPane("Conversation", m.chatViewport.View(), m.activePane == "chat", m.chatViewport.Width)
-	sidePane := m.renderPane("Activity", m.logViewport.View(), m.activePane == "log", m.logViewport.Width)
+	sidePane := m.renderPane("Activity ["+m.logFilter+"]", m.logViewport.View(), m.activePane == "log", m.logViewport.Width)
 	contentRow := lipgloss.JoinHorizontal(lipgloss.Top, mainPane, strings.Repeat(" ", panelGap), sidePane)
 
 	parts := []string{
@@ -512,21 +530,12 @@ func (m chatTUIModel) View() string {
 		statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  ")),
 		helpView,
 	}
-	if m.approval != nil {
-		parts = append(parts, approvalStyle.Width(max(30, m.width-4)).Render(
-			lipgloss.JoinVertical(lipgloss.Left,
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214")).Render(m.approval.title),
-				m.approval.body,
-				lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render("[y] yes   [n] no   [a] always dangerously"),
-			),
-		))
-	}
 	view := appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	if m.approval != nil && m.width > 0 && m.height > 0 {
 		modal := approvalStyle.Width(min(84, max(40, m.width-8))).Render(
 			lipgloss.JoinVertical(lipgloss.Left,
 				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214")).Render(m.approval.title),
-				m.approval.body,
+				renderApprovalBody(m.approval.body, min(76, max(32, m.width-12))),
 				lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render("[y] yes   [n] no   [a] always dangerously"),
 			),
 		)
@@ -589,7 +598,7 @@ func (m *chatTUIModel) renderEntries() string {
 			card = userCardStyle
 		case "assistant":
 			label = assistantLabelStyle
-			body = messageBodyStyle
+			body = codeBodyStyle
 			card = assistantCardStyle
 		case "system":
 			label = systemLabelStyle
@@ -608,6 +617,9 @@ func (m *chatTUIModel) renderEntries() string {
 		if text == "" {
 			continue
 		}
+		if entry.role == "assistant" {
+			text = renderMarkdown(text, bodyWidth)
+		}
 		rendered = append(rendered, card.Width(max(24, m.chatViewport.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
 			label.Render(strings.ToUpper(entry.role)),
 			body.Width(bodyWidth).Render(text),
@@ -621,13 +633,29 @@ func (m *chatTUIModel) renderLogs() string {
 		return logBodyStyle.Render("No tool activity yet.")
 	}
 	width := max(16, m.logViewport.Width-2)
-	out := make([]string, 0, len(m.logs))
-	start := 0
-	if len(m.logs) > 80 {
-		start = len(m.logs) - 80
+	filtered := make([]tuiLogEntry, 0, len(m.logs))
+	for _, entry := range m.logs {
+		if m.logFilter == "all" || m.logFilter == entry.kind {
+			filtered = append(filtered, entry)
+		}
 	}
-	for _, line := range m.logs[start:] {
-		out = append(out, logBodyStyle.Width(width).Render(line))
+	if len(filtered) == 0 {
+		return logBodyStyle.Render("No matching activity.")
+	}
+	out := make([]string, 0, len(filtered))
+	start := 0
+	if len(filtered) > 80 {
+		start = len(filtered) - 80
+	}
+	for _, entry := range filtered[start:] {
+		style := logBodyStyle
+		switch entry.kind {
+		case "error":
+			style = errorBodyStyle
+		case "approval":
+			style = systemLabelStyle
+		}
+		out = append(out, style.Width(width).Render(entry.text))
 	}
 	return strings.Join(out, "\n")
 }
@@ -700,6 +728,75 @@ func splitWidths(total int) (int, int) {
 		main = total - side - panelGap
 	}
 	return max(36, main), max(24, side)
+}
+
+func classifyLogKind(line string) string {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case strings.Contains(lower, "error"):
+		return "error"
+	case strings.Contains(lower, "run_command") || strings.Contains(lower, "read_file") || strings.Contains(lower, "write_file") || strings.Contains(lower, "grep") || strings.Contains(lower, "web_search") || strings.Contains(lower, "fetch_url") || strings.Contains(lower, "list_files"):
+		return "tools"
+	case strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing "):
+		return "steps"
+	default:
+		return "steps"
+	}
+}
+
+func nextLogFilter(current string) string {
+	switch current {
+	case "all":
+		return "tools"
+	case "tools":
+		return "error"
+	case "error":
+		return "approval"
+	default:
+		return "all"
+	}
+}
+
+func renderApprovalBody(text string, width int) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, ": ") {
+			parts := strings.SplitN(line, ": ", 2)
+			rendered = append(rendered,
+				lipgloss.JoinHorizontal(lipgloss.Top,
+					systemLabelStyle.Render(parts[0]+": "),
+					messageBodyStyle.Width(max(10, width-len(parts[0])-2)).Render(parts[1]),
+				),
+			)
+			continue
+		}
+		rendered = append(rendered, messageBodyStyle.Width(width).Render(line))
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func renderMarkdown(text string, width int) string {
+	width = max(20, width)
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return text
+	}
+	out, err := renderer.Render(text)
+	if err != nil {
+		return text
+	}
+	return strings.TrimSpace(out)
 }
 
 var _ io.Writer = (*tuiLogWriter)(nil)
