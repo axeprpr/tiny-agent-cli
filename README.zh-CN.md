@@ -106,67 +106,9 @@ onek run --dangerously "运行 go test ./..."
 onek chat --dangerously
 ```
 
-## 一句话运行
-
-把下面命令里的接口地址和模型名换成你自己的即可。它们都不依赖 Node.js、Python 或其他额外运行时。
-
-Linux x86_64:
-
-```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
-```
-
-Linux arm64:
-
-```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
-```
-
-Linux x86_64 `wget`：
-
-```bash
-wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
-```
-
-macOS Intel:
-
-```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
-```
-
-macOS Apple Silicon:
-
-```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
-```
-
-Windows PowerShell x64:
-
-```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe
-```
-
-Windows PowerShell arm64:
-
-```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe
-```
-
 ## 一句话安装
 
-Linux 或 macOS：
-
-```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
-```
-
-Windows PowerShell：
-
-```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
-```
-
-安装后立即启动：
+安装脚本会自动识别架构，所以每个平台只保留一条推荐命令。
 
 Linux 或 macOS：
 
