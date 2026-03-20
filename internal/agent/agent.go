@@ -16,7 +16,11 @@ const (
 	maxToolMessageChars    = 6000
 	maxConversationChars   = 24000
 	retryConversationChars = 12000
+	maxSummaryChars        = 1800
+	recentTurnsToKeep      = 3
 )
+
+const syntheticSummaryPrefix = "[compacted summary]"
 
 const systemPrompt = `You are a small terminal agent.
 
@@ -216,6 +220,20 @@ func truncateToolMessage(text string, limit int) string {
 }
 
 func compactConversation(messages []model.Message, limit int) []model.Message {
+	compacted := stripSyntheticSummaries(messages)
+	compacted = preprocessConversation(compacted)
+	if conversationSize(compacted) <= limit {
+		return compacted
+	}
+
+	if summarized := summarizeConversationHistory(compacted, limit); len(summarized) > 0 {
+		return summarized
+	}
+
+	return pruneConversation(compacted, limit)
+}
+
+func preprocessConversation(messages []model.Message) []model.Message {
 	compacted := make([]model.Message, len(messages))
 	copy(compacted, messages)
 
@@ -231,8 +249,22 @@ func compactConversation(messages []model.Message, limit int) []model.Message {
 			compacted[i].Content = truncateToolMessage(model.ContentString(compacted[i].Content), 900)
 		}
 	}
+	return compacted
+}
 
-	return pruneConversation(compacted, limit)
+func stripSyntheticSummaries(messages []model.Message) []model.Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+	out := make([]model.Message, 0, len(messages))
+	out = append(out, messages[0])
+	for _, msg := range messages[1:] {
+		if msg.Role == "system" && strings.HasPrefix(model.ContentString(msg.Content), syntheticSummaryPrefix) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 func pruneConversation(messages []model.Message, limit int) []model.Message {
@@ -260,12 +292,187 @@ func pruneConversation(messages []model.Message, limit int) []model.Message {
 	return kept
 }
 
+func summarizeConversationHistory(messages []model.Message, limit int) []model.Message {
+	if len(messages) <= 2 || limit <= 0 {
+		return messages
+	}
+
+	turns := splitConversationTurns(messages[1:])
+	if len(turns) <= 1 {
+		return pruneConversation(messages, limit)
+	}
+
+	maxKeep := minInt(recentTurnsToKeep, len(turns))
+	for keep := maxKeep; keep >= 1; keep-- {
+		older := turns[:len(turns)-keep]
+		recent := turns[len(turns)-keep:]
+
+		candidate := []model.Message{messages[0]}
+		if len(older) > 0 {
+			summary := summarizeTurns(older, minInt(maxSummaryChars, maxInt(400, limit/3)))
+			if strings.TrimSpace(summary) != "" {
+				candidate = append(candidate, model.Message{
+					Role:    "system",
+					Content: syntheticSummaryPrefix + "\n" + summary,
+				})
+			}
+		}
+		for _, turn := range recent {
+			candidate = append(candidate, turn...)
+		}
+		if conversationSize(candidate) <= limit {
+			return candidate
+		}
+	}
+
+	summary := summarizeTurns(turns, minInt(maxSummaryChars, maxInt(300, limit/2)))
+	if strings.TrimSpace(summary) == "" {
+		return pruneConversation(messages, limit)
+	}
+	candidate := []model.Message{
+		messages[0],
+		{Role: "system", Content: syntheticSummaryPrefix + "\n" + summary},
+	}
+	return pruneConversation(candidate, limit)
+}
+
+func splitConversationTurns(messages []model.Message) [][]model.Message {
+	var turns [][]model.Message
+	var current []model.Message
+
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		cp := make([]model.Message, len(current))
+		copy(cp, current)
+		turns = append(turns, cp)
+		current = nil
+	}
+
+	for _, msg := range messages {
+		if msg.Role == "user" && len(current) > 0 {
+			flush()
+		}
+		current = append(current, msg)
+	}
+	flush()
+	return turns
+}
+
+func summarizeTurns(turns [][]model.Message, limit int) string {
+	if len(turns) == 0 || limit <= 0 {
+		return ""
+	}
+	lines := []string{"Earlier conversation:"}
+	total := len(lines[0])
+
+	appendLine := func(line string) bool {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return true
+		}
+		next := total + len(line) + 1
+		if next > limit {
+			return false
+		}
+		lines = append(lines, line)
+		total = next
+		return true
+	}
+
+	for _, turn := range turns {
+		for _, msg := range turn {
+			line := summarizeContextMessage(msg)
+			if !appendLine(line) {
+				return strings.Join(lines, "\n")
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func summarizeContextMessage(msg model.Message) string {
+	switch msg.Role {
+	case "system":
+		text := strings.TrimSpace(model.ContentString(msg.Content))
+		if strings.HasPrefix(text, syntheticSummaryPrefix) {
+			text = strings.TrimSpace(strings.TrimPrefix(text, syntheticSummaryPrefix))
+		}
+		if text == "" {
+			return ""
+		}
+		return "- prior summary: " + compactSummaryText(text, 180)
+	case "user":
+		text := compactSummaryText(model.ContentString(msg.Content), 180)
+		if text == "" {
+			return ""
+		}
+		return "- user: " + text
+	case "assistant":
+		if len(msg.ToolCalls) > 0 {
+			var names []string
+			seen := map[string]bool{}
+			for _, call := range msg.ToolCalls {
+				if call.Function.Name == "" || seen[call.Function.Name] {
+					continue
+				}
+				seen[call.Function.Name] = true
+				names = append(names, call.Function.Name)
+			}
+			if len(names) == 0 {
+				return "- assistant used tools"
+			}
+			return "- assistant used tools: " + strings.Join(names, ", ")
+		}
+		text := compactSummaryText(model.ContentString(msg.Content), 160)
+		if text == "" {
+			return ""
+		}
+		return "- assistant: " + text
+	default:
+		return ""
+	}
+}
+
+func compactSummaryText(text string, limit int) string {
+	text = strings.TrimSpace(FormatTerminalOutput(text))
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if limit > 0 && len(text) > limit {
+		return text[:limit] + "..."
+	}
+	return text
+}
+
+func conversationSize(messages []model.Message) int {
+	total := 0
+	for _, msg := range messages {
+		total += messageSize(msg)
+	}
+	return total
+}
+
 func messageSize(msg model.Message) int {
 	size := len(model.ContentString(msg.Content)) + len(msg.Role) + len(msg.ToolCallID)
 	for _, call := range msg.ToolCalls {
 		size += len(call.ID) + len(call.Type) + len(call.Function.Name) + len(call.Function.Arguments)
 	}
 	return size
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func isContextLengthError(err error) bool {

@@ -181,14 +181,13 @@ Optional install variables:
 On interactive terminals, `chat` now opens a full-screen TUI with:
 
 - top info bar for workspace, shell, model, and approval mode
-- scrollable conversation view
-- activity pane for step/tool/error/approval logs
-- adaptive layout that stacks panes on narrow terminals
-- multiline input box with a dedicated composer panel
+- single-column conversation view
+- collapsible activity drawer for step/tool/error/approval logs
+- multiline input box with a dedicated composer area
 - richer assistant rendering for markdown-style answers and code blocks
 - footer status bar for model, approval mode, session, and approximate context remaining
 - structured command/file approval prompts
-- `Ctrl+O` to switch focus between panes
+- `Ctrl+O` to toggle the activity drawer
 - `Ctrl+G` to cycle activity filters
 - `F1` to toggle help
 
@@ -275,6 +274,7 @@ Notes:
 - `/memorize` summarizes the current session into project memory
 - `--auto-memory` runs that summarization automatically on chat exit
 - if the model-side memory summarizer fails, `onek-agent` falls back to local extraction of obvious stable preferences and project facts
+- long conversations are compacted into a local synthetic summary while keeping recent full turns, which helps shorter-context models survive longer sessions
 
 ## Output Modes
 

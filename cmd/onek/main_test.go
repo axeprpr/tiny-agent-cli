@@ -58,3 +58,21 @@ func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 		t.Fatalf("expected %d recent messages, got %d", memorySummaryMaxMessages, count)
 	}
 }
+
+func TestBuildConversationSummaryInputTruncatesLargeEntries(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: strings.Repeat("alpha ", 120)},
+		{Role: "assistant", Content: strings.Repeat("beta ", 120)},
+	}
+
+	got := buildConversationSummaryInput(messages)
+	if len(got) >= len(model.ContentString(messages[0].Content))+len(model.ContentString(messages[1].Content)) {
+		t.Fatalf("expected summary input to truncate large entries, got length %d", len(got))
+	}
+	if !strings.Contains(got, "user: alpha") {
+		t.Fatalf("expected user entry to remain recognizable, got %q", got)
+	}
+	if !strings.Contains(got, "assistant: beta") {
+		t.Fatalf("expected assistant entry to remain recognizable, got %q", got)
+	}
+}

@@ -50,6 +50,7 @@ type chatRuntime struct {
 const (
 	memorySummaryMaxMessages = 24
 	memorySummaryMaxChars    = 8000
+	memorySummaryEntryChars  = 320
 	autoMemoryTimeout        = 20 * time.Second
 )
 
@@ -496,10 +497,15 @@ func buildConversationSummaryInput(messages []model.Message) string {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user", "assistant":
-			text := strings.TrimSpace(modelContent(msg.Content))
+			text := strings.TrimSpace(agent.FormatTerminalOutput(modelContent(msg.Content)))
 			if text == "" {
 				continue
 			}
+			limit := memorySummaryEntryChars
+			if msg.Role == "assistant" {
+				limit = memorySummaryEntryChars / 2
+			}
+			text = truncateSummaryEntry(text, limit)
 			entries = append(entries, msg.Role+": "+text)
 		}
 	}
@@ -517,6 +523,15 @@ func buildConversationSummaryInput(messages []model.Message) string {
 		b.WriteString(entry)
 	}
 	return b.String()
+}
+
+func truncateSummaryEntry(text string, limit int) string {
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if limit > 0 && len(text) > limit {
+		return text[:limit] + "..."
+	}
+	return text
 }
 
 func parseMemoryLines(text string) []string {

@@ -193,14 +193,12 @@ type chatTUIModel struct {
 	stepText     string
 	statusText   string
 	showFullHelp bool
-	activePane   string
+	showDrawer   bool
 	logFilter    string
 }
 
 var (
-	appStyle = lipgloss.NewStyle().Padding(0, 1)
-	panelGap = 1
-
+	appStyle    = lipgloss.NewStyle().Padding(0, 1)
 	headerStyle = lipgloss.NewStyle().
 			Padding(0, 0, 1, 0)
 
@@ -259,12 +257,6 @@ var (
 			Foreground(lipgloss.Color("244")).
 			Padding(1, 0, 1, 0)
 
-	paneStyle = lipgloss.NewStyle().
-			Padding(0, 0)
-
-	activePaneStyle = lipgloss.NewStyle().
-			Padding(0, 0)
-
 	paneTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("246")).
 			Bold(true).
@@ -318,12 +310,12 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		chatViewport: chatVP,
 		logViewport:  logVP,
 		help:         help.New(),
-		activePane:   "chat",
+		showDrawer:   false,
 		logFilter:    "all",
 		keys: chatKeyMap{
 			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:  key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Switch:   key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "switch pane")),
+			Switch:   key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "toggle activity")),
 			Filter:   key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "filter logs")),
 			Help:     key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
@@ -420,10 +412,11 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showFullHelp = !m.showFullHelp
 		case key.Matches(msg, m.keys.Switch):
 			keyHandled = true
-			if m.activePane == "chat" {
-				m.activePane = "log"
+			m.showDrawer = !m.showDrawer
+			if m.showDrawer {
+				m.statusText = "activity drawer shown"
 			} else {
-				m.activePane = "chat"
+				m.statusText = "activity drawer hidden"
 			}
 		case key.Matches(msg, m.keys.Filter):
 			keyHandled = true
@@ -432,18 +425,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewports()
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
-			if m.activePane == "log" {
-				m.logViewport.HalfViewUp()
-			} else {
-				m.chatViewport.HalfViewUp()
-			}
+			m.chatViewport.HalfViewUp()
 		case key.Matches(msg, m.keys.PageDown):
 			keyHandled = true
-			if m.activePane == "log" {
-				m.logViewport.HalfViewDown()
-			} else {
-				m.chatViewport.HalfViewDown()
-			}
+			m.chatViewport.HalfViewDown()
 		case key.Matches(msg, m.keys.Newline):
 			keyHandled = true
 			m.input.InsertString("\n")
@@ -524,6 +509,7 @@ func (m chatTUIModel) View() string {
 		"model=" + m.runtime.cfg.Model,
 		"approval=" + m.runtime.approver.Mode(),
 		"session=" + m.runtime.sessionName,
+		"activity=" + drawerStateLabel(m.showDrawer),
 		contextStatus(m.runtime, m.input.Value()),
 	}
 	if m.busy {
@@ -540,23 +526,14 @@ func (m chatTUIModel) View() string {
 		helpView = m.help.FullHelpView(m.keys.FullHelp())
 	}
 
-	mainPane := m.renderPane(
-		fmt.Sprintf("Conversation  %d msg", len(m.entries)),
-		m.chatViewport.View(),
-		m.activePane == "chat",
-		m.chatViewport.Width,
-	)
-	sidePane := m.renderPane(
-		fmt.Sprintf("Activity  %s  %d evt", strings.ToUpper(m.logFilter), m.filteredLogCount()),
-		m.logViewport.View(),
-		m.activePane == "log",
-		m.logViewport.Width,
-	)
-	contentRow := m.renderContent(mainPane, sidePane)
+	content := m.renderConversation()
+	if m.showDrawer {
+		content = lipgloss.JoinVertical(lipgloss.Left, content, "", m.renderActivityDrawer())
+	}
 
 	parts := []string{
 		header,
-		contentRow,
+		content,
 		m.renderComposer(),
 		statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  ")),
 		helpView,
@@ -580,20 +557,15 @@ func (m *chatTUIModel) resize() {
 	}
 	extra := 7 + footerHeight + m.input.Height()
 	contentWidth := max(20, m.width-4)
-	stacked := shouldStackPanes(contentWidth)
-	mainWidth, sideWidth := splitWidths(contentWidth, stacked)
 	availableHeight := m.height - extra
-	if stacked {
-		chatHeight, logHeight := splitHeights(availableHeight)
-		m.chatViewport.Height = chatHeight
-		m.logViewport.Height = logHeight
-	} else {
-		vpHeight := max(6, availableHeight)
-		m.chatViewport.Height = vpHeight
-		m.logViewport.Height = vpHeight
+	drawerHeight := 0
+	if m.showDrawer {
+		drawerHeight = activityDrawerHeight(availableHeight)
 	}
-	m.chatViewport.Width = max(18, mainWidth-2)
-	m.logViewport.Width = max(18, sideWidth-2)
+	m.chatViewport.Height = max(6, availableHeight-drawerHeight)
+	m.logViewport.Height = drawerHeight
+	m.chatViewport.Width = max(18, contentWidth)
+	m.logViewport.Width = max(18, contentWidth)
 	m.input.SetWidth(max(20, contentWidth-4))
 	m.refreshViewports()
 }
@@ -707,22 +679,6 @@ func (m *chatTUIModel) renderLogs() string {
 	return strings.Join(out, "\n")
 }
 
-func (m chatTUIModel) renderPane(title, content string, active bool, width int) string {
-	style := paneStyle
-	prefix := " "
-	if active {
-		style = activePaneStyle
-		prefix = "›"
-	}
-	if width <= 0 {
-		width = 20
-	}
-	return style.Width(width).Render(lipgloss.JoinVertical(lipgloss.Left,
-		paneTitleStyle.Width(width).Render(prefix+" "+title),
-		content,
-	))
-}
-
 func contextStatus(runtime *chatRuntime, input string) string {
 	window := runtime.cfg.ContextWindow
 	if window <= 0 {
@@ -766,32 +722,19 @@ func min(a, b int) int {
 	return b
 }
 
-func splitWidths(total int, stacked bool) (int, int) {
-	if stacked {
-		return total, total
+func activityDrawerHeight(total int) int {
+	total = max(10, total)
+	height := total / 3
+	if height < 7 {
+		height = 7
 	}
-	main := total * 68 / 100
-	side := total - main - panelGap
-	if side < 24 {
-		side = 24
-		main = total - side - panelGap
+	if height > 12 {
+		height = 12
 	}
-	return max(36, main), max(24, side)
-}
-
-func splitHeights(total int) (int, int) {
-	total = max(12, total)
-	logHeight := max(5, total*34/100)
-	chatHeight := total - logHeight - panelGap
-	if chatHeight < 6 {
-		chatHeight = 6
-		logHeight = max(5, total-chatHeight-panelGap)
+	if total-height < 6 {
+		height = max(0, total-6)
 	}
-	return chatHeight, logHeight
-}
-
-func shouldStackPanes(total int) bool {
-	return total < 110
+	return height
 }
 
 func classifyLogKind(line string) string {
@@ -967,16 +910,35 @@ func (m chatTUIModel) renderHeader() string {
 	)
 }
 
-func (m chatTUIModel) renderContent(mainPane, sidePane string) string {
-	if shouldStackPanes(max(20, m.width-4)) {
-		return lipgloss.JoinVertical(lipgloss.Left, mainPane, sidePane)
+func (m chatTUIModel) renderConversation() string {
+	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
+		fmt.Sprintf("Conversation  %d msg", len(m.entries)),
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View())
+}
+
+func (m chatTUIModel) renderActivityDrawer() string {
+	title := paneTitleStyle.Width(max(20, m.logViewport.Width)).Render(
+		fmt.Sprintf("Activity drawer  %s  %d evt  Ctrl+O hide", strings.ToUpper(m.logFilter), m.filteredLogCount()),
+	)
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.logViewport.Width))),
+		title,
+		m.logViewport.View(),
+	)
+}
+
+func drawerStateLabel(show bool) string {
+	if show {
+		return "drawer"
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, mainPane, strings.Repeat(" ", panelGap), sidePane)
+	return "hidden"
 }
 
 func (m chatTUIModel) renderComposer() string {
 	title := inputTitleStyle.Render("Composer")
-	hints := inputHintStyle.Render("Enter send  Ctrl+J newline  /help commands")
+	hints := inputHintStyle.Render("Enter send  Ctrl+J newline  Ctrl+O activity  /help commands")
 	return inputPaneStyle.Width(max(20, m.width-2)).Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,

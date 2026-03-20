@@ -62,6 +62,30 @@ func TestCompactConversationPrefersKeepingRecentContext(t *testing.T) {
 	}
 }
 
+func TestCompactConversationAddsSyntheticSummaryForOlderTurns(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: strings.Repeat("old user ", 60)},
+		{Role: "assistant", Content: strings.Repeat("old assistant ", 60)},
+		{Role: "user", Content: "recent user"},
+		{Role: "assistant", Content: "recent answer"},
+	}
+
+	got := compactConversation(messages, 600)
+	if len(got) < 4 {
+		t.Fatalf("expected summarized history plus recent messages, got %#v", got)
+	}
+	if got[1].Role != "system" || !strings.Contains(model.ContentString(got[1].Content), syntheticSummaryPrefix) {
+		t.Fatalf("expected synthetic summary message, got %#v", got)
+	}
+	if model.ContentString(got[len(got)-2].Content) != "recent user" {
+		t.Fatalf("expected recent user to remain, got %#v", got)
+	}
+	if model.ContentString(got[len(got)-1].Content) != "recent answer" {
+		t.Fatalf("expected recent assistant to remain, got %#v", got)
+	}
+}
+
 func TestTruncateToolMessageShrinksLargeOutput(t *testing.T) {
 	got := truncateToolMessage(strings.Repeat("B", 5000), 900)
 	if len(got) >= 5000 {
