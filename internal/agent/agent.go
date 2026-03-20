@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ Constraints:
 - You are running one task only.
 - Prefer using tools instead of guessing.
 - Keep the final answer concise and actionable.
-- Format the final answer for a plain terminal.
 - Do not reveal chain-of-thought, hidden reasoning, or thinking process.
 - Do not access files outside the workspace.
 - Avoid dangerous shell commands.
@@ -29,8 +27,6 @@ Behavior:
 - Use web_search for broad discovery and fetch_url for direct page inspection.
 - When writing files, explain what you changed in the final answer.
 - Return only the final answer to the user, not your reasoning.
-- Do not use Markdown tables.
-- Prefer short sections and simple bullet lists.
 - Stop as soon as the task is complete.`
 
 type chatClient interface {
@@ -81,7 +77,7 @@ func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
 
 		msg := resp.Choices[0].Message
 		if len(msg.ToolCalls) == 0 {
-			final := SanitizeFinal(model.ContentString(msg.Content))
+			final := strings.TrimSpace(model.ContentString(msg.Content))
 			if final == "" {
 				final = "(empty response)"
 			}
@@ -177,7 +173,7 @@ func summarizeOutput(text string) string {
 	return fmt.Sprintf("%d lines, first: %s", len(lines), first)
 }
 
-func SanitizeFinal(text string) string {
+func FormatTerminalOutput(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
@@ -226,19 +222,11 @@ func SanitizeFinal(text string) string {
 		if trimmed == "</think>" || trimmed == "</thinking>" {
 			continue
 		}
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(trimmed, "让我") ||
-			strings.HasPrefix(trimmed, "现在让我") ||
-			strings.HasPrefix(lower, "let me") {
-			continue
-		}
 		filtered = append(filtered, strings.TrimRight(line, " \t"))
 	}
 
 	text = strings.TrimSpace(strings.Join(filtered, "\n"))
-	text = trimToDirectAnswer(text)
 	text = normalizeTerminalText(text)
-	text = trimLeadIn(text)
 	return strings.TrimSpace(text)
 }
 
@@ -252,41 +240,6 @@ func stripAfterMarker(text, marker string) string {
 		return text
 	}
 	return suffix
-}
-
-var directAnswerPattern = regexp.MustCompile(`^(there|here|summary:|result:|final answer:|the answer is|it has|it is)\b`)
-
-func trimToDirectAnswer(text string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) < 3 {
-		return text
-	}
-
-	hasReasoningPrefix := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
-		if strings.Contains(lower, "thinking process") ||
-			strings.Contains(lower, "let me") ||
-			strings.Contains(lower, "returned") ||
-			strings.Contains(lower, "analyze") ||
-			strings.Contains(lower, "that's ") ||
-			regexp.MustCompile(`^\d+\.`).MatchString(trimmed) {
-			hasReasoningPrefix = true
-			break
-		}
-	}
-	if !hasReasoningPrefix {
-		return text
-	}
-
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if directAnswerPattern.MatchString(strings.ToLower(trimmed)) {
-			return strings.Join(lines[i:], "\n")
-		}
-	}
-	return text
 }
 
 func normalizeTerminalText(text string) string {
@@ -308,79 +261,6 @@ func normalizeTerminalText(text string) string {
 	}
 
 	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
-
-func trimLeadIn(text string) string {
-	text = trimToRestartHeading(text)
-
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) < 2 {
-		return text
-	}
-
-	first := strings.TrimSpace(lines[0])
-	second := strings.TrimSpace(lines[1])
-	if first == "" || second == "" {
-		return text
-	}
-
-	leadPhrases := []string{
-		"好的",
-		"现在让我",
-		"我已经",
-		"下面是",
-		"here is",
-		"i have",
-		"i've",
-	}
-
-	for _, phrase := range leadPhrases {
-		if strings.Contains(strings.ToLower(first), strings.ToLower(phrase)) && looksLikeHeading(second) {
-			return strings.Join(lines[1:], "\n")
-		}
-	}
-
-	return text
-}
-
-func trimToRestartHeading(text string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) < 4 {
-		return text
-	}
-
-	restartPhrases := []string{
-		"环境信息统计",
-		"总结",
-		"summary",
-		"environment summary",
-	}
-
-	for i := len(lines) - 1; i >= 1; i-- {
-		line := strings.TrimSpace(lines[i])
-		lower := strings.ToLower(line)
-		for _, phrase := range restartPhrases {
-			if strings.Contains(lower, strings.ToLower(phrase)) {
-				return strings.Join(lines[i:], "\n")
-			}
-		}
-	}
-
-	return text
-}
-
-func looksLikeHeading(line string) bool {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return false
-	}
-	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
-		return false
-	}
-	if len([]rune(line)) > 24 {
-		return false
-	}
-	return !strings.Contains(line, ":")
 }
 
 func normalizeMarkdownTables(text string) string {

@@ -48,6 +48,7 @@ func run(args []string) int {
 
 func runTask(args []string) int {
 	cfg := config.FromEnv()
+	outputMode := "raw"
 
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -57,6 +58,7 @@ func runTask(args []string) int {
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "workspace root")
 	fs.IntVar(&cfg.MaxSteps, "max-steps", cfg.MaxSteps, "maximum agent steps")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell executable")
+	fs.StringVar(&outputMode, "output", outputMode, "output mode: raw or terminal")
 
 	timeoutText := cfg.CommandTimeout.String()
 	fs.StringVar(&timeoutText, "command-timeout", timeoutText, "shell command timeout")
@@ -81,6 +83,10 @@ func runTask(args []string) int {
 		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		return 2
 	}
+	if outputMode != "raw" && outputMode != "terminal" {
+		fmt.Fprintf(os.Stderr, "invalid output mode %q\n", outputMode)
+		return 2
+	}
 
 	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
 	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout)
@@ -92,7 +98,7 @@ func runTask(args []string) int {
 		return 1
 	}
 
-	fmt.Println(result.Final)
+	fmt.Println(formatRunOutput(result.Final, outputMode))
 	return 0
 }
 
@@ -129,7 +135,7 @@ func pingModel(args []string) int {
 		return 1
 	}
 
-	fmt.Println(lastNonEmptyLine(agent.SanitizeFinal(modelContent(resp.Choices[0].Message.Content))))
+	fmt.Println(lastNonEmptyLine(agent.FormatTerminalOutput(modelContent(resp.Choices[0].Message.Content))))
 	return 0
 }
 
@@ -181,6 +187,15 @@ func lastNonEmptyLine(text string) string {
 		}
 	}
 	return ""
+}
+
+func formatRunOutput(text, mode string) string {
+	switch mode {
+	case "terminal":
+		return agent.FormatTerminalOutput(text)
+	default:
+		return strings.TrimSpace(text)
+	}
 }
 
 func printUsage() {
