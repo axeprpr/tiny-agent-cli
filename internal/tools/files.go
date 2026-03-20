@@ -170,11 +170,12 @@ func (t *readFileTool) Call(_ context.Context, raw json.RawMessage) (string, err
 }
 
 type writeFileTool struct {
-	workDir string
+	workDir  string
+	approver Approver
 }
 
-func newWriteFileTool(workDir string) Tool {
-	return &writeFileTool{workDir: workDir}
+func newWriteFileTool(workDir string, approver Approver) Tool {
+	return &writeFileTool{workDir: workDir, approver: approver}
 }
 
 func (t *writeFileTool) Definition() model.Tool {
@@ -204,7 +205,7 @@ func (t *writeFileTool) Definition() model.Tool {
 	}
 }
 
-func (t *writeFileTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
+func (t *writeFileTool) Call(ctx context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -216,6 +217,15 @@ func (t *writeFileTool) Call(_ context.Context, raw json.RawMessage) (string, er
 	path, err := securePath(t.workDir, args.Path)
 	if err != nil {
 		return "", err
+	}
+	if t.approver != nil {
+		approved, err := t.approver.ApproveWrite(ctx, path, args.Content)
+		if err != nil {
+			return "", err
+		}
+		if !approved {
+			return "", fmt.Errorf("file write rejected by user")
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

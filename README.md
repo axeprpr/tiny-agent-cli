@@ -8,7 +8,7 @@ It is built around one simple idea:
 - OpenAI-compatible endpoint
 - shell + files + grep + fetch + web search
 - interactive chat mode
-- command confirmation by default
+- command and file-write confirmation by default
 - `--dangerously` when you want speed
 
 Chinese version: [README.zh-CN.md](/root/1k-install/README.zh-CN.md)
@@ -55,9 +55,9 @@ It is not trying to be a full replacement for every agent platform. It is trying
 ## Approval Modes
 
 - `confirm`
-  Default. Every shell command asks for confirmation.
+  Default. Shell commands and file writes ask for confirmation.
 - `dangerously`
-  Skip command prompts for the current run or chat session.
+  Skip shell and file-write prompts for the current run or chat session.
 
 Examples:
 
@@ -112,6 +112,27 @@ With your endpoint:
 ```bash
 curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat
 ```
+
+## One-Line Install
+
+Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+Optional install variables:
+
+- `ONEK_VERSION`
+  Install a specific tag like `v0.1.2`
+- `ONEK_INSTALL_DIR`
+  Install to a custom directory
 
 ## Interactive Chat
 

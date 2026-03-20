@@ -26,7 +26,7 @@ func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver A
 	for _, tool := range []Tool{
 		newListFilesTool(workDir),
 		newReadFileTool(workDir),
-		newWriteFileTool(workDir),
+		newWriteFileTool(workDir, approver),
 		newGrepTool(workDir),
 		newRunCommandTool(workDir, shell, commandTimeout, approver),
 		newFetchURLTool(),

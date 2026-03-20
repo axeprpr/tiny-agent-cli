@@ -53,9 +53,9 @@
 ## 命令确认与 dangerously
 
 - `confirm`
-  默认模式。每次执行 shell 命令前都会确认。
+  默认模式。执行 shell 命令和写文件前都会确认。
 - `dangerously`
-  本次运行或本次会话里，跳过命令确认。
+  本次运行或本次会话里，跳过 shell 和写文件确认。
 
 示例：
 
@@ -110,6 +110,27 @@ $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='qwen2.5-coder:
 ```bash
 curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat
 ```
+
+## 一句话安装
+
+Linux 或 macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash
+```
+
+Windows PowerShell：
+
+```powershell
+iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+可选安装变量：
+
+- `ONEK_VERSION`
+  安装指定版本，比如 `v0.1.2`
+- `ONEK_INSTALL_DIR`
+  安装到自定义目录
 
 ## 等待模式
 
