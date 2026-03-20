@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"onek-agent/internal/agent"
-	"onek-agent/internal/config"
-	"onek-agent/internal/memory"
-	"onek-agent/internal/model"
-	"onek-agent/internal/model/openaiapi"
-	"onek-agent/internal/session"
-	"onek-agent/internal/tools"
+	"tiny-agent-cli/internal/agent"
+	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/memory"
+	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/model/openaiapi"
+	"tiny-agent-cli/internal/session"
+	"tiny-agent-cli/internal/tools"
 )
 
 var version = "dev"
@@ -960,25 +960,25 @@ func formatRunOutput(text, mode string) string {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  onek                 # default chat on interactive terminals")
-	fmt.Fprintln(os.Stderr, "  onek -d              # default chat in dangerously mode")
-	fmt.Fprintln(os.Stderr, "  onek chat")
-	fmt.Fprintln(os.Stderr, "  onek run [--dangerously] <task>")
-	fmt.Fprintln(os.Stderr, "  onek <task>          # shorthand for run")
-	fmt.Fprintln(os.Stderr, "  onek ping [flags]")
-	fmt.Fprintln(os.Stderr, "  onek models [flags]")
-	fmt.Fprintln(os.Stderr, "  onek version")
+	fmt.Fprintln(os.Stderr, "  tacli                 # default chat on interactive terminals")
+	fmt.Fprintln(os.Stderr, "  tacli -d              # default chat in dangerously mode")
+	fmt.Fprintln(os.Stderr, "  tacli chat")
+	fmt.Fprintln(os.Stderr, "  tacli run [--dangerously] <task>")
+	fmt.Fprintln(os.Stderr, "  tacli <task>          # shorthand for run")
+	fmt.Fprintln(os.Stderr, "  tacli ping [flags]")
+	fmt.Fprintln(os.Stderr, "  tacli models [flags]")
+	fmt.Fprintln(os.Stderr, "  tacli version")
 	fmt.Fprintln(os.Stderr)
 	printRunUsage()
 }
 
 func printRunUsage() {
 	fmt.Fprintln(os.Stderr, "Examples:")
-	fmt.Fprintln(os.Stderr, `  onek`)
-	fmt.Fprintln(os.Stderr, `  onek -d`)
-	fmt.Fprintln(os.Stderr, `  onek "inspect this repo"`)
-	fmt.Fprintln(os.Stderr, `  onek -d "run go test ./..."`)
-	fmt.Fprintln(os.Stderr, `  onek run --dangerously "run go test ./..."`)
-	fmt.Fprintln(os.Stderr, `  onek chat`)
-	fmt.Fprintln(os.Stderr, `  onek chat --session bugfix`)
+	fmt.Fprintln(os.Stderr, `  tacli`)
+	fmt.Fprintln(os.Stderr, `  tacli -d`)
+	fmt.Fprintln(os.Stderr, `  tacli "inspect this repo"`)
+	fmt.Fprintln(os.Stderr, `  tacli -d "run go test ./..."`)
+	fmt.Fprintln(os.Stderr, `  tacli run --dangerously "run go test ./..."`)
+	fmt.Fprintln(os.Stderr, `  tacli chat`)
+	fmt.Fprintln(os.Stderr, `  tacli chat --session bugfix`)
 }

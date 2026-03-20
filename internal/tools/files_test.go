@@ -64,18 +64,18 @@ func TestWriteFileToolWritesWhenApproved(t *testing.T) {
 
 func TestReadFileToolRejectsBinaryContent(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "onek")
+	path := filepath.Join(dir, "tacli")
 	if err := os.WriteFile(path, []byte{0x7f, 'E', 'L', 'F', 0x00, 0x01}, 0o644); err != nil {
 		t.Fatalf("write binary: %v", err)
 	}
 
 	tool := newReadFileTool(dir)
-	raw := json.RawMessage(`{"path":"onek"}`)
+	raw := json.RawMessage(`{"path":"tacli"}`)
 	got, err := tool.Call(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "binary file: onek") {
+	if !strings.Contains(got, "binary file: tacli") {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }

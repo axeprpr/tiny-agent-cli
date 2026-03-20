@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = "axeprpr/onek-agent"
-$BinName = "onek.exe"
-$Version = if ($env:ONEK_VERSION) { $env:ONEK_VERSION } else { "latest" }
-$InstallDir = if ($env:ONEK_INSTALL_DIR) { $env:ONEK_INSTALL_DIR } else { Join-Path $HOME ".local\bin" }
+$Repo = "axeprpr/tiny-agent-cli"
+$BinName = "tacli.exe"
+$Version = if ($env:TACLI_VERSION) { $env:TACLI_VERSION } elseif ($env:ONEK_VERSION) { $env:ONEK_VERSION } else { "latest" }
+$InstallDir = if ($env:TACLI_INSTALL_DIR) { $env:TACLI_INSTALL_DIR } elseif ($env:ONEK_INSTALL_DIR) { $env:ONEK_INSTALL_DIR } else { Join-Path $HOME ".local\bin" }
 
 $arch = switch -Regex ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()) {
     "x64" { "amd64"; break }
@@ -11,7 +11,7 @@ $arch = switch -Regex ([System.Runtime.InteropServices.RuntimeInformation]::OSAr
     default { throw "unsupported architecture: $($_)" }
 }
 
-$asset = "onek-windows-$arch.exe"
+$asset = "tacli-windows-$arch.exe"
 $base = "https://github.com/$Repo/releases"
 if ($Version -eq "latest") {
     $url = "$base/latest/download/$asset"

@@ -83,7 +83,7 @@ Built-in tools are plain Go code. That keeps the first version dependency-light 
 
 ## Immediate Next Work
 
-1. Add transcript persistence under `.onek-agent/`
+1. Add transcript persistence under `.tacli/`
 2. Add approval modes for shell and file writes
 3. Improve `web_search` with a pluggable provider
 4. Add tests around path safety and shell guardrails

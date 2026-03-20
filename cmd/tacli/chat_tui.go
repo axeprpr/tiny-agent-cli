@@ -18,8 +18,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
-	"onek-agent/internal/model"
-	"onek-agent/internal/tools"
+	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 type tuiLogMsg struct {
@@ -367,10 +367,11 @@ func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
 	}
 }
 
-func runTaskCmd(runtime *chatRuntime, task string) tea.Cmd {
+func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, task string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := runtime.executeTask(context.Background(), task)
-		return tuiTaskDoneMsg{output: output, err: err}
+		events <- tuiTaskDoneMsg{output: output, err: err}
+		return nil
 	}
 }
 
@@ -410,7 +411,11 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Filter):
 			keyHandled = true
 			m.logFilter = nextLogFilter(m.logFilter)
-			m.statusText = "log filter: " + m.logFilter
+			if m.showDrawer {
+				m.statusText = "log filter: " + m.logFilter
+			} else {
+				m.statusText = "activity filter updated"
+			}
 			m.refreshViewports()
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
@@ -467,12 +472,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.statusText = "running"
 			m.refreshInputState()
-			cmds = append(cmds, runTaskCmd(m.runtime, task))
+			cmds = append(cmds, runTaskCmd(m.runtime, m.events, task))
 		}
 	case tuiLogMsg:
-		m.stepText = msg.text
+		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
-		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(msg.kind, msg.text)})
+		m.appendActivityEntry(msg.kind, msg.text)
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
@@ -494,6 +499,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshInputState()
 		m.refreshViewports()
+		cmds = append(cmds, waitForTUIEvent(m.events))
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -888,9 +894,9 @@ func markdownRenderer(width int) (*glamour.TermRenderer, error) {
 func (m chatTUIModel) renderHeader() string {
 	titleRow := lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		titleStyle.Render("onek-agent"),
+		titleStyle.Render("tiny-agent-cli"),
 		" ",
-		subtitleStyle.Render("cheap codex for offline shells"),
+		subtitleStyle.Render("tiny terminal agent for local shells"),
 		"  ",
 		tagStyle.Render("single binary"),
 	)
@@ -989,6 +995,69 @@ func (m chatTUIModel) composerHint() string {
 	}
 }
 
+func (m *chatTUIModel) appendActivityEntry(kind, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+
+	switch {
+	case shouldSkipInlineActivity(kind, text):
+		return
+	case kind == "error":
+		m.entries = append(m.entries, tuiEntry{role: "error", text: text})
+	case isToolStartLine(kind, text):
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: "[tool] " + text})
+	case isToolResultLine(text):
+		if m.mergeLastActivityLine(text) {
+			return
+		}
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: "[tool]\n" + normalizeActivityContinuation(text)})
+	default:
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(kind, text)})
+	}
+}
+
+func shouldSkipInlineActivity(kind, text string) bool {
+	if kind != "steps" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing ")
+}
+
+func isToolStartLine(kind, text string) bool {
+	return kind == "tools"
+}
+
+func isToolResultLine(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "ok in ") ||
+		strings.HasPrefix(text, "error in ") ||
+		strings.HasPrefix(text, "| ")
+}
+
+func normalizeActivityContinuation(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "| ") {
+		return strings.TrimSpace(strings.TrimPrefix(text, "| "))
+	}
+	return text
+}
+
+func (m *chatTUIModel) mergeLastActivityLine(text string) bool {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].role == "activity" {
+			m.entries[i].text = strings.TrimSpace(m.entries[i].text) + "\n" + normalizeActivityContinuation(text)
+			return true
+		}
+		if m.entries[i].role != "system" {
+			break
+		}
+	}
+	return false
+}
+
 func formatInlineLogEntry(kind, text string) string {
 	label := "step"
 	switch kind {
@@ -1000,6 +1069,24 @@ func formatInlineLogEntry(kind, text string) string {
 		label = "approval"
 	}
 	return "[" + label + "] " + strings.TrimSpace(text)
+}
+
+func nextStepStatus(current, kind, text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return current
+	}
+	if strings.HasPrefix(text, "| ") {
+		return current
+	}
+	if kind == "tools" || isToolResultLine(text) {
+		return text
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing ") {
+		return text
+	}
+	return current
 }
 
 func renderApprovalInlineText(msg *tuiApprovalMsg) string {

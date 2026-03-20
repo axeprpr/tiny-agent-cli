@@ -1,6 +1,6 @@
-# onek-agent
+# tiny-agent-cli
 
-`onek-agent` 是一个为离线环境、弱网环境、低依赖环境准备的轻量终端 agent。
+`tiny-agent-cli` 是一个为离线环境、弱网环境、低依赖环境准备的轻量终端 agent。
 
 你可以把它理解成：
 
@@ -31,7 +31,7 @@
 - 初始化链路长
 - 在离线机、服务器、容器、救援环境里不够顺手
 
-`onek-agent` 走的是反方向：
+`tiny-agent-cli` 走的是反方向：
 
 - 一个二进制
 - 一个模型接口
@@ -71,21 +71,21 @@
 
 ## 命令
 
-- `onek`
+- `tacli`
   交互终端里默认直接进入 chat
-- `onek -d`
+- `tacli -d`
   直接进入 dangerously 模式的 chat
-- `onek run [--dangerously] <task>`
+- `tacli run [--dangerously] <task>`
   跑一次任务
-- `onek <task>`
+- `tacli <task>`
   一次性任务的简写
-- `onek chat`
+- `tacli chat`
   进入等待模式，可以连续提问；在交互终端里会默认进入全屏 TUI
-- `onek models`
+- `tacli models`
   查看模型列表
-- `onek ping`
+- `tacli ping`
   测试接口和模型
-- `onek version`
+- `tacli version`
   查看版本
 
 ## 命令确认与 dangerously
@@ -98,12 +98,12 @@
 示例：
 
 ```bash
-onek
-onek -d
-onek "检查这个仓库"
-onek -d "运行 go test ./..."
-onek run --dangerously "运行 go test ./..."
-onek chat --dangerously
+tacli
+tacli -d
+tacli "检查这个仓库"
+tacli -d "运行 go test ./..."
+tacli run --dangerously "运行 go test ./..."
+tacli chat --dangerously
 ```
 
 ## 一句话安装
@@ -113,20 +113,20 @@ onek chat --dangerously
 Linux 或 macOS：
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/tacli
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\tacli.exe
 ```
 
 可选安装变量：
 
-- `ONEK_VERSION`
+- `TACLI_VERSION`
   安装指定版本，比如 `v0.1.2`
-- `ONEK_INSTALL_DIR`
+- `TACLI_INSTALL_DIR`
   安装到自定义目录
 
 ## 等待模式
@@ -168,32 +168,32 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/ma
 示例：
 
 ```text
-onek> 看看这个项目是干什么的
-onek> 接下来优先改什么
-onek> /approval dangerously
-onek> /remember 默认输出中文，简洁回答
-onek> /remember-global 优先用简短中文回答
-onek> /memorize
-onek> /output terminal
-onek> /reset
-onek> 给我写个最小发布检查单
+tacli> 看看这个项目是干什么的
+tacli> 接下来优先改什么
+tacli> /approval dangerously
+tacli> /remember 默认输出中文，简洁回答
+tacli> /remember-global 优先用简短中文回答
+tacli> /memorize
+tacli> /output terminal
+tacli> /reset
+tacli> 给我写个最小发布检查单
 ```
 
 ## 会话持久化
 
-`chat` 默认会把会话保存在 `.onek-agent` 目录下。
+`chat` 默认会把会话保存在 `.tacli` 目录下。
 
 - 会话状态：
-  `.onek-agent/sessions/<session>.json`
+  `.tacli/sessions/<session>.json`
 - transcript 日志：
-  `.onek-agent/transcripts/<session>.log`
+  `.tacli/transcripts/<session>.log`
 
-默认每次启动 `chat` 都会新建一个带时间戳的会话，并在退出时自动把稳定上下文整理进记忆。需要恢复或切换会话时，可以用 `onek chat --session <name>` 或 `/session <name>`。
+默认每次启动 `chat` 都会新建一个带时间戳的会话，并在退出时自动把稳定上下文整理进记忆。需要恢复或切换会话时，可以用 `tacli chat --session <name>` 或 `/session <name>`。
 如果要改存储位置，继续用环境变量比如 `AGENT_STATE_DIR` 就可以。
 
 ## 持久化记忆
 
-现在 `onek-agent` 已经支持一个轻量的长期记忆层。
+现在 `tiny-agent-cli` 已经支持一个轻量的长期记忆层。
 
 它分成两个作用域：
 
@@ -205,17 +205,17 @@ onek> 给我写个最小发布检查单
 你可以把稳定偏好、项目规则、长期背景信息记进去：
 
 ```text
-onek> /remember-global 默认输出中文，简洁回答。
-onek> /remember 这个项目优先支持 ARM64。
-onek> /scope
-onek> /memory
-onek> /memorize
-onek> /forget ARM64
+tacli> /remember-global 默认输出中文，简洁回答。
+tacli> /remember 这个项目优先支持 ARM64。
+tacli> /scope
+tacli> /memory
+tacli> /memorize
+tacli> /forget ARM64
 ```
 
 记忆文件默认保存在：
 
-- `.onek-agent/memory.json`
+- `.tacli/memory.json`
 
 后续新的 chat 会话会把命中的记忆作为背景上下文注入到第一条 system prompt。
 
@@ -224,7 +224,7 @@ onek> /forget ARM64
 - 项目记忆按工作目录路径隔离
 - `/memorize` 会把当前会话提炼成项目记忆
 - chat 会在退出时自动执行这一步
-- 如果模型侧的记忆总结超时或失败，`onek-agent` 会回退到本地提取明显的长期偏好和项目事实
+- 如果模型侧的记忆总结超时或失败，`tiny-agent-cli` 会回退到本地提取明显的长期偏好和项目事实
 - 长会话会被压缩成一段本地摘要，同时尽量保留最近几轮完整上下文，更适合短上下文模型
 
 ## 环境变量
@@ -251,7 +251,7 @@ onek> /forget ARM64
 ```bash
 go test ./...
 go build ./...
-go run ./cmd/onek version
+go run ./cmd/tacli version
 ```
 
 ## 发布

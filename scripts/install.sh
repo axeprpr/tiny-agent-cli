@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="axeprpr/onek-agent"
-BIN_NAME="onek"
-VERSION="${ONEK_VERSION:-latest}"
-INSTALL_DIR="${ONEK_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="axeprpr/tiny-agent-cli"
+BIN_NAME="tacli"
+VERSION="${TACLI_VERSION:-${ONEK_VERSION:-latest}}"
+INSTALL_DIR="${TACLI_INSTALL_DIR:-${ONEK_INSTALL_DIR:-$HOME/.local/bin}}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"

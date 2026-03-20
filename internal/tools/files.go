@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"onek-agent/internal/model"
+	"tiny-agent-cli/internal/model"
 )
 
 const (

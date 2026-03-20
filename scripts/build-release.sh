@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="${1:-dev}"
 OUTDIR="${2:-dist}"
-BIN_NAME="onek"
+BIN_NAME="tacli"
 
 targets=(
   "linux amd64"
@@ -34,7 +34,7 @@ for target in "${targets[@]}"; do
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o "${OUTDIR}/${asset_name}" \
-    ./cmd/onek
+    ./cmd/tacli
 done
 
 echo "binaries written to ${OUTDIR}"

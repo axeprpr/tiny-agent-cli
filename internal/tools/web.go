@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"onek-agent/internal/model"
+	"tiny-agent-cli/internal/model"
 )
 
 type fetchURLTool struct {
@@ -63,7 +63,7 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "onek-agent/0.1")
+	req.Header.Set("User-Agent", "tiny-agent-cli/0.1")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -133,7 +133,7 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "onek-agent/0.1")
+	req.Header.Set("User-Agent", "tiny-agent-cli/0.1")
 
 	resp, err := t.client.Do(req)
 	if err != nil {

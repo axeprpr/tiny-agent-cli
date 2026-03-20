@@ -23,11 +23,14 @@ type Config struct {
 	ApprovalMode   string
 }
 
+const defaultMaxSteps = 24
+
 func FromEnv() Config {
 	workDir, err := os.Getwd()
 	if err != nil {
 		workDir = "."
 	}
+	stateDir := defaultStateDir(workDir)
 
 	cfg := Config{
 		BaseURL:        firstEnv("MODEL_BASE_URL", "OPENAI_BASE_URL", "OLLAMA_BASE_URL"),
@@ -35,8 +38,8 @@ func FromEnv() Config {
 		APIKey:         firstEnv("MODEL_API_KEY", "OPENAI_API_KEY"),
 		ContextWindow:  getEnvInt("MODEL_CONTEXT_WINDOW", 32768),
 		WorkDir:        getEnv("AGENT_WORKDIR", workDir),
-		StateDir:       getEnv("AGENT_STATE_DIR", filepath.Join(workDir, ".onek-agent")),
-		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", 8),
+		StateDir:       getEnv("AGENT_STATE_DIR", stateDir),
+		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", defaultMaxSteps),
 		CommandTimeout: getEnvDuration("AGENT_COMMAND_TIMEOUT", 30*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
 		ApprovalMode:   getEnv("AGENT_APPROVAL", "confirm"),
@@ -49,6 +52,18 @@ func FromEnv() Config {
 	}
 
 	return cfg
+}
+
+func defaultStateDir(workDir string) string {
+	newDir := filepath.Join(workDir, ".tacli")
+	oldDir := filepath.Join(workDir, ".onek-agent")
+	if _, err := os.Stat(newDir); err == nil {
+		return newDir
+	}
+	if _, err := os.Stat(oldDir); err == nil {
+		return oldDir
+	}
+	return newDir
 }
 
 func (c *Config) SetCommandTimeout(text string) error {

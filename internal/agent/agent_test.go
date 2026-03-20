@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
-	"onek-agent/internal/model"
+	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 func TestFormatTerminalOutputRemovesThinkTags(t *testing.T) {
@@ -93,5 +96,111 @@ func TestTruncateToolMessageShrinksLargeOutput(t *testing.T) {
 	}
 	if !strings.Contains(got, "...[truncated]...") {
 		t.Fatalf("expected truncation marker, got %q", got)
+	}
+}
+
+type stubChatClient struct {
+	resp model.Response
+	err  error
+}
+
+func (s stubChatClient) Complete(context.Context, model.Request) (model.Response, error) {
+	return s.resp, s.err
+}
+
+func TestRunTaskStepBudgetFinalizesWithContinueHintWhenModelStillWantsTools(t *testing.T) {
+	agent := New(stubChatClient{
+		resp: model.Response{
+			Choices: []model.Choice{
+				{
+					Message: model.Message{
+						ToolCalls: []model.ToolCall{
+							{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "list_files",
+									Arguments: `{"path":"."}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}, tools.NewRegistry(".", "bash", time.Second, nil), 1, nil)
+
+	result, err := agent.NewSession().RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Final, "Send `continue` to keep going") {
+		t.Fatalf("expected continue hint, got %q", result.Final)
+	}
+}
+
+type scriptedChatClient struct {
+	responses []model.Response
+	requests  []model.Request
+}
+
+func (s *scriptedChatClient) Complete(_ context.Context, req model.Request) (model.Response, error) {
+	s.requests = append(s.requests, req)
+	index := len(s.requests) - 1
+	if index >= len(s.responses) {
+		return model.Response{}, nil
+	}
+	return s.responses[index], nil
+}
+
+func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{
+								{
+									ID:   "call-1",
+									Type: "function",
+									Function: model.ToolFunction{
+										Name:      "list_files",
+										Arguments: `{"path":"."}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							Content: "final answer",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	agent := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 2, nil)
+	result, err := agent.NewSession().RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "final answer" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("unexpected request count: %d", len(client.requests))
+	}
+	if len(client.requests[0].Tools) == 0 || client.requests[0].ToolChoice != "auto" {
+		t.Fatalf("expected first request to allow tools, got %#v", client.requests[0])
+	}
+	if len(client.requests[1].Tools) != 0 || client.requests[1].ToolChoice != "none" {
+		t.Fatalf("expected final request to disable tools, got %#v", client.requests[1])
 	}
 }

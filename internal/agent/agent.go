@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"onek-agent/internal/model"
-	"onek-agent/internal/tools"
+	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 const (
@@ -132,25 +132,24 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	})
 
 	for step := 1; step <= s.agent.maxSteps; step++ {
+		finalStep := step == s.agent.maxSteps
 		s.messages = compactConversation(s.messages, maxConversationChars)
-		s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+		if finalStep {
+			s.agent.logf("[step %d/%d] finalizing answer with current context\n", step, s.agent.maxSteps)
+		} else {
+			s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+		}
 
-		resp, err := s.agent.client.Complete(ctx, model.Request{
-			Messages:   s.messages,
-			Tools:      s.agent.registry.Definitions(),
-			ToolChoice: "auto",
-		})
+		req := s.buildRequest(finalStep)
+		resp, err := s.agent.client.Complete(ctx, req)
 		if err != nil {
 			if isContextLengthError(err) {
 				trimmed := compactConversation(s.messages, retryConversationChars)
 				if len(trimmed) < len(s.messages) {
 					s.messages = trimmed
 					s.agent.logf("[step %d/%d] context too long, retrying with shorter history\n", step, s.agent.maxSteps)
-					resp, err = s.agent.client.Complete(ctx, model.Request{
-						Messages:   s.messages,
-						Tools:      s.agent.registry.Definitions(),
-						ToolChoice: "auto",
-					})
+					req = s.buildRequest(finalStep)
+					resp, err = s.agent.client.Complete(ctx, req)
 				}
 			}
 		}
@@ -162,11 +161,8 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 
 		msg := resp.Choices[0].Message
-		if len(msg.ToolCalls) == 0 {
-			final := strings.TrimSpace(model.ContentString(msg.Content))
-			if final == "" {
-				final = "(empty response)"
-			}
+		if len(msg.ToolCalls) == 0 || finalStep {
+			final := finalResponseText(msg, finalStep, s.agent.maxSteps)
 			s.messages = append(s.messages, model.Message{
 				Role:    "assistant",
 				Content: msg.Content,
@@ -202,7 +198,35 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 	}
 
-	return Result{}, fmt.Errorf("max steps reached without final response")
+	return Result{}, fmt.Errorf("%s", stepBudgetReachedText(s.agent.maxSteps))
+}
+
+func (s *Session) buildRequest(finalStep bool) model.Request {
+	req := model.Request{
+		Messages: s.messages,
+	}
+	if finalStep {
+		req.ToolChoice = "none"
+		return req
+	}
+	req.Tools = s.agent.registry.Definitions()
+	req.ToolChoice = "auto"
+	return req
+}
+
+func finalResponseText(msg model.Message, finalStep bool, maxSteps int) string {
+	final := strings.TrimSpace(model.ContentString(msg.Content))
+	if final != "" {
+		return final
+	}
+	if finalStep {
+		return stepBudgetReachedText(maxSteps)
+	}
+	return "(empty response)"
+}
+
+func stepBudgetReachedText(maxSteps int) string {
+	return fmt.Sprintf("Step budget reached (%d). The session is still active. Send `continue` to keep going, or ask a narrower follow-up. You can usually continue until the context window fills up", maxSteps)
 }
 
 func truncateToolMessage(text string, limit int) string {

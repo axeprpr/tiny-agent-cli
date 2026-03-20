@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"onek-agent/internal/model"
+	"tiny-agent-cli/internal/model"
 )
 
 type Tool interface {

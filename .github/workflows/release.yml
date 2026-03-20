@@ -19,27 +19,27 @@ jobs:
           - goos: linux
             goarch: amd64
             ext: ""
-            asset: onek-linux-amd64
+            asset: tacli-linux-amd64
           - goos: linux
             goarch: arm64
             ext: ""
-            asset: onek-linux-arm64
+            asset: tacli-linux-arm64
           - goos: darwin
             goarch: amd64
             ext: ""
-            asset: onek-darwin-amd64
+            asset: tacli-darwin-amd64
           - goos: darwin
             goarch: arm64
             ext: ""
-            asset: onek-darwin-arm64
+            asset: tacli-darwin-arm64
           - goos: windows
             goarch: amd64
             ext: .exe
-            asset: onek-windows-amd64.exe
+            asset: tacli-windows-amd64.exe
           - goos: windows
             goarch: arm64
             ext: .exe
-            asset: onek-windows-arm64.exe
+            asset: tacli-windows-arm64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-manual}"
-          NAME="onek"
+          NAME="tacli"
           mkdir -p dist
 
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
@@ -61,7 +61,7 @@ jobs:
             -trimpath \
             -ldflags="-s -w -X main.version=${VERSION}" \
             -o "dist/${{ matrix.asset }}" \
-            ./cmd/onek
+            ./cmd/tacli
 
       - name: Upload built binary
         uses: actions/upload-artifact@v4

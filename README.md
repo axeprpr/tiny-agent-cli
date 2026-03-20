@@ -1,6 +1,6 @@
-# onek-agent
+# tiny-agent-cli
 
-`onek-agent` is a lean terminal coding agent for people who want a cheap `codex` or `claude-cli` style workflow, without the heavy stack.
+`tiny-agent-cli` is a lean terminal coding agent for people who want a cheap `codex` or `claude-cli` style workflow, without the heavy stack.
 
 It is built for offline-friendly and low-dependency environments:
 
@@ -31,7 +31,7 @@ That is a bad fit for:
 - minimal containers and rescue environments
 - users who just want a binary plus a model endpoint
 
-`onek-agent` aims for the opposite:
+`tiny-agent-cli` aims for the opposite:
 
 - one binary
 - one model endpoint
@@ -67,21 +67,21 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 
 ## Commands
 
-- `onek`
+- `tacli`
   Default chat on interactive terminals
-- `onek -d`
+- `tacli -d`
   Default chat in dangerously mode
-- `onek run [--dangerously] <task>`
+- `tacli run [--dangerously] <task>`
   Run one task
-- `onek <task>`
+- `tacli <task>`
   Shorthand for a one-shot run
-- `onek chat`
+- `tacli chat`
   Stay in a lightweight multi-turn session with a full-screen terminal UI on interactive terminals
-- `onek models`
+- `tacli models`
   List available models from the endpoint
-- `onek ping`
+- `tacli ping`
   Quick endpoint and model check
-- `onek version`
+- `tacli version`
   Print the embedded version
 
 ## Approval Modes
@@ -94,12 +94,12 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 Examples:
 
 ```bash
-onek
-onek -d
-onek "inspect this repo and tell me what it does"
-onek -d "run go test ./..."
-onek run --dangerously "run go test ./..."
-onek chat --dangerously
+tacli
+tacli -d
+tacli "inspect this repo and tell me what it does"
+tacli -d "run go test ./..."
+tacli run --dangerously "run go test ./..."
+tacli chat --dangerously
 ```
 
 ## One-Line Install
@@ -109,20 +109,20 @@ The installer script auto-detects the architecture, so each platform only needs 
 Linux or macOS:
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/tacli
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\tacli.exe
 ```
 
 Optional install variables:
 
-- `ONEK_VERSION`
+- `TACLI_VERSION`
   Install a specific tag like `v0.1.2`
-- `ONEK_INSTALL_DIR`
+- `TACLI_INSTALL_DIR`
   Install to a custom directory
 
 ## Interactive Chat
@@ -163,32 +163,32 @@ Built-in chat commands:
 Example:
 
 ```text
-onek> inspect this repo
-onek> what should I improve next?
-onek> /approval dangerously
-onek> /remember Prefer concise answers.
-onek> /remember-global Always answer in English unless asked otherwise.
-onek> /memorize
-onek> /output terminal
-onek> /reset
-onek> write a minimal release checklist
+tacli> inspect this repo
+tacli> what should I improve next?
+tacli> /approval dangerously
+tacli> /remember Prefer concise answers.
+tacli> /remember-global Always answer in English unless asked otherwise.
+tacli> /memorize
+tacli> /output terminal
+tacli> /reset
+tacli> write a minimal release checklist
 ```
 
 ## Session Persistence
 
-`chat` sessions are persisted under `.onek-agent` by default.
+`chat` sessions are persisted under `.tacli` by default.
 
 - session state:
-  `.onek-agent/sessions/<session>.json`
+  `.tacli/sessions/<session>.json`
 - transcript log:
-  `.onek-agent/transcripts/<session>.log`
+  `.tacli/transcripts/<session>.log`
 
-By default, each `chat` launch starts a fresh timestamped session and auto-summarizes stable memory on exit. Use `onek chat --session <name>` or `/session <name>` to resume or switch sessions.
+By default, each `chat` launch starts a fresh timestamped session and auto-summarizes stable memory on exit. Use `tacli chat --session <name>` or `/session <name>` to resume or switch sessions.
 Advanced storage tuning is still available through environment variables like `AGENT_STATE_DIR`.
 
 ## Persistent Memory
 
-`onek-agent` now has a lightweight persistent memory layer for long-lived usage.
+`tiny-agent-cli` now has a lightweight persistent memory layer for long-lived usage.
 
 It supports two scopes:
 
@@ -200,17 +200,17 @@ It supports two scopes:
 Use it to store user preferences, project rules, or stable context:
 
 ```text
-onek> /remember-global Prefer concise answers in Chinese.
-onek> /remember This repo targets ARM64 first.
-onek> /scope
-onek> /memory
-onek> /memorize
-onek> /forget ARM64
+tacli> /remember-global Prefer concise answers in Chinese.
+tacli> /remember This repo targets ARM64 first.
+tacli> /scope
+tacli> /memory
+tacli> /memorize
+tacli> /forget ARM64
 ```
 
 Memory is stored in:
 
-- `.onek-agent/memory.json`
+- `.tacli/memory.json`
 
 Future chat sessions inject matching memory into the first system prompt as background context.
 
@@ -219,7 +219,7 @@ Notes:
 - project memory is keyed by workspace path
 - `/memorize` summarizes the current session into project memory
 - chat runs that summarization automatically on exit
-- if the model-side memory summarizer fails, `onek-agent` falls back to local extraction of obvious stable preferences and project facts
+- if the model-side memory summarizer fails, `tiny-agent-cli` falls back to local extraction of obvious stable preferences and project facts
 - long conversations are compacted into a local synthetic summary while keeping recent full turns, which helps shorter-context models survive longer sessions
 
 ## Environment Variables
@@ -246,7 +246,7 @@ Notes:
 ```bash
 go test ./...
 go build ./...
-go run ./cmd/onek version
+go run ./cmd/tacli version
 ```
 
 ## Release

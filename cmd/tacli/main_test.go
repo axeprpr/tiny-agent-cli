@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"onek-agent/internal/model"
+	"tiny-agent-cli/internal/model"
 )
 
 func TestExtractStableMemoryNotes(t *testing.T) {

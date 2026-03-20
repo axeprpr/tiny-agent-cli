@@ -1,4 +1,4 @@
-module onek-agent
+module tiny-agent-cli
 
 go 1.25.1
 
