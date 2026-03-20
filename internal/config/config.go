@@ -18,6 +18,7 @@ type Config struct {
 	MaxSteps       int
 	CommandTimeout time.Duration
 	Shell          string
+	ApprovalMode   string
 }
 
 func FromEnv() Config {
@@ -34,6 +35,7 @@ func FromEnv() Config {
 		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", 8),
 		CommandTimeout: getEnvDuration("AGENT_COMMAND_TIMEOUT", 30*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
+		ApprovalMode:   getEnv("AGENT_APPROVAL", "confirm"),
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1:11434/v1"

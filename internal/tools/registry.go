@@ -20,7 +20,7 @@ type Registry struct {
 	tools map[string]Tool
 }
 
-func NewRegistry(workDir, shell string, commandTimeout time.Duration) *Registry {
+func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver Approver) *Registry {
 	r := &Registry{tools: make(map[string]Tool)}
 
 	for _, tool := range []Tool{
@@ -28,7 +28,7 @@ func NewRegistry(workDir, shell string, commandTimeout time.Duration) *Registry 
 		newReadFileTool(workDir),
 		newWriteFileTool(workDir),
 		newGrepTool(workDir),
-		newRunCommandTool(workDir, shell, commandTimeout),
+		newRunCommandTool(workDir, shell, commandTimeout, approver),
 		newFetchURLTool(),
 		newWebSearchTool(),
 	} {

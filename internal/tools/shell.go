@@ -16,13 +16,15 @@ type runCommandTool struct {
 	workDir        string
 	shell          string
 	commandTimeout time.Duration
+	approver       Approver
 }
 
-func newRunCommandTool(workDir, shell string, commandTimeout time.Duration) Tool {
+func newRunCommandTool(workDir, shell string, commandTimeout time.Duration, approver Approver) Tool {
 	return &runCommandTool{
 		workDir:        workDir,
 		shell:          shell,
 		commandTimeout: commandTimeout,
+		approver:       approver,
 	}
 }
 
@@ -67,6 +69,15 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	}
 	if err := validateCommand(command); err != nil {
 		return "", err
+	}
+	if t.approver != nil {
+		approved, err := t.approver.ApproveCommand(ctx, command)
+		if err != nil {
+			return "", err
+		}
+		if !approved {
+			return "", fmt.Errorf("command rejected by user")
+		}
 	}
 
 	timeout := t.commandTimeout

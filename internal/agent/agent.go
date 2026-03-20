@@ -16,15 +16,20 @@ const systemPrompt = `You are a small terminal agent.
 
 Constraints:
 - You are running one task only.
+- Use a private PDCA loop for each task: Plan, Do, Check, Act.
+- Use a private ReAct loop: observe the task, choose the next action, use a tool if needed, check the result.
 - Prefer using tools instead of guessing.
-- Keep the final answer concise and actionable.
+- Keep the final answer concise, actionable, and terminal-friendly.
 - Do not reveal chain-of-thought, hidden reasoning, or thinking process.
 - Do not access files outside the workspace.
 - Avoid dangerous shell commands.
 
 Behavior:
+- Start with a short internal plan before acting.
+- Choose the smallest useful next step, then verify the result before continuing.
 - Inspect the workspace before editing when the task depends on local files.
 - Use web_search for broad discovery and fetch_url for direct page inspection.
+- Prefer plain text over Markdown tables unless the user explicitly asks for tables.
 - When writing files, explain what you changed in the final answer.
 - Return only the final answer to the user, not your reasoning.
 - Stop as soon as the task is complete.`
@@ -45,6 +50,11 @@ type Agent struct {
 	log      io.Writer
 }
 
+type Session struct {
+	agent    *Agent
+	messages []model.Message
+}
+
 func New(client chatClient, registry *tools.Registry, maxSteps int, log io.Writer) *Agent {
 	return &Agent{
 		client:   client,
@@ -55,17 +65,30 @@ func New(client chatClient, registry *tools.Registry, maxSteps int, log io.Write
 }
 
 func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
-	messages := []model.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: task},
+	return a.NewSession().RunTask(ctx, task)
+}
+
+func (a *Agent) NewSession() *Session {
+	return &Session{
+		agent: a,
+		messages: []model.Message{
+			{Role: "system", Content: systemPrompt},
+		},
 	}
+}
 
-	for step := 1; step <= a.maxSteps; step++ {
-		a.logf("[step %d/%d] requesting model\n", step, a.maxSteps)
+func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
+	s.messages = append(s.messages, model.Message{
+		Role:    "user",
+		Content: task,
+	})
 
-		resp, err := a.client.Complete(ctx, model.Request{
-			Messages:   messages,
-			Tools:      a.registry.Definitions(),
+	for step := 1; step <= s.agent.maxSteps; step++ {
+		s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+
+		resp, err := s.agent.client.Complete(ctx, model.Request{
+			Messages:   s.messages,
+			Tools:      s.agent.registry.Definitions(),
 			ToolChoice: "auto",
 		})
 		if err != nil {
@@ -84,26 +107,26 @@ func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
 			return Result{Final: final, Steps: step}, nil
 		}
 
-		messages = append(messages, model.Message{
+		s.messages = append(s.messages, model.Message{
 			Role:      "assistant",
 			Content:   msg.Content,
 			ToolCalls: msg.ToolCalls,
 		})
 
-		a.logf("[step %d/%d] executing %d tool(s)\n", step, a.maxSteps, len(msg.ToolCalls))
+		s.agent.logf("[step %d/%d] executing %d tool(s)\n", step, s.agent.maxSteps, len(msg.ToolCalls))
 
 		for i, call := range msg.ToolCalls {
 			args := json.RawMessage(call.Function.Arguments)
-			a.logToolStart(i+1, len(msg.ToolCalls), call.Function.Name, args)
+			s.agent.logToolStart(i+1, len(msg.ToolCalls), call.Function.Name, args)
 
 			started := time.Now()
-			output, err := a.registry.Call(ctx, call.Function.Name, args)
-			a.logToolFinish(time.Since(started), output, err)
+			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
+			s.agent.logToolFinish(time.Since(started), output, err)
 			if err != nil {
 				output = "tool error: " + err.Error()
 			}
 
-			messages = append(messages, model.Message{
+			s.messages = append(s.messages, model.Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
 				Content:    output,
