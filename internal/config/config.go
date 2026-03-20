@@ -15,6 +15,7 @@ type Config struct {
 	Model          string
 	APIKey         string
 	WorkDir        string
+	StateDir       string
 	MaxSteps       int
 	CommandTimeout time.Duration
 	Shell          string
@@ -32,6 +33,7 @@ func FromEnv() Config {
 		Model:          firstEnv("MODEL_NAME", "OPENAI_MODEL", "OLLAMA_MODEL"),
 		APIKey:         firstEnv("MODEL_API_KEY", "OPENAI_API_KEY"),
 		WorkDir:        getEnv("AGENT_WORKDIR", workDir),
+		StateDir:       getEnv("AGENT_STATE_DIR", filepath.Join(workDir, ".onek-agent")),
 		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", 8),
 		CommandTimeout: getEnvDuration("AGENT_COMMAND_TIMEOUT", 30*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
@@ -75,6 +77,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("resolve workdir: %w", err)
 	}
 	c.WorkDir = abs
+	stateAbs, err := filepath.Abs(c.StateDir)
+	if err != nil {
+		return fmt.Errorf("resolve state dir: %w", err)
+	}
+	c.StateDir = stateAbs
 	return nil
 }
 

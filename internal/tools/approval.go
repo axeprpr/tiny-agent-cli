@@ -18,6 +18,7 @@ type Approver interface {
 	ApproveCommand(ctx context.Context, command string) (bool, error)
 	ApproveWrite(ctx context.Context, path, content string) (bool, error)
 	Mode() string
+	SetMode(mode string) error
 }
 
 type TerminalApprover struct {
@@ -38,6 +39,17 @@ func NewTerminalApprover(reader *bufio.Reader, writer io.Writer, mode string, in
 
 func (a *TerminalApprover) Mode() string {
 	return a.mode
+}
+
+func (a *TerminalApprover) SetMode(mode string) error {
+	mode = normalizeApprovalMode(mode)
+	switch mode {
+	case ApprovalConfirm, ApprovalDangerously:
+		a.mode = mode
+		return nil
+	default:
+		return fmt.Errorf("invalid approval mode %q", mode)
+	}
 }
 
 func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bool, error) {

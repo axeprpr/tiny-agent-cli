@@ -69,12 +69,39 @@ func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
 }
 
 func (a *Agent) NewSession() *Session {
+	return a.NewSessionWithMemory("")
+}
+
+func (a *Agent) NewSessionWithMemory(memoryText string) *Session {
 	return &Session{
 		agent: a,
 		messages: []model.Message{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: SystemPromptWithMemory(memoryText)},
 		},
 	}
+}
+
+func SystemPromptWithMemory(memoryText string) string {
+	memoryText = strings.TrimSpace(memoryText)
+	if memoryText == "" {
+		return systemPrompt
+	}
+	return systemPrompt + "\n\n" + memoryText
+}
+
+func (s *Session) Messages() []model.Message {
+	out := make([]model.Message, len(s.messages))
+	copy(out, s.messages)
+	return out
+}
+
+func (s *Session) ReplaceMessages(messages []model.Message) {
+	s.messages = make([]model.Message, len(messages))
+	copy(s.messages, messages)
+}
+
+func (s *Session) SetAgent(agent *Agent) {
+	s.agent = agent
 }
 
 func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
@@ -104,6 +131,10 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			if final == "" {
 				final = "(empty response)"
 			}
+			s.messages = append(s.messages, model.Message{
+				Role:    "assistant",
+				Content: msg.Content,
+			})
 			return Result{Final: final, Steps: step}, nil
 		}
 

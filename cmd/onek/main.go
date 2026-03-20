@@ -11,11 +11,32 @@ import (
 
 	"onek-agent/internal/agent"
 	"onek-agent/internal/config"
+	"onek-agent/internal/memory"
 	"onek-agent/internal/model/openaiapi"
+	"onek-agent/internal/session"
 	"onek-agent/internal/tools"
 )
 
 var version = "dev"
+
+type runtimeOptions struct {
+	outputMode string
+	session    string
+}
+
+type chatRuntime struct {
+	cfg            config.Config
+	reader         *bufio.Reader
+	approver       *tools.TerminalApprover
+	loop           *agent.Agent
+	session        *agent.Session
+	sessionName    string
+	outputMode     string
+	transcriptPath string
+	statePath      string
+	memoryPath     string
+	memories       []string
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -50,7 +71,7 @@ func run(args []string) int {
 }
 
 func runTask(args []string) int {
-	cfg, outputMode, taskArgs, reader, err := parseAgentFlags("run", args)
+	cfg, opts, taskArgs, reader, err := parseAgentFlags("run", args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		return 2
@@ -63,30 +84,34 @@ func runTask(args []string) int {
 		return 2
 	}
 
-	loop := buildAgent(cfg, reader)
+	loop, _ := buildAgent(cfg, reader)
 	result, err := loop.Run(context.Background(), task)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		return 1
 	}
 
-	fmt.Println(formatRunOutput(result.Final, outputMode))
+	fmt.Println(formatRunOutput(result.Final, opts.outputMode))
 	return 0
 }
 
 func runChat(args []string) int {
-	cfg, outputMode, _, reader, err := parseAgentFlags("chat", args)
+	cfg, opts, _, reader, err := parseAgentFlags("chat", args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		return 2
 	}
 
-	loop := buildAgent(cfg, reader)
-	session := loop.NewSession()
-	interactive := tools.IsInteractiveTerminal(os.Stdin)
+	runtime, err := newChatRuntime(cfg, opts, reader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chat setup error: %v\n", err)
+		return 1
+	}
 
+	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit to quit, /reset to clear context.")
+		fmt.Fprintf(os.Stderr, "Interactive mode. session=%s output=%s approval=%s model=%s\n", runtime.sessionName, runtime.outputMode, runtime.approver.Mode(), runtime.cfg.Model)
+		fmt.Fprintln(os.Stderr, "Type /help for commands.")
 	}
 
 	for {
@@ -100,42 +125,223 @@ func runChat(args []string) int {
 		}
 
 		task := strings.TrimSpace(line)
-		switch task {
-		case "":
-			if readErr != nil {
-				return 0
-			}
-			continue
-		case "/exit", "/quit":
-			return 0
-		case "/reset":
-			session = loop.NewSession()
-			fmt.Fprintln(os.Stderr, "context reset")
-			if readErr != nil {
-				return 0
-			}
-			continue
-		case "/help":
-			fmt.Fprintln(os.Stderr, "/exit  quit")
-			fmt.Fprintln(os.Stderr, "/reset clear conversation context")
-			fmt.Fprintln(os.Stderr, "/help  show commands")
+		if task == "" {
 			if readErr != nil {
 				return 0
 			}
 			continue
 		}
 
-		result, err := session.RunTask(context.Background(), task)
+		if strings.HasPrefix(task, "/") {
+			handled, exitCode := runtime.handleCommand(task)
+			if handled {
+				if exitCode >= 0 {
+					return exitCode
+				}
+				if readErr != nil {
+					return 0
+				}
+				continue
+			}
+		}
+
+		_ = session.AppendTranscript(runtime.transcriptPath, "user", task)
+		result, err := runtime.session.RunTask(context.Background(), task)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
+			_ = session.AppendTranscript(runtime.transcriptPath, "error", err.Error())
 		} else {
-			fmt.Println(formatRunOutput(result.Final, outputMode))
+			output := formatRunOutput(result.Final, runtime.outputMode)
+			fmt.Println(output)
+			_ = session.AppendTranscript(runtime.transcriptPath, "assistant", output)
+			_ = runtime.save()
 		}
 
 		if readErr != nil {
 			return 0
 		}
 	}
+}
+
+func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader) (*chatRuntime, error) {
+	loop, approver := buildAgent(cfg, reader)
+	sessionName := opts.session
+	if sessionName == "" {
+		sessionName = "default"
+	}
+
+	r := &chatRuntime{
+		cfg:            cfg,
+		reader:         reader,
+		approver:       approver,
+		loop:           loop,
+		sessionName:    sessionName,
+		outputMode:     opts.outputMode,
+		transcriptPath: session.TranscriptPath(cfg.StateDir, sessionName),
+		statePath:      session.SessionPath(cfg.StateDir, sessionName),
+		memoryPath:     memory.Path(cfg.StateDir),
+	}
+	if mem, err := memory.Load(r.memoryPath); err == nil {
+		r.memories = mem.Notes
+	}
+	r.session = r.newSession()
+
+	if state, err := session.Load(r.statePath); err == nil {
+		if len(state.Messages) > 0 {
+			r.session.ReplaceMessages(state.Messages)
+		}
+		if strings.TrimSpace(state.OutputMode) != "" {
+			r.outputMode = state.OutputMode
+		}
+		if strings.TrimSpace(state.ApprovalMode) != "" {
+			r.cfg.ApprovalMode = state.ApprovalMode
+			_ = r.approver.SetMode(state.ApprovalMode)
+		}
+		if strings.TrimSpace(state.Model) != "" {
+			r.cfg.Model = state.Model
+			r.rebuildLoop()
+			_ = r.approver.SetMode(r.cfg.ApprovalMode)
+		}
+	}
+
+	return r, nil
+}
+
+func (r *chatRuntime) handleCommand(input string) (bool, int) {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) == 0 {
+		return true, -1
+	}
+
+	switch fields[0] {
+	case "/exit", "/quit":
+		_ = r.save()
+		return true, 0
+	case "/reset":
+		r.session = r.newSession()
+		_ = r.save()
+		fmt.Fprintln(os.Stderr, "context reset")
+		return true, -1
+	case "/help":
+		fmt.Fprintln(os.Stderr, "/help                     show commands")
+		fmt.Fprintln(os.Stderr, "/exit                     quit")
+		fmt.Fprintln(os.Stderr, "/reset                    clear conversation context")
+		fmt.Fprintln(os.Stderr, "/status                   show session settings")
+		fmt.Fprintln(os.Stderr, "/approval confirm|dangerously")
+		fmt.Fprintln(os.Stderr, "/output raw|terminal")
+		fmt.Fprintln(os.Stderr, "/model <name>")
+		fmt.Fprintln(os.Stderr, "/memory                    show saved memory")
+		fmt.Fprintln(os.Stderr, "/remember <text>           add a memory note")
+		fmt.Fprintln(os.Stderr, "/forget <query>            remove matching memory notes")
+		return true, -1
+	case "/status":
+		fmt.Fprintf(os.Stderr, "session=%s\n", r.sessionName)
+		fmt.Fprintf(os.Stderr, "model=%s\n", r.cfg.Model)
+		fmt.Fprintf(os.Stderr, "approval=%s\n", r.approver.Mode())
+		fmt.Fprintf(os.Stderr, "output=%s\n", r.outputMode)
+		fmt.Fprintf(os.Stderr, "memory_notes=%d\n", len(r.memories))
+		fmt.Fprintf(os.Stderr, "state=%s\n", r.statePath)
+		fmt.Fprintf(os.Stderr, "transcript=%s\n", r.transcriptPath)
+		fmt.Fprintf(os.Stderr, "memory=%s\n", r.memoryPath)
+		return true, -1
+	case "/approval":
+		if len(fields) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: /approval confirm|dangerously")
+			return true, -1
+		}
+		if err := r.approver.SetMode(fields[1]); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			return true, -1
+		}
+		r.cfg.ApprovalMode = r.approver.Mode()
+		fmt.Fprintf(os.Stderr, "approval mode set to %s\n", r.approver.Mode())
+		_ = r.save()
+		return true, -1
+	case "/output":
+		if len(fields) != 2 || (fields[1] != "raw" && fields[1] != "terminal") {
+			fmt.Fprintln(os.Stderr, "usage: /output raw|terminal")
+			return true, -1
+		}
+		r.outputMode = fields[1]
+		fmt.Fprintf(os.Stderr, "output mode set to %s\n", r.outputMode)
+		_ = r.save()
+		return true, -1
+	case "/model":
+		if len(fields) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: /model <name>")
+			return true, -1
+		}
+		r.cfg.Model = strings.Join(fields[1:], " ")
+		r.rebuildLoop()
+		fmt.Fprintf(os.Stderr, "model set to %s\n", r.cfg.Model)
+		_ = r.save()
+		return true, -1
+	case "/memory":
+		fmt.Fprintln(os.Stderr, memory.FormatNotes(r.memories))
+		return true, -1
+	case "/remember":
+		if len(fields) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: /remember <text>")
+			return true, -1
+		}
+		r.memories = memory.Add(r.memories, strings.TrimSpace(input[len("/remember"):]))
+		fmt.Fprintln(os.Stderr, "memory saved")
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return true, -1
+	case "/forget":
+		if len(fields) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: /forget <query>")
+			return true, -1
+		}
+		updated, removed := memory.ForgetMatching(r.memories, strings.TrimSpace(input[len("/forget"):]))
+		r.memories = updated
+		fmt.Fprintf(os.Stderr, "removed %d memory note(s)\n", removed)
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return true, -1
+	default:
+		return false, -1
+	}
+}
+
+func (r *chatRuntime) rebuildLoop() {
+	loop, approver := buildAgent(r.cfg, r.reader)
+	r.loop = loop
+	r.approver = approver
+	r.session.SetAgent(loop)
+	_ = r.approver.SetMode(r.cfg.ApprovalMode)
+}
+
+func (r *chatRuntime) newSession() *agent.Session {
+	return r.loop.NewSessionWithMemory(memory.RenderSystemMemory(r.memories))
+}
+
+func (r *chatRuntime) refreshMemoryContext() {
+	messages := r.session.Messages()
+	if len(messages) == 0 {
+		r.session = r.newSession()
+		return
+	}
+	messages[0].Content = agent.SystemPromptWithMemory(memory.RenderSystemMemory(r.memories))
+	r.session.ReplaceMessages(messages)
+}
+
+func (r *chatRuntime) save() error {
+	r.cfg.ApprovalMode = r.approver.Mode()
+	return session.Save(r.statePath, session.State{
+		SessionName:  r.sessionName,
+		Model:        r.cfg.Model,
+		OutputMode:   r.outputMode,
+		ApprovalMode: r.approver.Mode(),
+		Messages:     r.session.Messages(),
+	})
+}
+
+func (r *chatRuntime) saveMemory() error {
+	return memory.Save(r.memoryPath, memory.State{Notes: r.memories})
 }
 
 func pingModel(args []string) int {
@@ -210,9 +416,12 @@ func listModels(args []string) int {
 	return 0
 }
 
-func parseAgentFlags(name string, args []string) (config.Config, string, []string, *bufio.Reader, error) {
+func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions, []string, *bufio.Reader, error) {
 	cfg := config.FromEnv()
-	outputMode := "raw"
+	opts := runtimeOptions{
+		outputMode: "raw",
+		session:    "default",
+	}
 	dangerously := false
 
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -221,26 +430,28 @@ func parseAgentFlags(name string, args []string) (config.Config, string, []strin
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "optional API key")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "workspace root")
+	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "state directory for sessions and transcripts")
 	fs.IntVar(&cfg.MaxSteps, "max-steps", cfg.MaxSteps, "maximum agent steps")
 	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell executable")
 	fs.StringVar(&cfg.ApprovalMode, "approval", cfg.ApprovalMode, "approval mode: confirm or dangerously")
 	fs.BoolVar(&dangerously, "dangerously", false, "shortcut for --approval dangerously")
-	fs.StringVar(&outputMode, "output", outputMode, "output mode: raw or terminal")
+	fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode: raw or terminal")
+	fs.StringVar(&opts.session, "session", opts.session, "session name for chat persistence")
 
 	timeoutText := cfg.CommandTimeout.String()
 	fs.StringVar(&timeoutText, "command-timeout", timeoutText, "shell command timeout")
 
 	if err := fs.Parse(args); err != nil {
-		return cfg, "", nil, nil, err
+		return cfg, runtimeOptions{}, nil, nil, err
 	}
 	if err := cfg.SetCommandTimeout(timeoutText); err != nil {
-		return cfg, "", nil, nil, err
+		return cfg, runtimeOptions{}, nil, nil, err
 	}
 	if dangerously {
 		cfg.ApprovalMode = tools.ApprovalDangerously
 	}
 	if err := cfg.Validate(); err != nil {
-		return cfg, "", nil, nil, err
+		return cfg, runtimeOptions{}, nil, nil, err
 	}
 
 	cfg.ApprovalMode = strings.ToLower(strings.TrimSpace(cfg.ApprovalMode))
@@ -249,23 +460,23 @@ func parseAgentFlags(name string, args []string) (config.Config, string, []strin
 		cfg.ApprovalMode = tools.ApprovalConfirm
 	case tools.ApprovalDangerously:
 	default:
-		return cfg, "", nil, nil, fmt.Errorf("invalid approval mode %q", cfg.ApprovalMode)
+		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid approval mode %q", cfg.ApprovalMode)
 	}
 
-	outputMode = strings.ToLower(strings.TrimSpace(outputMode))
-	if outputMode != "raw" && outputMode != "terminal" {
-		return cfg, "", nil, nil, fmt.Errorf("invalid output mode %q", outputMode)
+	opts.outputMode = strings.ToLower(strings.TrimSpace(opts.outputMode))
+	if opts.outputMode != "raw" && opts.outputMode != "terminal" {
+		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid output mode %q", opts.outputMode)
 	}
 
-	return cfg, outputMode, fs.Args(), bufio.NewReader(os.Stdin), nil
+	return cfg, opts, fs.Args(), bufio.NewReader(os.Stdin), nil
 }
 
-func buildAgent(cfg config.Config, reader *bufio.Reader) *agent.Agent {
+func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, *tools.TerminalApprover) {
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	approver := tools.NewTerminalApprover(reader, os.Stderr, cfg.ApprovalMode, interactive)
 	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
 	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver)
-	return agent.New(client, registry, cfg.MaxSteps, os.Stderr)
+	return agent.New(client, registry, cfg.MaxSteps, os.Stderr), approver
 }
 
 func modelContent(content any) string {
@@ -307,5 +518,5 @@ func printRunUsage() {
 	fmt.Fprintln(os.Stderr, "Examples:")
 	fmt.Fprintln(os.Stderr, `  onek run --approval confirm "inspect this repo"`)
 	fmt.Fprintln(os.Stderr, `  onek run --dangerously "run go test ./..."`)
-	fmt.Fprintln(os.Stderr, `  onek chat --output terminal`)
+	fmt.Fprintln(os.Stderr, `  onek chat --session default --output terminal`)
 }

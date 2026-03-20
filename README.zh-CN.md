@@ -139,7 +139,14 @@ iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps
 内置控制命令：
 
 - `/help`
+- `/status`
 - `/reset`
+- `/approval confirm|dangerously`
+- `/output raw|terminal`
+- `/model <name>`
+- `/memory`
+- `/remember <text>`
+- `/forget <query>`
 - `/exit`
 
 示例：
@@ -147,9 +154,46 @@ iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps
 ```text
 onek> 看看这个项目是干什么的
 onek> 接下来优先改什么
+onek> /approval dangerously
+onek> /output terminal
 onek> /reset
 onek> 给我写个最小发布检查单
 ```
+
+## 会话持久化
+
+`chat` 默认会把会话保存在 `.onek-agent` 目录下。
+
+- 会话状态：
+  `.onek-agent/sessions/<session>.json`
+- transcript 日志：
+  `.onek-agent/transcripts/<session>.log`
+
+常用参数：
+
+- `--session <name>`
+  使用指定会话名
+- `--state-dir <path>`
+  把状态和日志放到别的目录
+
+## 持久化记忆
+
+现在 `onek-agent` 已经支持一个轻量的长期记忆层。
+
+你可以把稳定偏好、项目规则、长期背景信息记进去：
+
+```text
+onek> /remember 默认输出中文，简洁回答。
+onek> /remember 这个项目优先支持 ARM64。
+onek> /memory
+onek> /forget ARM64
+```
+
+记忆文件默认保存在：
+
+- `.onek-agent/memory.json`
+
+后续新的 chat 会话会自动把这些记忆作为背景上下文注入进去。
 
 ## 输出模式
 

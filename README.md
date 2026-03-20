@@ -141,7 +141,14 @@ Optional install variables:
 Built-in chat commands:
 
 - `/help`
+- `/status`
 - `/reset`
+- `/approval confirm|dangerously`
+- `/output raw|terminal`
+- `/model <name>`
+- `/memory`
+- `/remember <text>`
+- `/forget <query>`
 - `/exit`
 
 Example:
@@ -149,9 +156,46 @@ Example:
 ```text
 onek> inspect this repo
 onek> what should I improve next?
+onek> /approval dangerously
+onek> /output terminal
 onek> /reset
 onek> write a minimal release checklist
 ```
+
+## Session Persistence
+
+`chat` sessions are persisted under `.onek-agent` by default.
+
+- session state:
+  `.onek-agent/sessions/<session>.json`
+- transcript log:
+  `.onek-agent/transcripts/<session>.log`
+
+Useful flags:
+
+- `--session <name>`
+  Choose a named session
+- `--state-dir <path>`
+  Move session and transcript files somewhere else
+
+## Persistent Memory
+
+`onek-agent` now has a lightweight persistent memory layer for long-lived usage.
+
+Use it to store user preferences, project rules, or stable context:
+
+```text
+onek> /remember Prefer concise answers in Chinese.
+onek> /remember This repo targets ARM64 first.
+onek> /memory
+onek> /forget ARM64
+```
+
+Memory is stored in:
+
+- `.onek-agent/memory.json`
+
+That memory is injected into future chat sessions as background context.
 
 ## Output Modes
 
