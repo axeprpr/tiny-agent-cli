@@ -19,27 +19,27 @@ jobs:
           - goos: linux
             goarch: amd64
             ext: ""
-            archive: tar.gz
+            asset: onek-linux-amd64
           - goos: linux
             goarch: arm64
             ext: ""
-            archive: tar.gz
+            asset: onek-linux-arm64
           - goos: darwin
             goarch: amd64
             ext: ""
-            archive: tar.gz
+            asset: onek-darwin-amd64
           - goos: darwin
             goarch: arm64
             ext: ""
-            archive: tar.gz
+            asset: onek-darwin-arm64
           - goos: windows
             goarch: amd64
             ext: .exe
-            archive: zip
+            asset: onek-windows-amd64.exe
           - goos: windows
             goarch: arm64
             ext: .exe
-            archive: zip
+            asset: onek-windows-arm64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -48,42 +48,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build package
+      - name: Build binary
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-manual}"
           NAME="onek"
-          BASE="${NAME}_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
-          PKG_DIR="dist/${BASE}"
-
-          mkdir -p "${PKG_DIR}"
+          mkdir -p dist
 
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
             go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${VERSION}" \
-            -o "${PKG_DIR}/${NAME}${{ matrix.ext }}" \
+            -o "dist/${{ matrix.asset }}" \
             ./cmd/onek
 
-          cp README.md "${PKG_DIR}/README.md"
-
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            (
-              cd dist
-              zip -qr "${BASE}.zip" "${BASE}"
-            )
-          else
-            tar -C dist -czf "dist/${BASE}.tar.gz" "${BASE}"
-          fi
-
-      - name: Upload packaged artifact
+      - name: Upload built binary
         uses: actions/upload-artifact@v4
         with:
-          name: package-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.asset }}
 
   release:
     needs: build
@@ -95,10 +79,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist-artifacts
-          pattern: package-*
+          pattern: binary-*
           merge-multiple: true
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           files: dist-artifacts/*
+          overwrite_files: true

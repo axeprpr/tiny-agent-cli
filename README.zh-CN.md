@@ -1,44 +1,44 @@
 # onek-agent
 
-`onek-agent` is a tiny single-task terminal agent.
+`onek-agent` 是一个极简的单任务终端 agent。
 
-It is built for a simple use case:
+它的目标很明确：
 
-- one task per run
-- OpenAI-compatible API
-- shell, file, grep, fetch URL, and web search tools
-- no Node.js dependency
-- small standalone binaries
+- 一次只跑一个任务
+- 接 OpenAI 兼容 API
+- 自带 shell、读写文件、grep、抓网页、简单 web search
+- 不依赖 Node.js
+- 直接发布单文件二进制
 
-中文说明见 [README.zh-CN.md](/root/1k-install/README.zh-CN.md).
+英文说明见 [README.md](/root/1k-install/README.md)。
 
-## Features
+## 功能
 
 - `onek run [flags] <task>`
 - `onek models`
 - `onek ping`
 - `onek version`
 
-## Environment Variables
+## 环境变量
 
 - `MODEL_BASE_URL`
-  Default: `http://127.0.0.1:11434/v1`
+  默认值：`http://127.0.0.1:11434/v1`
 - `MODEL_NAME`
-  Default: `qwen2.5-coder:7b`
+  默认值：`qwen2.5-coder:7b`
 - `MODEL_API_KEY`
-  Default: empty
+  默认值：空
 - `AGENT_WORKDIR`
-  Default: current working directory
+  默认值：当前目录
 - `AGENT_MAX_STEPS`
-  Default: `8`
+  默认值：`8`
 - `AGENT_COMMAND_TIMEOUT`
-  Default: `30s`
+  默认值：`30s`
 - `AGENT_SHELL`
-  Default: `bash` on Linux/macOS, `powershell.exe` on Windows
+  默认值：Linux/macOS 下为 `bash`，Windows 下为 `powershell.exe`
 
-## One-Line Run
+## 一句话运行
 
-Replace the endpoint and model with your own values.
+把下面命令里的接口地址和模型名换成你自己的即可。
 
 Linux x86_64:
 
@@ -76,13 +76,13 @@ Windows PowerShell arm64:
 $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='qwen2.5-coder:7b'; Invoke-WebRequest https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe ping
 ```
 
-Example with your endpoint:
+你的接口示例：
 
 ```bash
 curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek ping
 ```
 
-## Build From Source
+## 源码编译
 
 ```bash
 go test ./...
@@ -90,20 +90,20 @@ go build ./...
 go run ./cmd/onek version
 ```
 
-## Release
+## 发布
 
-Local raw binaries:
+本地生成原始二进制：
 
 ```bash
 ./scripts/build-release.sh v0.1.1
 ```
 
-GitHub release:
+GitHub 自动发版：
 
-- push a tag like `v0.1.1`
-- GitHub Actions builds raw binaries for `linux`, `darwin`, and `windows`
-- release assets are uploaded without `zip` or `tar.gz`
+- 推一个 tag，比如 `v0.1.1`
+- GitHub Actions 会自动构建 `linux`、`darwin`、`windows`
+- 上传的资产是原始二进制，不再额外打 `zip` 或 `tar.gz`
 
-## Status
+## 状态
 
-This is still a small prototype. The loop is usable, but not fully hardened.
+目前已经能用，但仍然是一个偏小的原型，还没有做完所有安全和交互细节。
