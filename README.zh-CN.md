@@ -20,7 +20,7 @@
 
 它追求的是“小、够用、可控”，不是全家桶。
 
-英文版见 [README.md](/root/1k-install/README.md)。
+英文版见 [README.md](README.md)。
 
 ## 它为什么存在
 

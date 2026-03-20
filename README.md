@@ -18,7 +18,7 @@ You can think of it as:
 - a stripped-down `claude-cli`
 - a terminal-native agent you can drop into a machine and run immediately
 
-Chinese version: [README.zh-CN.md](/root/1k-install/README.zh-CN.md)
+Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
 ## Why It Exists
 
