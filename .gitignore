@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+
+bin/
+dist/
+build/
+coverage/
+
+*.log
+*.out
+*.test
