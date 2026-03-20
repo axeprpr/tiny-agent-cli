@@ -1,31 +1,54 @@
 # onek-agent
 
-`onek-agent` is a lean terminal coding agent for people who want the useful part of `claude` or `codex`, without the heavy stack.
+`onek-agent` is a lean terminal coding agent for people who want a cheap `codex` or `claude-cli` style workflow, without the heavy stack.
 
-It is built around one simple idea:
+It is built for offline-friendly and low-dependency environments:
 
-- small binary
-- OpenAI-compatible endpoint
-- shell + files + grep + fetch + web search
-- interactive chat mode
-- persistent memory with global and project scope
-- command and file-write confirmation by default
-- `--dangerously` when you want speed
+- one small binary
+- no Node.js
+- no Python runtime requirement
+- no Electron
+- no background service
+- works on Linux, macOS, and Windows
+- only depends on one OpenAI-compatible LLM endpoint, including your own local model server
+
+You can think of it as:
+
+- a cheap `codex`
+- a stripped-down `claude-cli`
+- a terminal-native agent you can drop into a machine and run immediately
 
 Chinese version: [README.zh-CN.md](/root/1k-install/README.zh-CN.md)
 
 ## Why It Exists
 
-Most agent CLIs are powerful, but they also come with more runtime, more dependencies, and more surface area than many people actually need.
+Most agent CLIs are powerful, but they also come with more runtime, more dependencies, and more installation friction than many people actually need.
+
+That is a bad fit for:
+
+- offline or semi-offline machines
+- servers you do not want to pollute with extra runtimes
+- minimal containers and rescue environments
+- users who just want a binary plus a model endpoint
 
 `onek-agent` aims for the opposite:
 
 - one binary
 - one model endpoint
+- no Node.js dependency
 - one workspace
 - one task at a time, or one lightweight interactive session
 
-It is not trying to be a full replacement for every agent platform. It is trying to be the cheap, practical one you can actually keep around.
+It is not trying to be the biggest agent platform. It is trying to be the one you can actually keep around on every box.
+
+## What You Get
+
+- shell + files + grep + fetch + web search
+- interactive chat mode
+- persistent memory with global and project scope
+- command and file-write confirmation by default
+- `--dangerously` when you want speed
+- raw binary releases for direct download, no zip or tgz step
 
 ## Core Ideas
 
