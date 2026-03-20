@@ -24,6 +24,10 @@ func (m mockApprover) Mode() string {
 	return ApprovalConfirm
 }
 
+func (m mockApprover) SetMode(string) error {
+	return nil
+}
+
 func TestWriteFileToolRejectsWhenApproverDenies(t *testing.T) {
 	dir := t.TempDir()
 	tool := newWriteFileTool(dir, mockApprover{writeAllowed: false})
