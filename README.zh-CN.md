@@ -16,6 +16,7 @@
 
 - 单次执行任务
 - 多轮等待式交互
+- 全局记忆 + 项目记忆
 - 读写文件
 - grep 搜索
 - 执行 shell 命令
@@ -30,6 +31,8 @@
   先观察，再决定动作，再调用工具，再根据结果修正。
 - `默认安全`
   shell 命令默认要确认。
+- `分层记忆`
+  全局偏好和项目规则分开存，不会把所有上下文都塞进每次会话。
 - `dangerously 模式`
   你需要速度时，可以整场会话跳过确认。
 - `默认 raw 输出`
@@ -108,7 +111,7 @@ $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='qwen2.5-coder:
 你的接口示例：
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat
+curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat --auto-memory
 ```
 
 ## 一句话安装
@@ -144,9 +147,13 @@ iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps
 - `/approval confirm|dangerously`
 - `/output raw|terminal`
 - `/model <name>`
+- `/scope`
 - `/memory`
+- `/remember-global <text>`
 - `/remember <text>`
+- `/forget-global <query>`
 - `/forget <query>`
+- `/memorize`
 - `/exit`
 
 示例：
@@ -155,6 +162,9 @@ iwr https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps
 onek> 看看这个项目是干什么的
 onek> 接下来优先改什么
 onek> /approval dangerously
+onek> /remember 默认输出中文，简洁回答
+onek> /remember-global 优先用简短中文回答
+onek> /memorize
 onek> /output terminal
 onek> /reset
 onek> 给我写个最小发布检查单
@@ -175,17 +185,28 @@ onek> 给我写个最小发布检查单
   使用指定会话名
 - `--state-dir <path>`
   把状态和日志放到别的目录
+- `--auto-memory`
+  退出 chat 时自动把稳定上下文整理进记忆
 
 ## 持久化记忆
 
 现在 `onek-agent` 已经支持一个轻量的长期记忆层。
 
+它分成两个作用域：
+
+- 全局记忆
+  跨项目通用的偏好，比如语言、回答风格
+- 项目记忆
+  只绑定当前工作目录的规则和背景
+
 你可以把稳定偏好、项目规则、长期背景信息记进去：
 
 ```text
-onek> /remember 默认输出中文，简洁回答。
+onek> /remember-global 默认输出中文，简洁回答。
 onek> /remember 这个项目优先支持 ARM64。
+onek> /scope
 onek> /memory
+onek> /memorize
 onek> /forget ARM64
 ```
 
@@ -193,7 +214,14 @@ onek> /forget ARM64
 
 - `.onek-agent/memory.json`
 
-后续新的 chat 会话会自动把这些记忆作为背景上下文注入进去。
+后续新的 chat 会话会把命中的记忆作为背景上下文注入到第一条 system prompt。
+
+补充说明：
+
+- 项目记忆按工作目录路径隔离
+- `/memorize` 会把当前会话提炼成项目记忆
+- `--auto-memory` 会在退出 chat 时自动执行这一步
+- 如果模型侧的记忆总结超时或失败，`onek-agent` 会回退到本地提取明显的长期偏好和项目事实
 
 ## 输出模式
 

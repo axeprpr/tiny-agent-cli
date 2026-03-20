@@ -8,6 +8,7 @@ It is built around one simple idea:
 - OpenAI-compatible endpoint
 - shell + files + grep + fetch + web search
 - interactive chat mode
+- persistent memory with global and project scope
 - command and file-write confirmation by default
 - `--dangerously` when you want speed
 
@@ -34,6 +35,8 @@ It is not trying to be a full replacement for every agent platform. It is trying
   The model is pushed to inspect first, act second, verify after.
 - `Safe by default`
   Shell commands require confirmation unless you opt into `--dangerously`.
+- `Scoped memory`
+  Keep global preferences and project-specific rules without dragging all context everywhere.
 - `Raw by default`
   `run` returns the model's native answer by default.
 - `Terminal mode when wanted`
@@ -110,7 +113,7 @@ $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='qwen2.5-coder:
 With your endpoint:
 
 ```bash
-curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat
+curl -L https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='https://llm.haohuapm.com:20020' MODEL_NAME='Qwen3.5-27B-FP8' ./onek chat --auto-memory
 ```
 
 ## One-Line Install
@@ -146,9 +149,13 @@ Built-in chat commands:
 - `/approval confirm|dangerously`
 - `/output raw|terminal`
 - `/model <name>`
+- `/scope`
 - `/memory`
+- `/remember-global <text>`
 - `/remember <text>`
+- `/forget-global <query>`
 - `/forget <query>`
+- `/memorize`
 - `/exit`
 
 Example:
@@ -157,6 +164,9 @@ Example:
 onek> inspect this repo
 onek> what should I improve next?
 onek> /approval dangerously
+onek> /remember Prefer concise answers.
+onek> /remember-global Always answer in English unless asked otherwise.
+onek> /memorize
 onek> /output terminal
 onek> /reset
 onek> write a minimal release checklist
@@ -177,17 +187,28 @@ Useful flags:
   Choose a named session
 - `--state-dir <path>`
   Move session and transcript files somewhere else
+- `--auto-memory`
+  Summarize stable notes from the session when chat exits
 
 ## Persistent Memory
 
 `onek-agent` now has a lightweight persistent memory layer for long-lived usage.
 
+It supports two scopes:
+
+- global memory
+  Cross-project preferences, such as response style or language
+- project memory
+  Notes tied to the current workspace path
+
 Use it to store user preferences, project rules, or stable context:
 
 ```text
-onek> /remember Prefer concise answers in Chinese.
+onek> /remember-global Prefer concise answers in Chinese.
 onek> /remember This repo targets ARM64 first.
+onek> /scope
 onek> /memory
+onek> /memorize
 onek> /forget ARM64
 ```
 
@@ -195,7 +216,14 @@ Memory is stored in:
 
 - `.onek-agent/memory.json`
 
-That memory is injected into future chat sessions as background context.
+Future chat sessions inject matching memory into the first system prompt as background context.
+
+Notes:
+
+- project memory is keyed by workspace path
+- `/memorize` summarizes the current session into project memory
+- `--auto-memory` runs that summarization automatically on chat exit
+- if the model-side memory summarizer fails, `onek-agent` falls back to local extraction of obvious stable preferences and project facts
 
 ## Output Modes
 

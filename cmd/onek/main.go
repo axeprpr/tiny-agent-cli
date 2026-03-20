@@ -6,12 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"onek-agent/internal/agent"
 	"onek-agent/internal/config"
 	"onek-agent/internal/memory"
+	"onek-agent/internal/model"
 	"onek-agent/internal/model/openaiapi"
 	"onek-agent/internal/session"
 	"onek-agent/internal/tools"
@@ -20,8 +23,9 @@ import (
 var version = "dev"
 
 type runtimeOptions struct {
-	outputMode string
-	session    string
+	outputMode     string
+	session        string
+	autoMemoryExit bool
 }
 
 type chatRuntime struct {
@@ -35,8 +39,20 @@ type chatRuntime struct {
 	transcriptPath string
 	statePath      string
 	memoryPath     string
-	memories       []string
+	scopeKey       string
+	globalMemory   []string
+	projectMemory  []string
+	autoMemoryExit bool
+	dirtySession   bool
 }
+
+const (
+	memorySummaryMaxMessages = 24
+	memorySummaryMaxChars    = 8000
+	autoMemoryTimeout        = 20 * time.Second
+)
+
+var memoryCandidateSplit = regexp.MustCompile(`[\n\r.!?。！？;；]+`)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -136,9 +152,11 @@ func runChat(args []string) int {
 			handled, exitCode := runtime.handleCommand(task)
 			if handled {
 				if exitCode >= 0 {
+					runtime.beforeExit()
 					return exitCode
 				}
 				if readErr != nil {
+					runtime.beforeExit()
 					return 0
 				}
 				continue
@@ -147,6 +165,7 @@ func runChat(args []string) int {
 
 		_ = session.AppendTranscript(runtime.transcriptPath, "user", task)
 		result, err := runtime.session.RunTask(context.Background(), task)
+		runtime.dirtySession = true
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 			_ = session.AppendTranscript(runtime.transcriptPath, "error", err.Error())
@@ -158,6 +177,7 @@ func runChat(args []string) int {
 		}
 
 		if readErr != nil {
+			runtime.beforeExit()
 			return 0
 		}
 	}
@@ -177,12 +197,15 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		loop:           loop,
 		sessionName:    sessionName,
 		outputMode:     opts.outputMode,
+		autoMemoryExit: opts.autoMemoryExit,
 		transcriptPath: session.TranscriptPath(cfg.StateDir, sessionName),
 		statePath:      session.SessionPath(cfg.StateDir, sessionName),
 		memoryPath:     memory.Path(cfg.StateDir),
+		scopeKey:       memory.ScopeKey(cfg.WorkDir),
 	}
 	if mem, err := memory.Load(r.memoryPath); err == nil {
-		r.memories = mem.Notes
+		r.globalMemory = mem.Global
+		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
 
@@ -215,7 +238,6 @@ func (r *chatRuntime) handleCommand(input string) (bool, int) {
 
 	switch fields[0] {
 	case "/exit", "/quit":
-		_ = r.save()
 		return true, 0
 	case "/reset":
 		r.session = r.newSession()
@@ -230,19 +252,28 @@ func (r *chatRuntime) handleCommand(input string) (bool, int) {
 		fmt.Fprintln(os.Stderr, "/approval confirm|dangerously")
 		fmt.Fprintln(os.Stderr, "/output raw|terminal")
 		fmt.Fprintln(os.Stderr, "/model <name>")
-		fmt.Fprintln(os.Stderr, "/memory                    show saved memory")
-		fmt.Fprintln(os.Stderr, "/remember <text>           add a memory note")
-		fmt.Fprintln(os.Stderr, "/forget <query>            remove matching memory notes")
+		fmt.Fprintln(os.Stderr, "/scope                    show current memory scope")
+		fmt.Fprintln(os.Stderr, "/memory                   show saved memory")
+		fmt.Fprintln(os.Stderr, "/remember <text>           add a project memory note")
+		fmt.Fprintln(os.Stderr, "/remember-global <text>    add a global memory note")
+		fmt.Fprintln(os.Stderr, "/forget <query>            remove matching project memory notes")
+		fmt.Fprintln(os.Stderr, "/forget-global <query>     remove matching global memory notes")
+		fmt.Fprintln(os.Stderr, "/memorize                  summarize this session into project memory")
 		return true, -1
 	case "/status":
 		fmt.Fprintf(os.Stderr, "session=%s\n", r.sessionName)
 		fmt.Fprintf(os.Stderr, "model=%s\n", r.cfg.Model)
 		fmt.Fprintf(os.Stderr, "approval=%s\n", r.approver.Mode())
 		fmt.Fprintf(os.Stderr, "output=%s\n", r.outputMode)
-		fmt.Fprintf(os.Stderr, "memory_notes=%d\n", len(r.memories))
+		fmt.Fprintf(os.Stderr, "memory_scope=%s\n", r.scopeKey)
+		fmt.Fprintf(os.Stderr, "global_memory_notes=%d\n", len(r.globalMemory))
+		fmt.Fprintf(os.Stderr, "project_memory_notes=%d\n", len(r.projectMemory))
 		fmt.Fprintf(os.Stderr, "state=%s\n", r.statePath)
 		fmt.Fprintf(os.Stderr, "transcript=%s\n", r.transcriptPath)
 		fmt.Fprintf(os.Stderr, "memory=%s\n", r.memoryPath)
+		return true, -1
+	case "/scope":
+		fmt.Fprintln(os.Stderr, r.scopeKey)
 		return true, -1
 	case "/approval":
 		if len(fields) != 2 {
@@ -277,15 +308,26 @@ func (r *chatRuntime) handleCommand(input string) (bool, int) {
 		_ = r.save()
 		return true, -1
 	case "/memory":
-		fmt.Fprintln(os.Stderr, memory.FormatNotes(r.memories))
+		fmt.Fprintln(os.Stderr, memory.FormatNotes(r.globalMemory, r.projectMemory))
 		return true, -1
 	case "/remember":
 		if len(fields) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: /remember <text>")
 			return true, -1
 		}
-		r.memories = memory.Add(r.memories, strings.TrimSpace(input[len("/remember"):]))
-		fmt.Fprintln(os.Stderr, "memory saved")
+		r.projectMemory = memory.Add(r.projectMemory, strings.TrimSpace(input[len("/remember"):]))
+		fmt.Fprintln(os.Stderr, "project memory saved")
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return true, -1
+	case "/remember-global":
+		if len(fields) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: /remember-global <text>")
+			return true, -1
+		}
+		r.globalMemory = memory.Add(r.globalMemory, strings.TrimSpace(input[len("/remember-global"):]))
+		fmt.Fprintln(os.Stderr, "global memory saved")
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
@@ -295,12 +337,32 @@ func (r *chatRuntime) handleCommand(input string) (bool, int) {
 			fmt.Fprintln(os.Stderr, "usage: /forget <query>")
 			return true, -1
 		}
-		updated, removed := memory.ForgetMatching(r.memories, strings.TrimSpace(input[len("/forget"):]))
-		r.memories = updated
-		fmt.Fprintf(os.Stderr, "removed %d memory note(s)\n", removed)
+		updated, removed := memory.ForgetMatching(r.projectMemory, strings.TrimSpace(input[len("/forget"):]))
+		r.projectMemory = updated
+		fmt.Fprintf(os.Stderr, "removed %d project memory note(s)\n", removed)
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
+		return true, -1
+	case "/forget-global":
+		if len(fields) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: /forget-global <query>")
+			return true, -1
+		}
+		updated, removed := memory.ForgetMatching(r.globalMemory, strings.TrimSpace(input[len("/forget-global"):]))
+		r.globalMemory = updated
+		fmt.Fprintf(os.Stderr, "removed %d global memory note(s)\n", removed)
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return true, -1
+	case "/memorize":
+		added, err := r.summarizeMemory()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memorize error: %v\n", err)
+			return true, -1
+		}
+		fmt.Fprintf(os.Stderr, "added %d memory note(s)\n", added)
 		return true, -1
 	default:
 		return false, -1
@@ -316,7 +378,7 @@ func (r *chatRuntime) rebuildLoop() {
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
-	return r.loop.NewSessionWithMemory(memory.RenderSystemMemory(r.memories))
+	return r.loop.NewSessionWithMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
 }
 
 func (r *chatRuntime) refreshMemoryContext() {
@@ -325,7 +387,7 @@ func (r *chatRuntime) refreshMemoryContext() {
 		r.session = r.newSession()
 		return
 	}
-	messages[0].Content = agent.SystemPromptWithMemory(memory.RenderSystemMemory(r.memories))
+	messages[0].Content = agent.SystemPromptWithMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
 	r.session.ReplaceMessages(messages)
 }
 
@@ -341,7 +403,290 @@ func (r *chatRuntime) save() error {
 }
 
 func (r *chatRuntime) saveMemory() error {
-	return memory.Save(r.memoryPath, memory.State{Notes: r.memories})
+	state := memory.State{
+		Global: r.globalMemory,
+		Projects: map[string][]string{
+			r.scopeKey: r.projectMemory,
+		},
+	}
+	if existing, err := memory.Load(r.memoryPath); err == nil {
+		state.Global = memory.Normalize(append(existing.Global, r.globalMemory...))
+		state.Projects = existing.Projects
+		if state.Projects == nil {
+			state.Projects = make(map[string][]string)
+		}
+		state.Projects[r.scopeKey] = r.projectMemory
+	}
+	return memory.Save(r.memoryPath, state)
+}
+
+func (r *chatRuntime) beforeExit() {
+	if r.autoMemoryExit && r.dirtySession {
+		if added, err := r.summarizeMemory(); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-memory error: %v\n", err)
+		} else if added > 0 {
+			fmt.Fprintf(os.Stderr, "auto-memorized %d note(s)\n", added)
+		}
+	}
+	_ = r.save()
+}
+
+func (r *chatRuntime) summarizeMemory() (int, error) {
+	lines, err := r.collectMemoryNotes()
+	if err != nil {
+		return 0, err
+	}
+
+	before := len(r.projectMemory)
+	for _, line := range lines {
+		r.projectMemory = memory.Add(r.projectMemory, line)
+	}
+	added := len(r.projectMemory) - before
+	r.refreshMemoryContext()
+	if added > 0 {
+		if err := r.saveMemory(); err != nil {
+			return 0, err
+		}
+	}
+	if err := r.save(); err != nil {
+		return 0, err
+	}
+	r.dirtySession = false
+	return added, nil
+}
+
+func (r *chatRuntime) collectMemoryNotes() ([]string, error) {
+	text := buildConversationSummaryInput(r.session.Messages())
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+
+	lines, err := r.collectMemoryNotesWithModel(text)
+	if len(lines) > 0 {
+		return lines, nil
+	}
+
+	fallback := extractStableMemoryNotes(r.session.Messages())
+	if len(fallback) > 0 {
+		return fallback, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (r *chatRuntime) collectMemoryNotesWithModel(text string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), autoMemoryTimeout)
+	defer cancel()
+
+	client := openaiapi.NewClient(r.cfg.BaseURL, r.cfg.Model, r.cfg.APIKey)
+	resp, err := client.Complete(ctx, model.Request{
+		Model: r.cfg.Model,
+		Messages: []model.Message{
+			{
+				Role:    "system",
+				Content: "Extract only stable reusable memory notes from this conversation. Focus on user preferences, stable project facts, workflow constraints, or recurring expectations. Ignore transient task results. Return 1 to 5 plain bullet lines and nothing else.",
+			},
+			{
+				Role:    "user",
+				Content: text,
+			},
+		},
+		Temperature: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("memory summarizer returned no choices")
+	}
+
+	return parseMemoryLines(modelContent(resp.Choices[0].Message.Content)), nil
+}
+
+func buildConversationSummaryInput(messages []model.Message) string {
+	var entries []string
+	var b strings.Builder
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user", "assistant":
+			text := strings.TrimSpace(modelContent(msg.Content))
+			if text == "" {
+				continue
+			}
+			entries = append(entries, msg.Role+": "+text)
+		}
+	}
+
+	if len(entries) > memorySummaryMaxMessages {
+		entries = entries[len(entries)-memorySummaryMaxMessages:]
+	}
+	for len(entries) > 1 && joinedLength(entries, "\n\n") > memorySummaryMaxChars {
+		entries = entries[1:]
+	}
+	for i, entry := range entries {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(entry)
+	}
+	return b.String()
+}
+
+func parseMemoryLines(text string) []string {
+	text = agent.FormatTerminalOutput(text)
+	lines := strings.Split(text, "\n")
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimPrefix(line, "* ")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return memory.Normalize(out)
+}
+
+func extractStableMemoryNotes(messages []model.Message) []string {
+	var out []string
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		for _, part := range memoryCandidateSplit.Split(modelContent(msg.Content), -1) {
+			if note, ok := normalizeStableMemoryNote(part); ok {
+				out = append(out, note)
+			}
+		}
+	}
+	return memory.Normalize(out)
+}
+
+func normalizeStableMemoryNote(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "-* \t\"'`")
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" || len(text) < 8 || len(text) > 180 {
+		return "", false
+	}
+	if strings.HasPrefix(text, "/") {
+		return "", false
+	}
+
+	lower := strings.ToLower(text)
+	if strings.HasSuffix(text, "?") || strings.HasSuffix(text, "？") {
+		return "", false
+	}
+	if isPreferenceMemory(lower) || isProjectMemory(lower) {
+		return rewriteMemoryNote(text, lower), true
+	}
+	return "", false
+}
+
+func isPreferenceMemory(lower string) bool {
+	return hasAny(lower,
+		"my preference",
+		"i prefer",
+		"default to",
+		"always answer",
+		"always respond",
+		"keep answers concise",
+		"keep answers brief",
+		"keep responses concise",
+		"keep responses brief",
+		"answer in chinese",
+		"answer in english",
+		"respond in chinese",
+		"respond in english",
+		"prefer concise",
+		"prefer brief",
+		"prefer short",
+		"prefer plain text",
+		"prefer markdown",
+		"中文回答",
+		"英文回答",
+		"输出中文",
+		"输出英文",
+		"默认中文",
+		"默认英文",
+		"简洁回答",
+		"简短回答",
+		"偏好",
+		"默认",
+		"尽量简洁",
+		"尽量简短",
+	)
+}
+
+func isProjectMemory(lower string) bool {
+	return hasAny(lower,
+		"this repo",
+		"this project",
+		"this workspace",
+		"the repo",
+		"the project",
+		"the workspace",
+		"repo uses",
+		"project uses",
+		"workspace uses",
+		"codebase",
+		"这个仓库",
+		"这个项目",
+		"这个工作区",
+		"当前仓库",
+		"当前项目",
+		"当前工作区",
+		"该仓库",
+		"该项目",
+		"代码库",
+		"工作区",
+	)
+}
+
+func rewriteMemoryNote(text, lower string) string {
+	replacements := []struct {
+		prefix string
+		out    string
+	}{
+		{prefix: "my preference is ", out: "Prefer "},
+		{prefix: "i prefer ", out: "Prefer "},
+		{prefix: "please answer in ", out: "Answer in "},
+		{prefix: "please respond in ", out: "Respond in "},
+		{prefix: "please keep answers ", out: "Keep answers "},
+		{prefix: "please keep responses ", out: "Keep responses "},
+	}
+
+	for _, item := range replacements {
+		if strings.HasPrefix(lower, item.prefix) && len(text) >= len(item.prefix) {
+			return item.out + strings.TrimSpace(text[len(item.prefix):])
+		}
+	}
+	return text
+}
+
+func hasAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func joinedLength(parts []string, sep string) int {
+	if len(parts) == 0 {
+		return 0
+	}
+	total := len(sep) * (len(parts) - 1)
+	for _, part := range parts {
+		total += len(part)
+	}
+	return total
 }
 
 func pingModel(args []string) int {
@@ -419,8 +764,9 @@ func listModels(args []string) int {
 func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions, []string, *bufio.Reader, error) {
 	cfg := config.FromEnv()
 	opts := runtimeOptions{
-		outputMode: "raw",
-		session:    "default",
+		outputMode:     "raw",
+		session:        "default",
+		autoMemoryExit: false,
 	}
 	dangerously := false
 
@@ -437,6 +783,7 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	fs.BoolVar(&dangerously, "dangerously", false, "shortcut for --approval dangerously")
 	fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode: raw or terminal")
 	fs.StringVar(&opts.session, "session", opts.session, "session name for chat persistence")
+	fs.BoolVar(&opts.autoMemoryExit, "auto-memory", opts.autoMemoryExit, "summarize useful session memory on chat exit")
 
 	timeoutText := cfg.CommandTimeout.String()
 	fs.StringVar(&timeoutText, "command-timeout", timeoutText, "shell command timeout")
