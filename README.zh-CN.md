@@ -136,13 +136,13 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/ma
 在交互终端里，`chat` 现在会直接打开全屏 TUI，包含：
 
 - 顶部信息条，显示工作目录、shell、模型、审批模式
-- 单栏消息主视图
-- 可折叠的活动抽屉，可区分步骤、工具、错误、审批
-- 独立的多行输入区
+- 单栏消息主视图，执行步骤和工具活动会直接并入对话
+- 可折叠的活动抽屉，可按步骤、工具、错误、审批过滤
+- 紧凑的单行输入区，带动态提示
 - 对回答里的 Markdown / 代码块做更好的终端渲染
 - 底部状态栏
 - 模型、审批模式、会话名、上下文剩余估算
-- 结构化命令 / 文件写入审批弹窗
+- 命令 / 文件写入审批直接并入对话流
 - `Ctrl+O` 可展开或收起活动抽屉
 - `Ctrl+G` 可切换活动日志过滤器
 - `F1` 可展开或收起帮助
@@ -150,6 +150,7 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/ma
 内置控制命令：
 
 - `/help`
+- `/session [name|new]`
 - `/status`
 - `/reset`
 - `/approval confirm|dangerously`
@@ -187,7 +188,7 @@ onek> 给我写个最小发布检查单
 - transcript 日志：
   `.onek-agent/transcripts/<session>.log`
 
-默认会使用 `default` 会话，并在退出 chat 时自动把稳定上下文整理进记忆。
+默认每次启动 `chat` 都会新建一个带时间戳的会话，并在退出时自动把稳定上下文整理进记忆。需要恢复或切换会话时，可以用 `onek chat --session <name>` 或 `/session <name>`。
 如果要改存储位置，继续用环境变量比如 `AGENT_STATE_DIR` 就可以。
 
 ## 持久化记忆

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,47 @@ func SessionPath(stateDir, name string) string {
 
 func TranscriptPath(stateDir, name string) string {
 	return filepath.Join(stateDir, "transcripts", safeName(name)+".log")
+}
+
+func ListSessionNames(stateDir string) ([]string, error) {
+	dir := filepath.Join(stateDir, "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	type sessionEntry struct {
+		name    string
+		modTime time.Time
+	}
+
+	out := make([]sessionEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, sessionEntry{
+			name:    strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
+			modTime: info.ModTime(),
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].modTime.After(out[j].modTime)
+	})
+
+	names := make([]string, 0, len(out))
+	for _, entry := range out {
+		names = append(names, entry.name)
+	}
+	return names, nil
 }
 
 func Load(path string) (State, error) {

@@ -132,12 +132,12 @@ Optional install variables:
 On interactive terminals, `chat` now opens a full-screen TUI with:
 
 - top info bar for workspace, shell, model, and approval mode
-- single-column conversation view
-- collapsible activity drawer for step/tool/error/approval logs
-- multiline input box with a dedicated composer area
+- single-column conversation view with inline step/tool activity
+- optional activity drawer for filtered step/tool/error/approval logs
+- compact single-line composer with a dynamic prompt
 - richer assistant rendering for markdown-style answers and code blocks
 - footer status bar for model, approval mode, session, and approximate context remaining
-- structured command/file approval prompts
+- inline command/file approval prompts in the conversation flow
 - `Ctrl+O` to toggle the activity drawer
 - `Ctrl+G` to cycle activity filters
 - `F1` to toggle help
@@ -145,6 +145,7 @@ On interactive terminals, `chat` now opens a full-screen TUI with:
 Built-in chat commands:
 
 - `/help`
+- `/session [name|new]`
 - `/status`
 - `/reset`
 - `/approval confirm|dangerously`
@@ -182,7 +183,7 @@ onek> write a minimal release checklist
 - transcript log:
   `.onek-agent/transcripts/<session>.log`
 
-By default, `chat` uses the `default` session and auto-summarizes stable memory on exit.
+By default, each `chat` launch starts a fresh timestamped session and auto-summarizes stable memory on exit. Use `onek chat --session <name>` or `/session <name>` to resume or switch sessions.
 Advanced storage tuning is still available through environment variables like `AGENT_STATE_DIR`.
 
 ## Persistent Memory

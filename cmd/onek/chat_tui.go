@@ -223,6 +223,10 @@ var (
 			Foreground(lipgloss.Color("214")).
 			Bold(true)
 
+	activityLabelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("246")).
+				Bold(true)
+
 	userLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("81")).
 			Bold(true)
@@ -286,11 +290,11 @@ var (
 
 func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta := textarea.New()
-	ta.Placeholder = "Ask onek-agent, inspect code, or use /help..."
+	ta.Placeholder = "输入消息或 /help..."
 	ta.Focus()
-	ta.Prompt = "> "
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
-	ta.SetHeight(3)
+	ta.SetHeight(1)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -336,6 +340,7 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		}
 	}
 	m.statusText = "ready"
+	m.refreshInputState()
 	m.refreshViewports()
 	return m
 }
@@ -382,26 +387,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resize()
+	case tea.InterruptMsg:
+		m.runtime.beforeExit()
+		return m, tea.Quit
 	case tea.KeyMsg:
-		if m.approval != nil {
-			switch msg.String() {
-			case "y":
-				m.approval.response <- "yes"
-				m.statusText = "approval granted"
-				m.approval = nil
-			case "n", "esc":
-				m.approval.response <- "no"
-				m.statusText = "approval denied"
-				m.approval = nil
-			case "a":
-				m.approval.response <- "always"
-				m.statusText = "approval mode switched to dangerously"
-				m.approval = nil
-			}
-			cmds = append(cmds, waitForTUIEvent(m.events))
-			return m, tea.Batch(cmds...)
-		}
-
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			keyHandled = true
@@ -435,10 +424,28 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Send):
 			keyHandled = true
 			task := strings.TrimSpace(m.input.Value())
-			if task == "" || m.busy {
+			if task == "" {
+				break
+			}
+			if m.approval == nil && m.busy {
 				break
 			}
 			m.input.Reset()
+			if m.approval != nil {
+				m.entries = append(m.entries, tuiEntry{role: "user", text: task})
+				if answer, ok := parseApprovalAnswer(task); ok {
+					m.approval.response <- answer
+					m.entries = append(m.entries, tuiEntry{role: "system", text: approvalResponseText(answer)})
+					m.statusText = approvalStatusText(answer)
+					m.approval = nil
+				} else {
+					m.entries = append(m.entries, tuiEntry{role: "system", text: "approval pending: reply with y, n, or a"})
+					m.statusText = "approval required"
+				}
+				m.refreshInputState()
+				m.refreshViewports()
+				break
+			}
 			if strings.HasPrefix(task, "/") {
 				result := m.runtime.executeCommand(task)
 				if result.handled {
@@ -446,6 +453,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.entries = append(m.entries, tuiEntry{role: "system", text: result.output})
 						m.refreshViewports()
 					}
+					m.refreshInputState()
 					if result.exitCode >= 0 {
 						m.runtime.beforeExit()
 						return m, tea.Quit
@@ -458,17 +466,21 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewports()
 			m.busy = true
 			m.statusText = "running"
+			m.refreshInputState()
 			cmds = append(cmds, runTaskCmd(m.runtime, task))
 		}
 	case tuiLogMsg:
 		m.stepText = msg.text
 		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(msg.kind, msg.text)})
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
 		m.approval = &msg
 		m.logs = append(m.logs, tuiLogEntry{kind: "approval", text: msg.title + ": " + strings.ReplaceAll(msg.body, "\n", " | ")})
+		m.entries = append(m.entries, tuiEntry{role: "system", text: renderApprovalInlineText(&msg)})
 		m.statusText = "approval required"
+		m.refreshInputState()
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiTaskDoneMsg:
@@ -480,6 +492,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
 			m.statusText = "ready"
 		}
+		m.refreshInputState()
 		m.refreshViewports()
 	case spinner.TickMsg:
 		if m.busy {
@@ -538,13 +551,7 @@ func (m chatTUIModel) View() string {
 		statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  ")),
 		helpView,
 	}
-	view := appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	if m.approval != nil && m.width > 0 && m.height > 0 {
-		modalWidth := min(96, max(44, m.width-10))
-		modal := approvalStyle.Width(modalWidth).Render(renderApprovalModal(m.approval, modalWidth-6))
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
-	}
-	return view
+	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
 func (m *chatTUIModel) resize() {
@@ -602,28 +609,25 @@ func (m *chatTUIModel) renderEntries() string {
 	for _, entry := range m.entries {
 		var label lipgloss.Style
 		var body lipgloss.Style
-		prefix := ""
 		switch entry.role {
 		case "user":
 			label = userLabelStyle
 			body = messageBodyStyle
-			prefix = "> "
 		case "assistant":
 			label = assistantLabelStyle
 			body = codeBodyStyle
-			prefix = ""
+		case "activity":
+			label = activityLabelStyle
+			body = logBodyStyle
 		case "system":
 			label = systemLabelStyle
 			body = messageBodyStyle
-			prefix = ""
 		case "error":
 			label = errorLabelStyle
 			body = errorBodyStyle
-			prefix = ""
 		default:
 			label = logLabelStyle
 			body = logBodyStyle
-			prefix = ""
 		}
 		text := strings.TrimSpace(entry.text)
 		if text == "" {
@@ -635,7 +639,7 @@ func (m *chatTUIModel) renderEntries() string {
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
 			label.Render(strings.ToUpper(entry.role)),
-			body.Width(bodyWidth).Render(prefix+text),
+			body.Width(bodyWidth).Render(text),
 		)
 		rendered = append(rendered, block)
 	}
@@ -937,13 +941,12 @@ func drawerStateLabel(show bool) string {
 }
 
 func (m chatTUIModel) renderComposer() string {
-	title := inputTitleStyle.Render("Composer")
-	hints := inputHintStyle.Render("Enter send  Ctrl+J newline  Ctrl+O activity  /help commands")
+	hints := inputHintStyle.Render(m.composerHint())
 	return inputPaneStyle.Width(max(20, m.width-2)).Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", hints),
 			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
+			hints,
 			m.input.View(),
 		),
 	)
@@ -960,6 +963,107 @@ func (m chatTUIModel) filteredLogCount() int {
 		}
 	}
 	return count
+}
+
+func (m *chatTUIModel) refreshInputState() {
+	m.input.Prompt = ""
+	m.input.SetHeight(1)
+	switch {
+	case m.approval != nil:
+		m.input.Placeholder = "输入 y / n / a ..."
+	case m.busy:
+		m.input.Placeholder = "正在执行，等待下一步..."
+	default:
+		m.input.Placeholder = "输入消息或 /help..."
+	}
+}
+
+func (m chatTUIModel) composerHint() string {
+	switch {
+	case m.approval != nil:
+		return "审批等待中，输入 y 同意，n 拒绝，a 设为 dangerously"
+	case m.busy:
+		return "执行过程已并入上方对话，当前任务运行中"
+	default:
+		return fmt.Sprintf("当前会话 %s，Enter 发送，Ctrl+J 换行，Ctrl+O 活动，/help 命令", m.runtime.sessionName)
+	}
+}
+
+func formatInlineLogEntry(kind, text string) string {
+	label := "step"
+	switch kind {
+	case "tools":
+		label = "tool"
+	case "error":
+		label = "error"
+	case "approval":
+		label = "approval"
+	}
+	return "[" + label + "] " + strings.TrimSpace(text)
+}
+
+func renderApprovalInlineText(msg *tuiApprovalMsg) string {
+	if msg == nil {
+		return ""
+	}
+
+	lines := []string{strings.TrimSpace(msg.title)}
+	titleLower := strings.ToLower(strings.TrimSpace(msg.title))
+	switch {
+	case strings.Contains(titleLower, "command"):
+		lines = append(lines, strings.TrimSpace(msg.body))
+	case strings.Contains(titleLower, "file write"):
+		fields := parseApprovalFields(msg.body)
+		if path := fields["path"]; path != "" {
+			lines = append(lines, "path: "+path)
+		}
+		if bytes := fields["bytes"]; bytes != "" {
+			lines = append(lines, "bytes: "+bytes)
+		}
+		if preview := fields["preview"]; preview != "" {
+			lines = append(lines, "preview:")
+			lines = append(lines, strings.ReplaceAll(preview, "\\n", "\n"))
+		}
+	default:
+		lines = append(lines, strings.TrimSpace(msg.body))
+	}
+	lines = append(lines, "reply with y, n, or a")
+	return strings.Join(lines, "\n")
+}
+
+func parseApprovalAnswer(text string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "y", "yes":
+		return "yes", true
+	case "n", "no":
+		return "no", true
+	case "a", "always", "dangerously":
+		return "always", true
+	default:
+		return "", false
+	}
+}
+
+func approvalStatusText(answer string) string {
+	switch answer {
+	case "yes":
+		return "approval granted"
+	case "always":
+		return "approval mode switched to dangerously"
+	default:
+		return "approval denied"
+	}
+}
+
+func approvalResponseText(answer string) string {
+	switch answer {
+	case "yes":
+		return "approval granted"
+	case "always":
+		return "approval granted and mode switched to dangerously"
+	default:
+		return "approval denied"
+	}
 }
 
 var _ io.Writer = (*tuiLogWriter)(nil)

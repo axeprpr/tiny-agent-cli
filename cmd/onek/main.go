@@ -208,45 +208,28 @@ func runChat(args []string) int {
 
 func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader) (*chatRuntime, error) {
 	loop, approver := buildAgent(cfg, reader)
-	sessionName := opts.session
-	if sessionName == "" {
-		sessionName = "default"
-	}
+	sessionName := resolveChatSessionName(opts.session, time.Now())
 
 	r := &chatRuntime{
 		cfg:            cfg,
 		reader:         reader,
 		approver:       approver,
 		loop:           loop,
-		sessionName:    sessionName,
 		outputMode:     opts.outputMode,
 		autoMemoryExit: opts.autoMemoryExit,
-		transcriptPath: session.TranscriptPath(cfg.StateDir, sessionName),
-		statePath:      session.SessionPath(cfg.StateDir, sessionName),
 		memoryPath:     memory.Path(cfg.StateDir),
 		scopeKey:       memory.ScopeKey(cfg.WorkDir),
 	}
+	r.setSessionName(sessionName)
 	if mem, err := memory.Load(r.memoryPath); err == nil {
 		r.globalMemory = mem.Global
 		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
 
-	if state, err := session.Load(r.statePath); err == nil {
-		if len(state.Messages) > 0 {
-			r.session.ReplaceMessages(state.Messages)
-		}
-		if strings.TrimSpace(state.OutputMode) != "" {
-			r.outputMode = state.OutputMode
-		}
-		if strings.TrimSpace(state.ApprovalMode) != "" {
-			r.cfg.ApprovalMode = state.ApprovalMode
-			_ = r.approver.SetMode(state.ApprovalMode)
-		}
-		if strings.TrimSpace(state.Model) != "" {
-			r.cfg.Model = state.Model
-			r.rebuildLoop()
-			_ = r.approver.SetMode(r.cfg.ApprovalMode)
+	if strings.TrimSpace(opts.session) != "" {
+		if _, err := r.loadSessionState(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -277,6 +260,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			"/help                     show commands",
 			"/exit                     quit",
 			"/reset                    clear conversation context",
+			"/session [name|new]       switch or create a chat session",
 			"/status                   show session settings",
 			"/approval confirm|dangerously",
 			"/output raw|terminal",
@@ -292,6 +276,15 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/status":
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmodel=%s\napproval=%s\noutput=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s",
 			r.sessionName, r.cfg.Model, r.approver.Mode(), r.outputMode, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath), exitCode: -1}
+	case "/session":
+		if len(fields) == 1 {
+			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
+		}
+		switchedTo, err := r.switchSession(strings.Join(fields[1:], " "))
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("session switch error: %v", err), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: switchedTo, exitCode: -1}
 	case "/scope":
 		return runtimeCommandResult{handled: true, output: r.scopeKey, exitCode: -1}
 	case "/approval":
@@ -374,6 +367,83 @@ func (r *chatRuntime) rebuildLoop() {
 	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr)
 	r.session.SetAgent(r.loop)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
+}
+
+func (r *chatRuntime) setSessionName(name string) {
+	r.sessionName = strings.TrimSpace(name)
+	r.transcriptPath = session.TranscriptPath(r.cfg.StateDir, r.sessionName)
+	r.statePath = session.SessionPath(r.cfg.StateDir, r.sessionName)
+}
+
+func (r *chatRuntime) loadSessionState() (bool, error) {
+	state, err := session.Load(r.statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if strings.TrimSpace(state.Model) != "" && state.Model != r.cfg.Model {
+		r.cfg.Model = state.Model
+		r.rebuildLoop()
+	}
+	if len(state.Messages) > 0 {
+		r.session.ReplaceMessages(state.Messages)
+	}
+	if strings.TrimSpace(state.OutputMode) != "" {
+		r.outputMode = state.OutputMode
+	}
+	if strings.TrimSpace(state.ApprovalMode) != "" {
+		r.cfg.ApprovalMode = state.ApprovalMode
+		_ = r.approver.SetMode(state.ApprovalMode)
+	}
+	return true, nil
+}
+
+func (r *chatRuntime) switchSession(name string) (string, error) {
+	next := resolveChatSessionName(name, time.Now())
+	if next == r.sessionName {
+		return fmt.Sprintf("already on session %s", r.sessionName), nil
+	}
+	if err := r.save(); err != nil {
+		return "", err
+	}
+
+	r.setSessionName(next)
+	r.session = r.newSession()
+	r.dirtySession = false
+
+	loaded, err := r.loadSessionState()
+	if err != nil {
+		return "", err
+	}
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	if loaded {
+		return fmt.Sprintf("switched to session %s", r.sessionName), nil
+	}
+	return fmt.Sprintf("started session %s", r.sessionName), nil
+}
+
+func (r *chatRuntime) describeSessions() string {
+	lines := []string{
+		"current=" + r.sessionName,
+		"usage: /session <name>",
+		"usage: /session new",
+	}
+
+	names, err := session.ListSessionNames(r.cfg.StateDir)
+	if err != nil || len(names) == 0 {
+		return strings.Join(lines, "\n")
+	}
+
+	if len(names) > 8 {
+		names = names[:8]
+	}
+	lines = append(lines, "recent="+strings.Join(names, ", "))
+	return strings.Join(lines, "\n")
 }
 
 func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, error) {
@@ -793,7 +863,6 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	cfg := config.FromEnv()
 	opts := runtimeOptions{
 		outputMode:     defaultOutputMode(name),
-		session:        "default",
 		autoMemoryExit: name == "chat",
 	}
 	dangerously := false
@@ -809,6 +878,7 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 		fs.BoolVar(&dangerously, "dangerously", false, "skip command and file-write approval for this run")
 	case "chat":
 		fs.BoolVar(&dangerously, "dangerously", false, "start chat in dangerously mode")
+		fs.StringVar(&opts.session, "session", "", "chat session name to resume or create")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -838,6 +908,18 @@ func defaultOutputMode(name string) string {
 		return "terminal"
 	}
 	return "raw"
+}
+
+func resolveChatSessionName(name string, now time.Time) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.EqualFold(name, "new") {
+		return defaultChatSessionName(now)
+	}
+	return name
+}
+
+func defaultChatSessionName(now time.Time) string {
+	return "chat-" + now.Local().Format("20060102-150405")
 }
 
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
@@ -898,4 +980,5 @@ func printRunUsage() {
 	fmt.Fprintln(os.Stderr, `  onek -d "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  onek run --dangerously "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  onek chat`)
+	fmt.Fprintln(os.Stderr, `  onek chat --session bugfix`)
 }

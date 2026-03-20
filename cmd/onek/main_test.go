@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"onek-agent/internal/model"
 )
@@ -108,5 +109,27 @@ func TestWithDangerouslyFlag(t *testing.T) {
 	want := []string{"--dangerously", "chat"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected args: %#v", got)
+	}
+}
+
+func TestResolveChatSessionName(t *testing.T) {
+	now := time.Date(2026, time.March, 20, 14, 5, 6, 0, time.FixedZone("CST", 8*3600))
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "blank creates new session", input: "", want: "chat-20260320-140506"},
+		{name: "new creates new session", input: "new", want: "chat-20260320-140506"},
+		{name: "explicit session kept", input: "bugfix", want: "bugfix"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveChatSessionName(tt.input, now); got != tt.want {
+				t.Fatalf("unexpected session: got %q want %q", got, tt.want)
+			}
+		})
 	}
 }
