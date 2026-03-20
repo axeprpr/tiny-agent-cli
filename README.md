@@ -69,6 +69,8 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 
 - `onek`
   Default chat on interactive terminals
+- `onek -d`
+  Default chat in dangerously mode
 - `onek run [--dangerously] <task>`
   Run one task
 - `onek <task>`
@@ -93,7 +95,9 @@ Examples:
 
 ```bash
 onek
+onek -d
 onek "inspect this repo and tell me what it does"
+onek -d "run go test ./..."
 onek run --dangerously "run go test ./..."
 onek chat --dangerously
 ```

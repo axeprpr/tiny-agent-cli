@@ -76,3 +76,37 @@ func TestBuildConversationSummaryInputTruncatesLargeEntries(t *testing.T) {
 		t.Fatalf("expected assistant entry to remain recognizable, got %q", got)
 	}
 }
+
+func TestPeelGlobalDangerously(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   []string
+		want   []string
+		danger bool
+	}{
+		{name: "short flag", args: []string{"-d", "inspect repo"}, want: []string{"inspect repo"}, danger: true},
+		{name: "long flag", args: []string{"--dangerously", "run", "go test"}, want: []string{"run", "go test"}, danger: true},
+		{name: "single dash long flag", args: []string{"-dangerously", "chat"}, want: []string{"chat"}, danger: true},
+		{name: "no flag", args: []string{"chat"}, want: []string{"chat"}, danger: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotArgs, gotDanger := peelGlobalDangerously(tt.args)
+			if gotDanger != tt.danger {
+				t.Fatalf("danger mismatch: got %v want %v", gotDanger, tt.danger)
+			}
+			if !reflect.DeepEqual(gotArgs, tt.want) {
+				t.Fatalf("args mismatch: got %#v want %#v", gotArgs, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithDangerouslyFlag(t *testing.T) {
+	got := withDangerouslyFlag([]string{"chat"}, true)
+	want := []string{"--dangerously", "chat"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected args: %#v", got)
+	}
+}

@@ -61,9 +61,10 @@ func main() {
 }
 
 func run(args []string) int {
+	args, globalDangerously := peelGlobalDangerously(args)
 	if len(args) == 0 {
 		if tools.IsInteractiveTerminal(os.Stdin) {
-			return runChat(nil)
+			return runChat(withDangerouslyFlag(nil, globalDangerously))
 		}
 		printUsage()
 		return 2
@@ -71,9 +72,9 @@ func run(args []string) int {
 
 	switch args[0] {
 	case "run":
-		return runTask(args[1:])
+		return runTask(withDangerouslyFlag(args[1:], globalDangerously))
 	case "chat":
-		return runChat(args[1:])
+		return runChat(withDangerouslyFlag(args[1:], globalDangerously))
 	case "ping":
 		return pingModel(args[1:])
 	case "models":
@@ -85,8 +86,35 @@ func run(args []string) int {
 		printUsage()
 		return 0
 	default:
-		return runTask(args)
+		return runTask(withDangerouslyFlag(args, globalDangerously))
 	}
+}
+
+func peelGlobalDangerously(args []string) ([]string, bool) {
+	if len(args) == 0 {
+		return args, false
+	}
+	rest := make([]string, 0, len(args))
+	dangerously := false
+	for _, arg := range args {
+		switch arg {
+		case "-dangerously", "--dangerously", "-d":
+			dangerously = true
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	return rest, dangerously
+}
+
+func withDangerouslyFlag(args []string, enable bool) []string {
+	if !enable {
+		return args
+	}
+	out := make([]string, 0, len(args)+1)
+	out = append(out, "--dangerously")
+	out = append(out, args...)
+	return out
 }
 
 func runTask(args []string) int {
@@ -851,6 +879,7 @@ func formatRunOutput(text, mode string) string {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  onek                 # default chat on interactive terminals")
+	fmt.Fprintln(os.Stderr, "  onek -d              # default chat in dangerously mode")
 	fmt.Fprintln(os.Stderr, "  onek chat")
 	fmt.Fprintln(os.Stderr, "  onek run [--dangerously] <task>")
 	fmt.Fprintln(os.Stderr, "  onek <task>          # shorthand for run")
@@ -864,7 +893,9 @@ func printUsage() {
 func printRunUsage() {
 	fmt.Fprintln(os.Stderr, "Examples:")
 	fmt.Fprintln(os.Stderr, `  onek`)
+	fmt.Fprintln(os.Stderr, `  onek -d`)
 	fmt.Fprintln(os.Stderr, `  onek "inspect this repo"`)
+	fmt.Fprintln(os.Stderr, `  onek -d "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  onek run --dangerously "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  onek chat`)
 }

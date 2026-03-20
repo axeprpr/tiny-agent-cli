@@ -73,6 +73,8 @@
 
 - `onek`
   交互终端里默认直接进入 chat
+- `onek -d`
+  直接进入 dangerously 模式的 chat
 - `onek run [--dangerously] <task>`
   跑一次任务
 - `onek <task>`
@@ -97,7 +99,9 @@
 
 ```bash
 onek
+onek -d
 onek "检查这个仓库"
+onek -d "运行 go test ./..."
 onek run --dangerously "运行 go test ./..."
 onek chat --dangerously
 ```
