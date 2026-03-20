@@ -63,13 +63,17 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 - `Raw by default`
   `run` returns the model's native answer by default.
 - `Terminal mode when wanted`
-  Use `--output terminal` when you want a cleaner plain-text rendering.
+  `chat` uses terminal-friendly rendering by default while `run` stays raw.
 
 ## Commands
 
-- `onek run [flags] <task>`
+- `onek`
+  Default chat on interactive terminals
+- `onek run [--dangerously] <task>`
   Run one task
-- `onek chat [flags]`
+- `onek <task>`
+  Shorthand for a one-shot run
+- `onek chat`
   Stay in a lightweight multi-turn session with a full-screen terminal UI on interactive terminals
 - `onek models`
   List available models from the endpoint
@@ -88,7 +92,8 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 Examples:
 
 ```bash
-onek run --approval confirm "inspect this repo and tell me what it does"
+onek
+onek "inspect this repo and tell me what it does"
 onek run --dangerously "run go test ./..."
 onek chat --dangerously
 ```
@@ -100,43 +105,43 @@ Replace the endpoint and model with your own values. The examples below do not d
 Linux x86_64:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Linux arm64:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Linux x86_64 with `wget`:
 
 ```bash
-wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 macOS Intel:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 macOS Apple Silicon:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Windows PowerShell x64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe
 ```
 
 Windows PowerShell arm64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe
 ```
 
 ## One-Line Install
@@ -158,13 +163,13 @@ Install and start immediately:
 Linux or macOS:
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe
 ```
 
 Optional install variables:
@@ -231,14 +236,8 @@ onek> write a minimal release checklist
 - transcript log:
   `.onek-agent/transcripts/<session>.log`
 
-Useful flags:
-
-- `--session <name>`
-  Choose a named session
-- `--state-dir <path>`
-  Move session and transcript files somewhere else
-- `--auto-memory`
-  Summarize stable notes from the session when chat exits
+By default, `chat` uses the `default` session and auto-summarizes stable memory on exit.
+Advanced storage tuning is still available through environment variables like `AGENT_STATE_DIR`.
 
 ## Persistent Memory
 
@@ -272,23 +271,9 @@ Notes:
 
 - project memory is keyed by workspace path
 - `/memorize` summarizes the current session into project memory
-- `--auto-memory` runs that summarization automatically on chat exit
+- chat runs that summarization automatically on exit
 - if the model-side memory summarizer fails, `onek-agent` falls back to local extraction of obvious stable preferences and project facts
 - long conversations are compacted into a local synthetic summary while keeping recent full turns, which helps shorter-context models survive longer sessions
-
-## Output Modes
-
-- `--output raw`
-  Default. Keep the model's native answer.
-- `--output terminal`
-  Apply light formatting for terminals, mainly to reduce ugly Markdown tables.
-
-Examples:
-
-```bash
-onek run --output raw "summarize this system"
-onek run --output terminal "summarize this system"
-```
 
 ## Environment Variables
 

@@ -67,13 +67,17 @@
 - `默认 raw 输出`
   不强行过度改写模型原生回答。
 - `terminal 输出模式`
-  需要时再做轻量终端格式整理。
+  `chat` 默认走终端友好渲染，`run` 默认保留原生输出。
 
 ## 命令
 
-- `onek run [flags] <task>`
+- `onek`
+  交互终端里默认直接进入 chat
+- `onek run [--dangerously] <task>`
   跑一次任务
-- `onek chat [flags]`
+- `onek <task>`
+  一次性任务的简写
+- `onek chat`
   进入等待模式，可以连续提问；在交互终端里会默认进入全屏 TUI
 - `onek models`
   查看模型列表
@@ -92,7 +96,8 @@
 示例：
 
 ```bash
-onek run --approval confirm "检查这个仓库"
+onek
+onek "检查这个仓库"
 onek run --dangerously "运行 go test ./..."
 onek chat --dangerously
 ```
@@ -104,43 +109,43 @@ onek chat --dangerously
 Linux x86_64:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Linux arm64:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Linux x86_64 `wget`：
 
 ```bash
-wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+wget -O ./onek https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-linux-amd64 && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 macOS Intel:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-amd64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 macOS Apple Silicon:
 
 ```bash
-curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek chat --auto-memory
+curl -L https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-darwin-arm64 -o ./onek && chmod +x ./onek && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ./onek
 ```
 
 Windows PowerShell x64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-amd64.exe -OutFile .\onek.exe; .\onek.exe
 ```
 
 Windows PowerShell arm64:
 
 ```powershell
-$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe chat --auto-memory
+$env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; Invoke-WebRequest https://gh-proxy.com/https://github.com/axeprpr/onek-agent/releases/latest/download/onek-windows-arm64.exe -OutFile .\onek.exe; .\onek.exe
 ```
 
 ## 一句话安装
@@ -162,13 +167,13 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/ma
 Linux 或 macOS：
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek chat --auto-memory
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/onek
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe chat --auto-memory
+iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/onek-agent/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\onek.exe
 ```
 
 可选安装变量：
@@ -236,14 +241,8 @@ onek> 给我写个最小发布检查单
 - transcript 日志：
   `.onek-agent/transcripts/<session>.log`
 
-常用参数：
-
-- `--session <name>`
-  使用指定会话名
-- `--state-dir <path>`
-  把状态和日志放到别的目录
-- `--auto-memory`
-  退出 chat 时自动把稳定上下文整理进记忆
+默认会使用 `default` 会话，并在退出 chat 时自动把稳定上下文整理进记忆。
+如果要改存储位置，继续用环境变量比如 `AGENT_STATE_DIR` 就可以。
 
 ## 持久化记忆
 
@@ -277,23 +276,9 @@ onek> /forget ARM64
 
 - 项目记忆按工作目录路径隔离
 - `/memorize` 会把当前会话提炼成项目记忆
-- `--auto-memory` 会在退出 chat 时自动执行这一步
+- chat 会在退出时自动执行这一步
 - 如果模型侧的记忆总结超时或失败，`onek-agent` 会回退到本地提取明显的长期偏好和项目事实
 - 长会话会被压缩成一段本地摘要，同时尽量保留最近几轮完整上下文，更适合短上下文模型
-
-## 输出模式
-
-- `--output raw`
-  默认值。尽量保留模型原生输出。
-- `--output terminal`
-  只做轻量终端优化，主要用于减少 Markdown 表格在终端里的混乱感。
-
-示例：
-
-```bash
-onek run --output raw "帮我统计环境信息"
-onek run --output terminal "帮我统计环境信息"
-```
 
 ## 环境变量
 

@@ -62,6 +62,9 @@ func main() {
 
 func run(args []string) int {
 	if len(args) == 0 {
+		if tools.IsInteractiveTerminal(os.Stdin) {
+			return runChat(nil)
+		}
 		printUsage()
 		return 2
 	}
@@ -82,9 +85,7 @@ func run(args []string) int {
 		printUsage()
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
-		printUsage()
-		return 2
+		return runTask(args)
 	}
 }
 
@@ -763,9 +764,9 @@ func listModels(args []string) int {
 func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions, []string, *bufio.Reader, error) {
 	cfg := config.FromEnv()
 	opts := runtimeOptions{
-		outputMode:     "raw",
+		outputMode:     defaultOutputMode(name),
 		session:        "default",
-		autoMemoryExit: false,
+		autoMemoryExit: name == "chat",
 	}
 	dangerously := false
 
@@ -774,24 +775,15 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "OpenAI-compatible API base URL")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "optional API key")
-	fs.IntVar(&cfg.ContextWindow, "context-window", cfg.ContextWindow, "approximate model context window for UI status")
 	fs.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "workspace root")
-	fs.StringVar(&cfg.StateDir, "state-dir", cfg.StateDir, "state directory for sessions and transcripts")
-	fs.IntVar(&cfg.MaxSteps, "max-steps", cfg.MaxSteps, "maximum agent steps")
-	fs.StringVar(&cfg.Shell, "shell", cfg.Shell, "shell executable")
-	fs.StringVar(&cfg.ApprovalMode, "approval", cfg.ApprovalMode, "approval mode: confirm or dangerously")
-	fs.BoolVar(&dangerously, "dangerously", false, "shortcut for --approval dangerously")
-	fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode: raw or terminal")
-	fs.StringVar(&opts.session, "session", opts.session, "session name for chat persistence")
-	fs.BoolVar(&opts.autoMemoryExit, "auto-memory", opts.autoMemoryExit, "summarize useful session memory on chat exit")
-
-	timeoutText := cfg.CommandTimeout.String()
-	fs.StringVar(&timeoutText, "command-timeout", timeoutText, "shell command timeout")
+	switch name {
+	case "run":
+		fs.BoolVar(&dangerously, "dangerously", false, "skip command and file-write approval for this run")
+	case "chat":
+		fs.BoolVar(&dangerously, "dangerously", false, "start chat in dangerously mode")
+	}
 
 	if err := fs.Parse(args); err != nil {
-		return cfg, runtimeOptions{}, nil, nil, err
-	}
-	if err := cfg.SetCommandTimeout(timeoutText); err != nil {
 		return cfg, runtimeOptions{}, nil, nil, err
 	}
 	if dangerously {
@@ -810,12 +802,14 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid approval mode %q", cfg.ApprovalMode)
 	}
 
-	opts.outputMode = strings.ToLower(strings.TrimSpace(opts.outputMode))
-	if opts.outputMode != "raw" && opts.outputMode != "terminal" {
-		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid output mode %q", opts.outputMode)
-	}
-
 	return cfg, opts, fs.Args(), bufio.NewReader(os.Stdin), nil
+}
+
+func defaultOutputMode(name string) string {
+	if name == "chat" {
+		return "terminal"
+	}
+	return "raw"
 }
 
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
@@ -856,8 +850,10 @@ func formatRunOutput(text, mode string) string {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  onek run [flags] <task>")
-	fmt.Fprintln(os.Stderr, "  onek chat [flags]")
+	fmt.Fprintln(os.Stderr, "  onek                 # default chat on interactive terminals")
+	fmt.Fprintln(os.Stderr, "  onek chat")
+	fmt.Fprintln(os.Stderr, "  onek run [--dangerously] <task>")
+	fmt.Fprintln(os.Stderr, "  onek <task>          # shorthand for run")
 	fmt.Fprintln(os.Stderr, "  onek ping [flags]")
 	fmt.Fprintln(os.Stderr, "  onek models [flags]")
 	fmt.Fprintln(os.Stderr, "  onek version")
@@ -867,7 +863,8 @@ func printUsage() {
 
 func printRunUsage() {
 	fmt.Fprintln(os.Stderr, "Examples:")
-	fmt.Fprintln(os.Stderr, `  onek run --approval confirm "inspect this repo"`)
+	fmt.Fprintln(os.Stderr, `  onek`)
+	fmt.Fprintln(os.Stderr, `  onek "inspect this repo"`)
 	fmt.Fprintln(os.Stderr, `  onek run --dangerously "run go test ./..."`)
-	fmt.Fprintln(os.Stderr, `  onek chat --session default --output terminal`)
+	fmt.Fprintln(os.Stderr, `  onek chat`)
 }
