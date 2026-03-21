@@ -43,12 +43,13 @@
 ## 它能做什么
 
 - 单次执行任务
-- 多轮等待式交互
+- 多轮交互式会话，支持 SSE 实时流式输出
+- 后台任务并行探索
 - 全局记忆 + 项目记忆
-- 读写文件
+- 读写文件、精确编辑
 - grep 搜索
 - 执行 shell 命令
-- 抓网页和简单 web search
+- 抓网页和 web search（DuckDuckGo HTML 抓取）
 - 接本地模型或兼容 OpenAI API 的服务
 - 直接下载原始二进制运行，不需要 zip/tgz 解压流程
 
@@ -137,33 +138,40 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cl
 
 - 顶部信息条，显示工作目录、shell、模型、审批模式
 - 单栏消息主视图，执行步骤和工具活动会直接并入对话
+- SSE 流式输出：模型生成时 token 实时显示，不用盯着 spinner 等
 - 可折叠的活动抽屉，可按步骤、工具、错误、审批过滤
-- 紧凑的单行输入区，带动态提示
+- 动态多行输入区，根据内容自动增长（1-5 行）
 - 对回答里的 Markdown / 代码块做更好的终端渲染
-- 底部状态栏
-- 模型、审批模式、会话名、上下文剩余估算
+- 底部状态栏：模型、审批模式、会话名、上下文剩余估算、步骤进度
 - 命令 / 文件写入审批直接并入对话流
-- `Ctrl+O` 可展开或收起活动抽屉
-- `Ctrl+G` 可切换活动日志过滤器
-- `F1` 可展开或收起帮助
+- `Ctrl+O` 展开或收起活动抽屉
+- `Ctrl+G` 切换活动日志过滤器
+- `Home` / `End` 跳转到对话顶部/底部
+- `PgUp` / `PgDn` 翻页
+- `F1` 展开或收起帮助
 
 内置控制命令：
 
-- `/help`
-- `/session [name|new]`
-- `/status`
-- `/reset`
-- `/approval confirm|dangerously`
-- `/output raw|terminal`
-- `/model <name>`
-- `/scope`
-- `/memory`
-- `/remember-global <text>`
-- `/remember <text>`
-- `/forget-global <query>`
-- `/forget <query>`
-- `/memorize`
-- `/exit`
+- `/help`                 显示所有命令
+- `/exit`, `/quit`        退出
+- `/reset`                清除对话上下文
+- `/session [name|new]`   切换或新建会话
+- `/status`               显示当前状态
+- `/scope`                显示项目作用域
+- `/model <name>`         切换模型
+- `/approval <mode>`      设置审批模式 (confirm|dangerously)
+- `/memory`               查看记忆
+- `/remember <text>`      保存项目记忆
+- `/remember-global <t>`  保存全局记忆
+- `/forget <query>`       删除匹配的项目记忆
+- `/forget-global <q>`    删除匹配的全局记忆
+- `/memorize`             从对话中提取记忆
+- `/bg <task>`            启动后台任务
+- `/jobs`                 列出后台任务
+- `/job <id>`             查看后台任务详情
+- `/job-send <id> <msg>`  向后台任务发送追加指令
+- `/job-cancel <id>`      取消后台任务
+- `/job-apply <id>`       将后台任务结果注入对话上下文
 
 示例：
 
@@ -173,8 +181,9 @@ tacli> 接下来优先改什么
 tacli> /approval dangerously
 tacli> /remember 默认输出中文，简洁回答
 tacli> /remember-global 优先用简短中文回答
+tacli> /bg 分析这个仓库的测试覆盖率
+tacli> /jobs
 tacli> /memorize
-tacli> /output terminal
 tacli> /reset
 tacli> 给我写个最小发布检查单
 ```
@@ -226,6 +235,22 @@ tacli> /forget ARM64
 - chat 会在退出时自动执行这一步
 - 如果模型侧的记忆总结超时或失败，`tiny-agent-cli` 会回退到本地提取明显的长期偏好和项目事实
 - 长会话会被压缩成一段本地摘要，同时尽量保留最近几轮完整上下文，更适合短上下文模型
+- 会话和记忆文件使用原子写入（先写临时文件再重命名），崩溃时不会损坏数据
+
+## 后台任务
+
+在 `dangerously` 模式下，你可以在继续主对话的同时并行运行子任务：
+
+```text
+tacli> /bg 探索这个仓库的测试覆盖情况
+tacli> /jobs
+tacli> /job job-001
+tacli> /job-apply job-001
+```
+
+对于大范围探索类任务，agent 也会自动启动后台任务。后台任务完成后，结果会被注入主对话上下文。
+
+最多可以同时运行 2 个后台任务，每个任务在独立的 agent session 中运行，拥有完整的工具访问权限。
 
 ## 环境变量
 
@@ -235,10 +260,14 @@ tacli> /forget ARM64
   默认值：`qwen2.5-coder:7b`
 - `MODEL_API_KEY`
   默认值：空
+- `MODEL_TIMEOUT`
+  默认值：`180s`。模型响应的最大等待时间。
+- `MODEL_CONTEXT_WINDOW`
+  默认值：`32768`。用于 TUI 中的上下文用量估算。
 - `AGENT_WORKDIR`
   默认值：当前目录
 - `AGENT_MAX_STEPS`
-  默认值：`8`
+  默认值：`24`
 - `AGENT_COMMAND_TIMEOUT`
   默认值：`30s`
 - `AGENT_SHELL`

@@ -44,7 +44,8 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 ## What You Get
 
 - shell + files + grep + fetch + web search
-- interactive chat mode
+- interactive chat mode with SSE streaming support
+- background jobs for parallel exploration
 - persistent memory with global and project scope
 - command and file-write confirmation by default
 - `--dangerously` when you want speed
@@ -133,32 +134,40 @@ On interactive terminals, `chat` now opens a full-screen TUI with:
 
 - top info bar for workspace, shell, model, and approval mode
 - single-column conversation view with inline step/tool activity
+- SSE streaming: assistant tokens appear in real-time as the model generates them
 - optional activity drawer for filtered step/tool/error/approval logs
-- compact single-line composer with a dynamic prompt
+- dynamic multi-line composer that grows with your input (1-5 lines)
 - richer assistant rendering for markdown-style answers and code blocks
 - footer status bar for model, approval mode, session, and approximate context remaining
 - inline command/file approval prompts in the conversation flow
 - `Ctrl+O` to toggle the activity drawer
 - `Ctrl+G` to cycle activity filters
+- `Home` / `End` to jump to top/bottom of conversation
+- `PgUp` / `PgDn` to scroll
 - `F1` to toggle help
 
 Built-in chat commands:
 
-- `/help`
-- `/session [name|new]`
-- `/status`
-- `/reset`
-- `/approval confirm|dangerously`
-- `/output raw|terminal`
-- `/model <name>`
-- `/scope`
-- `/memory`
-- `/remember-global <text>`
-- `/remember <text>`
-- `/forget-global <query>`
-- `/forget <query>`
-- `/memorize`
-- `/exit`
+- `/help`                 Show all commands
+- `/exit`, `/quit`        Exit the chat
+- `/reset`                Clear conversation context
+- `/session [name|new]`   Switch or create a session
+- `/status`               Show session and config status
+- `/scope`                Show current project scope key
+- `/model <name>`         Switch model for this session
+- `/approval <mode>`      Set approval mode (confirm|dangerously)
+- `/memory`               Show saved memory notes
+- `/remember <text>`      Save a project memory note
+- `/remember-global <t>`  Save a global memory note
+- `/forget <query>`       Remove matching project memory
+- `/forget-global <q>`    Remove matching global memory
+- `/memorize`             Extract memory from conversation
+- `/bg <task>`            Start a background job
+- `/jobs`                 List background jobs
+- `/job <id>`             Inspect a background job
+- `/job-send <id> <msg>`  Send follow-up to a background job
+- `/job-cancel <id>`      Cancel a background job
+- `/job-apply <id>`       Apply job result to chat context
 
 Example:
 
@@ -168,8 +177,9 @@ tacli> what should I improve next?
 tacli> /approval dangerously
 tacli> /remember Prefer concise answers.
 tacli> /remember-global Always answer in English unless asked otherwise.
+tacli> /bg analyze all error handling paths in this repo
+tacli> /jobs
 tacli> /memorize
-tacli> /output terminal
 tacli> /reset
 tacli> write a minimal release checklist
 ```
@@ -221,6 +231,22 @@ Notes:
 - chat runs that summarization automatically on exit
 - if the model-side memory summarizer fails, `tiny-agent-cli` falls back to local extraction of obvious stable preferences and project facts
 - long conversations are compacted into a local synthetic summary while keeping recent full turns, which helps shorter-context models survive longer sessions
+- session and memory files use atomic writes (write to temp file, then rename) to prevent corruption on crash
+
+## Background Jobs
+
+In `dangerously` mode, you can run parallel subtasks in the background while continuing your main conversation:
+
+```text
+tacli> /bg explore the test coverage of this repo
+tacli> /jobs
+tacli> /job job-001
+tacli> /job-apply job-001
+```
+
+The agent can also start background jobs automatically for broad exploration tasks. Background job results are injected into the main conversation context when ready.
+
+Up to 2 background jobs can run concurrently. Each runs in its own agent session with full tool access.
 
 ## Environment Variables
 
@@ -230,10 +256,14 @@ Notes:
   Default: `qwen2.5-coder:7b`
 - `MODEL_API_KEY`
   Default: empty
+- `MODEL_TIMEOUT`
+  Default: `180s`. Maximum time to wait for a model response.
+- `MODEL_CONTEXT_WINDOW`
+  Default: `32768`. Used for context usage estimation in the TUI.
 - `AGENT_WORKDIR`
   Default: current directory
 - `AGENT_MAX_STEPS`
-  Default: `8`
+  Default: `24`
 - `AGENT_COMMAND_TIMEOUT`
   Default: `30s`
 - `AGENT_SHELL`
