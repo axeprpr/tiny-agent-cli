@@ -1,0 +1,702 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"tiny-agent-cli/internal/agent"
+	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/tools"
+)
+
+type jobStatus string
+
+const (
+	jobQueued                  jobStatus = "queued"
+	jobRunning                 jobStatus = "running"
+	jobReady                   jobStatus = "ready"
+	jobFailed                  jobStatus = "failed"
+	jobCanceled                jobStatus = "canceled"
+	maxActiveBackgroundJobs              = 2
+	minBackgroundTaskChars               = 24
+	minBackgroundTaskWordCount           = 4
+)
+
+type jobSnapshot struct {
+	ID         string
+	Status     jobStatus
+	Model      string
+	TaskCount  int
+	Queued     int
+	LastPrompt string
+	LastOutput string
+	LastError  string
+	LogTail    string
+	Summary    jobSummary
+	Applied    bool
+	CreatedAt  time.Time
+	StartedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt time.Time
+}
+
+func (s jobSnapshot) toToolSnapshot() tools.BackgroundJobSnapshot {
+	return tools.BackgroundJobSnapshot{
+		ID:         s.ID,
+		Status:     string(s.Status),
+		Model:      s.Model,
+		TaskCount:  s.TaskCount,
+		Queued:     s.Queued,
+		LastPrompt: s.LastPrompt,
+		LastOutput: s.LastOutput,
+		LastError:  s.LastError,
+		LogTail:    s.LogTail,
+	}
+}
+
+type backgroundJob struct {
+	id      string
+	model   string
+	session *agent.Session
+	cancel  context.CancelFunc
+	prompts chan string
+
+	mu         sync.RWMutex
+	status     jobStatus
+	taskCount  int
+	queued     int
+	lastPrompt string
+	lastOutput string
+	lastError  string
+	logTail    string
+	summary    jobSummary
+	applied    bool
+	createdAt  time.Time
+	startedAt  time.Time
+	updatedAt  time.Time
+	finishedAt time.Time
+}
+
+type jobSummary struct {
+	Findings  []string
+	Files     []string
+	Risks     []string
+	NextSteps []string
+}
+
+func (j *backgroundJob) snapshot() jobSnapshot {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return jobSnapshot{
+		ID:         j.id,
+		Status:     j.status,
+		Model:      j.model,
+		TaskCount:  j.taskCount,
+		Queued:     j.queued,
+		LastPrompt: j.lastPrompt,
+		LastOutput: j.lastOutput,
+		LastError:  j.lastError,
+		LogTail:    j.logTail,
+		Summary:    j.summary,
+		Applied:    j.applied,
+		CreatedAt:  j.createdAt,
+		StartedAt:  j.startedAt,
+		UpdatedAt:  j.updatedAt,
+		FinishedAt: j.finishedAt,
+	}
+}
+
+type jobManager struct {
+	cfg      config.Config
+	memory   string
+	notifier func(string)
+
+	mu     sync.RWMutex
+	nextID int
+	jobs   map[string]*backgroundJob
+}
+
+func newJobManager(cfg config.Config, memoryText string) *jobManager {
+	return &jobManager{
+		cfg:    cfg,
+		memory: memoryText,
+		jobs:   make(map[string]*backgroundJob),
+	}
+}
+
+func (m *jobManager) SetNotifier(fn func(string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notifier = fn
+}
+
+func (m *jobManager) UpdateConfig(cfg config.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+}
+
+func (m *jobManager) UpdateMemory(memoryText string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.memory = memoryText
+}
+
+func (m *jobManager) Start(task string) (string, error) {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return "", fmt.Errorf("usage: /bg <task>")
+	}
+	if m.cfg.ApprovalMode != tools.ApprovalDangerously {
+		return "", fmt.Errorf("background jobs require dangerously mode so they can run without blocking on interactive approval")
+	}
+	if err := validateBackgroundTask(task); err != nil {
+		return "", err
+	}
+
+	m.mu.Lock()
+	if m.activeJobsLocked() >= maxActiveBackgroundJobs {
+		m.mu.Unlock()
+		return "", fmt.Errorf("too many active background jobs; wait for one to finish before starting another")
+	}
+	m.nextID++
+	id := fmt.Sprintf("job-%03d", m.nextID)
+	bgCfg := m.cfg
+	memoryText := m.memory
+	bgCfg.ApprovalMode = tools.ApprovalDangerously
+	bgApprover := tools.NewTerminalApprover(nil, io.Discard, bgCfg.ApprovalMode, false)
+	logWriter := &backgroundLogWriter{manager: m, jobID: id}
+	loop := buildAgentWith(bgCfg, bgApprover, logWriter, nil)
+	job := &backgroundJob{
+		id:        id,
+		model:     bgCfg.Model,
+		session:   loop.NewSessionWithMemory(memoryText),
+		status:    jobQueued,
+		prompts:   make(chan string, 32),
+		createdAt: time.Now(),
+		updatedAt: time.Now(),
+	}
+	workerCtx, cancel := context.WithCancel(context.Background())
+	job.cancel = cancel
+	m.jobs[id] = job
+	m.mu.Unlock()
+
+	go m.run(workerCtx, job)
+	if err := m.enqueue(job, task); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (m *jobManager) Send(id, task string) error {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return fmt.Errorf("usage: /job-send <id> <message>")
+	}
+	job, ok := m.get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %q", id)
+	}
+	if snap := job.snapshot(); snap.Status == jobCanceled {
+		return fmt.Errorf("job %s is canceled", id)
+	}
+	return m.enqueue(job, task)
+}
+
+func (m *jobManager) Cancel(id string) error {
+	job, ok := m.get(id)
+	if !ok {
+		return fmt.Errorf("unknown job %q", id)
+	}
+	job.mu.Lock()
+	if job.status == jobCanceled {
+		job.mu.Unlock()
+		return nil
+	}
+	job.status = jobCanceled
+	job.updatedAt = time.Now()
+	job.finishedAt = job.updatedAt
+	job.mu.Unlock()
+	job.cancel()
+	m.notify(fmt.Sprintf("%s canceled", id))
+	return nil
+}
+
+func (m *jobManager) List() []jobSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]jobSnapshot, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		out = append(out, job.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out
+}
+
+func (m *jobManager) ToolList() []tools.BackgroundJobSnapshot {
+	snaps := m.List()
+	out := make([]tools.BackgroundJobSnapshot, 0, len(snaps))
+	for _, snap := range snaps {
+		out = append(out, snap.toToolSnapshot())
+	}
+	return out
+}
+
+func (m *jobManager) Snapshot(id string) (jobSnapshot, bool) {
+	job, ok := m.get(id)
+	if !ok {
+		return jobSnapshot{}, false
+	}
+	return job.snapshot(), true
+}
+
+func (m *jobManager) ToolSnapshot(id string) (tools.BackgroundJobSnapshot, bool) {
+	snap, ok := m.Snapshot(id)
+	if !ok {
+		return tools.BackgroundJobSnapshot{}, false
+	}
+	return snap.toToolSnapshot(), true
+}
+
+func (m *jobManager) CollectReadyForApply() []jobSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []jobSnapshot
+	for _, job := range m.jobs {
+		snap := job.snapshot()
+		if snap.Status == jobReady && !snap.Applied {
+			out = append(out, snap)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.Before(out[j].UpdatedAt)
+	})
+	return out
+}
+
+func (m *jobManager) MarkApplied(id string) {
+	job, ok := m.get(id)
+	if !ok {
+		return
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	job.applied = true
+	job.updatedAt = time.Now()
+}
+
+func (m *jobManager) Summary() string {
+	snaps := m.List()
+	if len(snaps) == 0 {
+		return "jobs=0"
+	}
+	var running, queued int
+	for _, snap := range snaps {
+		switch snap.Status {
+		case jobRunning:
+			running++
+		case jobQueued:
+			queued++
+		}
+	}
+	return fmt.Sprintf("jobs=%d running=%d queued=%d", len(snaps), running, queued)
+}
+
+func (m *jobManager) activeJobsLocked() int {
+	active := 0
+	for _, job := range m.jobs {
+		switch job.snapshot().Status {
+		case jobQueued, jobRunning:
+			active++
+		}
+	}
+	return active
+}
+
+func (m *jobManager) enqueue(job *backgroundJob, task string) error {
+	job.mu.Lock()
+	job.queued++
+	job.updatedAt = time.Now()
+	if job.status != jobRunning {
+		job.status = jobQueued
+	}
+	job.mu.Unlock()
+
+	select {
+	case job.prompts <- task:
+		m.notify(fmt.Sprintf("%s queued: %s", job.id, compactJobText(task, 80)))
+		return nil
+	default:
+		job.mu.Lock()
+		job.queued--
+		job.mu.Unlock()
+		return fmt.Errorf("job %s queue is full", job.id)
+	}
+}
+
+func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case task := <-job.prompts:
+			job.mu.Lock()
+			job.queued--
+			job.status = jobRunning
+			job.taskCount++
+			job.lastPrompt = task
+			now := time.Now()
+			if job.startedAt.IsZero() {
+				job.startedAt = now
+			}
+			job.updatedAt = now
+			job.mu.Unlock()
+
+			m.notify(fmt.Sprintf("%s running: %s", job.id, compactJobText(task, 80)))
+
+			result, err := job.session.RunTask(ctx, task)
+
+			job.mu.Lock()
+			job.updatedAt = time.Now()
+			if err != nil {
+				if ctx.Err() != nil {
+					job.status = jobCanceled
+					job.lastError = ctx.Err().Error()
+					job.finishedAt = job.updatedAt
+					job.mu.Unlock()
+					m.notify(fmt.Sprintf("%s canceled", job.id))
+					return
+				}
+				job.status = jobFailed
+				job.lastError = err.Error()
+				job.finishedAt = job.updatedAt
+				job.mu.Unlock()
+				m.notify(fmt.Sprintf("%s failed: %s", job.id, compactJobText(err.Error(), 120)))
+				continue
+			}
+
+			job.lastOutput = formatRunOutput(result.Final, "terminal")
+			job.lastError = ""
+			job.summary = summarizeBackgroundResult(job.lastOutput)
+			job.finishedAt = job.updatedAt
+			if job.queued > 0 {
+				job.status = jobQueued
+			} else {
+				job.status = jobReady
+			}
+			job.mu.Unlock()
+
+			m.notify(fmt.Sprintf("%s ready: %s", job.id, compactJobText(job.snapshot().LastOutput, 120)))
+		}
+	}
+}
+
+func (m *jobManager) appendLog(jobID, line string) {
+	job, ok := m.get(jobID)
+	if !ok {
+		return
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.logTail == "" {
+		job.logTail = strings.TrimSpace(line)
+	} else {
+		job.logTail = strings.TrimSpace(job.logTail + "\n" + strings.TrimSpace(line))
+	}
+	lines := strings.Split(job.logTail, "\n")
+	if len(lines) > 12 {
+		lines = lines[len(lines)-12:]
+	}
+	job.logTail = strings.Join(lines, "\n")
+	job.updatedAt = time.Now()
+}
+
+func (m *jobManager) notify(text string) {
+	m.mu.RLock()
+	fn := m.notifier
+	m.mu.RUnlock()
+	if fn != nil && strings.TrimSpace(text) != "" {
+		fn(strings.TrimSpace(text))
+	}
+}
+
+func (m *jobManager) get(id string) (*backgroundJob, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	job, ok := m.jobs[strings.TrimSpace(id)]
+	return job, ok
+}
+
+type backgroundLogWriter struct {
+	manager *jobManager
+	jobID   string
+}
+
+func (w *backgroundLogWriter) Write(p []byte) (int, error) {
+	text := strings.TrimSpace(string(p))
+	if text == "" {
+		return len(p), nil
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			w.manager.appendLog(w.jobID, line)
+		}
+	}
+	return len(p), nil
+}
+
+func formatJobList(snaps []jobSnapshot) string {
+	if len(snaps) == 0 {
+		return "no background jobs"
+	}
+	lines := make([]string, 0, len(snaps))
+	for _, snap := range snaps {
+		line := fmt.Sprintf("%s  %s  tasks=%d", snap.ID, snap.Status, snap.TaskCount)
+		if snap.Queued > 0 {
+			line += fmt.Sprintf("  queued=%d", snap.Queued)
+		}
+		if snap.Model != "" {
+			line += "  model=" + snap.Model
+		}
+		if strings.TrimSpace(snap.LastPrompt) != "" {
+			line += "\n  last_prompt: " + compactJobText(snap.LastPrompt, 120)
+		}
+		if strings.TrimSpace(snap.LastError) != "" {
+			line += "\n  last_error: " + compactJobText(snap.LastError, 120)
+		} else if strings.TrimSpace(snap.LastOutput) != "" {
+			line += "\n  last_output: " + compactJobText(tools.SingleLineText(snap.LastOutput), 120)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func formatJobSnapshot(snap jobSnapshot) string {
+	lines := []string{
+		"id=" + snap.ID,
+		"status=" + string(snap.Status),
+		"model=" + snap.Model,
+		fmt.Sprintf("tasks=%d", snap.TaskCount),
+		fmt.Sprintf("queued=%d", snap.Queued),
+		"created=" + snap.CreatedAt.Format(time.RFC3339),
+		"updated=" + snap.UpdatedAt.Format(time.RFC3339),
+	}
+	if !snap.StartedAt.IsZero() {
+		lines = append(lines, "started="+snap.StartedAt.Format(time.RFC3339))
+	}
+	if !snap.FinishedAt.IsZero() {
+		lines = append(lines, "finished="+snap.FinishedAt.Format(time.RFC3339))
+	}
+	if strings.TrimSpace(snap.LastPrompt) != "" {
+		lines = append(lines, "last_prompt="+compactJobText(snap.LastPrompt, 240))
+	}
+	if strings.TrimSpace(snap.LastError) != "" {
+		lines = append(lines, "last_error="+compactJobText(snap.LastError, 240))
+	}
+	if strings.TrimSpace(snap.LastOutput) != "" {
+		lines = append(lines, "last_output="+compactJobText(tools.SingleLineText(snap.LastOutput), 240))
+	}
+	if summary := renderJobSummary(snap.Summary); summary != "" {
+		lines = append(lines, "summary:\n"+summary)
+	}
+	if strings.TrimSpace(snap.LogTail) != "" {
+		lines = append(lines, "log_tail:\n"+snap.LogTail)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func summarizeJobForSession(snap jobSnapshot) string {
+	lines := []string{
+		fmt.Sprintf("[background job %s]", snap.ID),
+		"status: " + string(snap.Status),
+	}
+	if strings.TrimSpace(snap.LastPrompt) != "" {
+		lines = append(lines, "last prompt: "+compactJobText(snap.LastPrompt, 240))
+	}
+	if strings.TrimSpace(snap.LastError) != "" {
+		lines = append(lines, "last error: "+compactJobText(snap.LastError, 240))
+	}
+	if strings.TrimSpace(snap.LastOutput) != "" {
+		if summary := renderJobSummary(snap.Summary); summary != "" {
+			lines = append(lines, summary)
+		} else {
+			lines = append(lines, "result: "+compactJobText(tools.SingleLineText(snap.LastOutput), 400))
+		}
+	}
+	if strings.TrimSpace(snap.LogTail) != "" {
+		lines = append(lines, "activity: "+compactJobText(tools.SingleLineText(snap.LogTail), 300))
+	}
+	return strings.Join(lines, "\n")
+}
+
+type jobToolAdapter struct {
+	manager *jobManager
+}
+
+func (a jobToolAdapter) Start(task string) (string, error) {
+	return a.manager.Start(task)
+}
+
+func (a jobToolAdapter) Send(id, task string) error {
+	return a.manager.Send(id, task)
+}
+
+func (a jobToolAdapter) Cancel(id string) error {
+	return a.manager.Cancel(id)
+}
+
+func (a jobToolAdapter) List() []tools.BackgroundJobSnapshot {
+	return a.manager.ToolList()
+}
+
+func (a jobToolAdapter) Snapshot(id string) (tools.BackgroundJobSnapshot, bool) {
+	return a.manager.ToolSnapshot(id)
+}
+
+func compactJobText(text string, limit int) string {
+	text = tools.SingleLineText(text)
+	if limit > 0 && len(text) > limit {
+		return text[:limit] + "..."
+	}
+	return text
+}
+
+func summarizeBackgroundResult(text string) jobSummary {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	var summary jobSummary
+	section := ""
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		switch classifySummarySection(line) {
+		case "findings", "files", "risks", "next_steps":
+			section = classifySummarySection(line)
+			continue
+		}
+		item := trimSummaryItem(line)
+		if item == "" {
+			continue
+		}
+		switch section {
+		case "findings":
+			summary.Findings = append(summary.Findings, item)
+		case "files":
+			summary.Files = append(summary.Files, item)
+		case "risks":
+			summary.Risks = append(summary.Risks, item)
+		case "next_steps":
+			summary.NextSteps = append(summary.NextSteps, item)
+		}
+	}
+	if isEmptyJobSummary(summary) {
+		summary.Findings = fallbackSummaryItems(text, 3)
+	}
+	return summary
+}
+
+func classifySummarySection(line string) string {
+	lower := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(line, ":")))
+	switch lower {
+	case "key findings", "findings", "主要发现", "发现":
+		return "findings"
+	case "relevant files", "files", "相关文件", "文件":
+		return "files"
+	case "risks", "unknowns", "risks or unknowns", "风险", "风险或未知点":
+		return "risks"
+	case "next steps", "recommended next steps", "next step", "下一步", "建议下一步":
+		return "next_steps"
+	default:
+		return ""
+	}
+}
+
+func trimSummaryItem(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimLeft(line, "-*• \t")
+	line = strings.TrimLeft(line, "0123456789.")
+	return strings.TrimSpace(line)
+}
+
+func isEmptyJobSummary(summary jobSummary) bool {
+	return len(summary.Findings) == 0 && len(summary.Files) == 0 && len(summary.Risks) == 0 && len(summary.NextSteps) == 0
+}
+
+func fallbackSummaryItems(text string, maxItems int) []string {
+	var out []string
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = trimSummaryItem(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, compactJobText(line, 160))
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
+}
+
+func renderJobSummary(summary jobSummary) string {
+	var parts []string
+	if len(summary.Findings) > 0 {
+		parts = append(parts, renderJobSummarySection("findings", summary.Findings, 3))
+	}
+	if len(summary.Files) > 0 {
+		parts = append(parts, renderJobSummarySection("files", summary.Files, 4))
+	}
+	if len(summary.Risks) > 0 {
+		parts = append(parts, renderJobSummarySection("risks", summary.Risks, 3))
+	}
+	if len(summary.NextSteps) > 0 {
+		parts = append(parts, renderJobSummarySection("next_steps", summary.NextSteps, 3))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func renderJobSummarySection(name string, items []string, limit int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	lines := []string{name + ":"}
+	for _, item := range items {
+		lines = append(lines, "- "+compactJobText(item, 160))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func validateBackgroundTask(task string) error {
+	task = strings.TrimSpace(task)
+	if len(task) < minBackgroundTaskChars {
+		return fmt.Errorf("background task is too short; keep small work in the main conversation")
+	}
+	if len(strings.Fields(task)) < minBackgroundTaskWordCount {
+		return fmt.Errorf("background task is too vague; describe the subtask more clearly before delegating")
+	}
+	lower := strings.ToLower(task)
+	tooSmall := []string{
+		"download it",
+		"look at it",
+		"check it",
+		"fix it",
+		"do it",
+	}
+	for _, phrase := range tooSmall {
+		if lower == phrase {
+			return fmt.Errorf("background task is too vague; describe the subtask more clearly before delegating")
+		}
+	}
+	return nil
+}

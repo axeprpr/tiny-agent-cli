@@ -98,7 +98,7 @@ func (t *webSearchTool) Definition() model.Tool {
 		Type: "function",
 		Function: model.FunctionSpec{
 			Name:        "web_search",
-			Description: "Run a lightweight web search and return compact results",
+			Description: "Run a web search and return compact results",
 			Parameters: map[string]any{
 				"type": "object",
 				"required": []string{
@@ -128,12 +128,12 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		return "", fmt.Errorf("query is required")
 	}
 
-	endpoint := "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=0&q=" + url.QueryEscape(query)
+	endpoint := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "tiny-agent-cli/0.1")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -141,70 +141,105 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	defer resp.Body.Close()
 
-	var payload struct {
-		Heading       string `json:"Heading"`
-		AbstractText  string `json:"AbstractText"`
-		AbstractURL   string `json:"AbstractURL"`
-		RelatedTopics []struct {
-			Text     string `json:"Text"`
-			FirstURL string `json:"FirstURL"`
-			Topics   []struct {
-				Text     string `json:"Text"`
-				FirstURL string `json:"FirstURL"`
-			} `json:"Topics"`
-		} `json:"RelatedTopics"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	if err != nil {
 		return "", err
 	}
 
+	results := parseDDGResults(string(body))
 	var lines []string
 	lines = append(lines, "query: "+query)
 
-	if payload.Heading != "" || payload.AbstractText != "" {
-		line := payload.Heading
-		if payload.AbstractText != "" {
-			line = strings.TrimSpace(line + " - " + payload.AbstractText)
-		}
-		if payload.AbstractURL != "" {
-			line = strings.TrimSpace(line + " (" + payload.AbstractURL + ")")
-		}
-		lines = append(lines, line)
+	if len(results) == 0 {
+		lines = append(lines, "(no search results returned)")
+		return strings.Join(lines, "\n"), nil
 	}
 
-	count := 0
-	for _, item := range payload.RelatedTopics {
-		if item.Text != "" {
-			lines = append(lines, "- "+item.Text+" ("+item.FirstURL+")")
-			count++
+	for i, r := range results {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, r.title))
+		if r.url != "" {
+			lines = append(lines, "   "+r.url)
 		}
-		for _, nested := range item.Topics {
-			if nested.Text != "" {
-				lines = append(lines, "- "+nested.Text+" ("+nested.FirstURL+")")
-				count++
-			}
-			if count >= 5 {
-				break
-			}
+		if r.snippet != "" {
+			lines = append(lines, "   "+r.snippet)
 		}
-		if count >= 5 {
-			break
-		}
-	}
-
-	if len(lines) == 1 {
-		lines = append(lines, "(no search summary returned)")
 	}
 	return strings.Join(lines, "\n"), nil
 }
 
+type ddgResult struct {
+	title   string
+	url     string
+	snippet string
+}
+
 var (
-	tagPattern   = regexp.MustCompile(`(?s)<[^>]*>`)
-	spacePattern = regexp.MustCompile(`\s+`)
+	ddgResultBlockPattern = regexp.MustCompile(`(?si)<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	ddgSnippetPattern     = regexp.MustCompile(`(?si)<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
+	ddgURLPattern         = regexp.MustCompile(`(?i)uddg=([^&]+)`)
+	scriptStylePattern    = regexp.MustCompile(`(?si)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>`)
+	tagPattern            = regexp.MustCompile(`(?s)<[^>]*>`)
+	spacePattern          = regexp.MustCompile(`\s+`)
 )
 
+func parseDDGResults(html string) []ddgResult {
+	blocks := ddgResultBlockPattern.FindAllStringSubmatch(html, 16)
+	snippets := ddgSnippetPattern.FindAllStringSubmatch(html, 16)
+
+	var results []ddgResult
+	for i, block := range blocks {
+		if len(results) >= 8 {
+			break
+		}
+		rawURL := block[1]
+		title := stripTags(block[2])
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+
+		resultURL := rawURL
+		if m := ddgURLPattern.FindStringSubmatch(rawURL); len(m) > 1 {
+			if decoded, err := url.QueryUnescape(m[1]); err == nil {
+				resultURL = decoded
+			}
+		}
+
+		snippet := ""
+		if i < len(snippets) {
+			snippet = stripTags(snippets[i][1])
+			snippet = strings.TrimSpace(snippet)
+		}
+
+		results = append(results, ddgResult{
+			title:   title,
+			url:     resultURL,
+			snippet: snippet,
+		})
+	}
+	return results
+}
+
+func stripTags(s string) string {
+	s = tagPattern.ReplaceAllString(s, " ")
+	s = decodeHTMLEntities(s)
+	s = spacePattern.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+func decodeHTMLEntities(s string) string {
+	r := strings.NewReplacer(
+		"&amp;", "&", "&lt;", "<", "&gt;", ">",
+		"&quot;", `"`, "&#39;", "'", "&apos;", "'",
+		"&nbsp;", " ", "&#x27;", "'", "&#x2F;", "/",
+	)
+	return r.Replace(s)
+}
+
 func compactHTML(body string) string {
+	body = scriptStylePattern.ReplaceAllString(body, " ")
 	body = tagPattern.ReplaceAllString(body, " ")
+	body = decodeHTMLEntities(body)
 	body = spacePattern.ReplaceAllString(body, " ")
 	body = strings.TrimSpace(body)
 	if len(body) > 4000 {

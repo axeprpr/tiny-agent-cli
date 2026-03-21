@@ -18,6 +18,8 @@ const (
 	retryConversationChars = 12000
 	maxSummaryChars        = 1800
 	recentTurnsToKeep      = 3
+	maxConsecutiveToolErrs = 3
+	repeatedToolWindow     = 4
 )
 
 const syntheticSummaryPrefix = "[compacted summary]"
@@ -40,6 +42,10 @@ Constraints:
 
 Behavior:
 - Start with a short internal plan before acting, but keep it silent.
+- Internally choose the working mode that fits the task:
+  - plan: break down ambiguous or multi-step work before acting
+  - explore: inspect files, commands, or evidence before editing
+  - build: make targeted changes and verify them
 - Choose the smallest useful next step, then verify the result before continuing.
 - Do not narrate intent with phrases like "let me", "I will", "I am going to", or "first I will".
 - Do not describe the user or their request in the third person.
@@ -48,8 +54,16 @@ Behavior:
 - For simple requests, answer directly in 1 to 3 short lines.
 - If no tool is needed, reply immediately with the answer and no preamble.
 - Inspect the workspace before editing when the task depends on local files.
+- Prefer edit_file for targeted changes when you can identify the exact block to replace.
+- Use write_file when creating a new file or replacing the entire file is clearly simpler and safe.
 - When a tool is needed, call it instead of merely describing it.
 - Use web_search for broad discovery and fetch_url for direct page inspection.
+- For multi-step work, keep a short todo list with update_todo and refresh it when progress changes.
+- Use show_todo when you need to check the current plan instead of guessing.
+- Keep work in the main conversation by default.
+- Only start a background job when the subtask is clearly long-running, noisy, or independently useful while the user keeps chatting.
+- Do not start a background job for tiny commands, single file reads, or vague subtasks.
+- After starting a background job, use inspect_background_job or list_background_jobs to collect its result instead of guessing.
 - Prefer plain text over Markdown tables unless the user explicitly asks for tables.
 - When writing files, explain what you changed in the final answer.
 - Return only the final answer to the user, not your reasoning.
@@ -64,11 +78,16 @@ type Result struct {
 	Steps int
 }
 
+type StreamClient interface {
+	CompleteStream(ctx context.Context, req model.Request) (<-chan model.StreamChunk, <-chan error)
+}
+
 type Agent struct {
-	client   chatClient
-	registry *tools.Registry
-	maxSteps int
-	log      io.Writer
+	client       chatClient
+	streamClient StreamClient
+	registry     *tools.Registry
+	maxSteps     int
+	log          io.Writer
 }
 
 type Session struct {
@@ -87,6 +106,14 @@ func New(client chatClient, registry *tools.Registry, maxSteps int, log io.Write
 
 func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
 	return a.NewSession().RunTask(ctx, task)
+}
+
+func (a *Agent) SetStreamClient(sc StreamClient) {
+	a.streamClient = sc
+}
+
+func (a *Agent) CanStream() bool {
+	return a.streamClient != nil
 }
 
 func (a *Agent) NewSession() *Session {
@@ -125,6 +152,20 @@ func (s *Session) SetAgent(agent *Agent) {
 	s.agent = agent
 }
 
+func (a *Agent) TodoItems() []tools.TodoItem {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return a.registry.TodoItems()
+}
+
+func (a *Agent) ReplaceTodo(items []tools.TodoItem) error {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return a.registry.ReplaceTodo(items)
+}
+
 func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	s.messages = append(s.messages, model.Message{
 		Role:    "user",
@@ -134,6 +175,10 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	for step := 1; step <= s.agent.maxSteps; step++ {
 		finalStep := step == s.agent.maxSteps
 		s.messages = compactConversation(s.messages, maxConversationChars)
+		if stop, reason := shouldStopSession(s.messages); stop {
+			s.agent.logf("[step %d/%d] stopping early: %s\n", step, s.agent.maxSteps, reason)
+			return Result{Final: reason, Steps: step - 1}, nil
+		}
 		if finalStep {
 			s.agent.logf("[step %d/%d] finalizing answer with current context\n", step, s.agent.maxSteps)
 		} else {
@@ -199,6 +244,197 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	}
 
 	return Result{}, fmt.Errorf("%s", stepBudgetReachedText(s.agent.maxSteps))
+}
+
+// RunTaskStreaming is like RunTask but streams assistant tokens via onToken.
+func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken func(string)) (Result, error) {
+	if s.agent.streamClient == nil {
+		return s.RunTask(ctx, task)
+	}
+
+	s.messages = append(s.messages, model.Message{
+		Role:    "user",
+		Content: task,
+	})
+
+	for step := 1; step <= s.agent.maxSteps; step++ {
+		finalStep := step == s.agent.maxSteps
+		s.messages = compactConversation(s.messages, maxConversationChars)
+		if stop, reason := shouldStopSession(s.messages); stop {
+			s.agent.logf("[step %d/%d] stopping early: %s\n", step, s.agent.maxSteps, reason)
+			return Result{Final: reason, Steps: step - 1}, nil
+		}
+		if finalStep {
+			s.agent.logf("[step %d/%d] finalizing answer with current context\n", step, s.agent.maxSteps)
+		} else {
+			s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+		}
+
+		req := s.buildRequest(finalStep)
+
+		chunks, errc := s.agent.streamClient.CompleteStream(ctx, req)
+
+		var contentBuf strings.Builder
+		var role string
+		toolCallMap := map[int]*model.ToolCall{}
+
+		for chunk := range chunks {
+			for _, choice := range chunk.Choices {
+				d := choice.Delta
+				if d.Role != "" {
+					role = d.Role
+				}
+				if d.Content != "" {
+					contentBuf.WriteString(d.Content)
+					if onToken != nil {
+						onToken(d.Content)
+					}
+				}
+				for _, tc := range d.ToolCalls {
+					existing, ok := toolCallMap[choice.Index]
+					if !ok {
+						existing = &model.ToolCall{ID: tc.ID, Type: tc.Type, Function: tc.Function}
+						toolCallMap[choice.Index] = existing
+					} else {
+						if tc.ID != "" {
+							existing.ID = tc.ID
+						}
+						if tc.Function.Name != "" {
+							existing.Function.Name += tc.Function.Name
+						}
+						existing.Function.Arguments += tc.Function.Arguments
+					}
+				}
+			}
+		}
+		if err := <-errc; err != nil {
+			if isContextLengthError(err) {
+				trimmed := compactConversation(s.messages, retryConversationChars)
+				if len(trimmed) < len(s.messages) {
+					s.messages = trimmed
+					s.agent.logf("[step %d/%d] context too long, retrying\n", step, s.agent.maxSteps)
+					step--
+					continue
+				}
+			}
+			return Result{}, err
+		}
+
+		if role == "" {
+			role = "assistant"
+		}
+
+		var toolCalls []model.ToolCall
+		for i := 0; i < len(toolCallMap); i++ {
+			if tc, ok := toolCallMap[i]; ok {
+				toolCalls = append(toolCalls, *tc)
+			}
+		}
+
+		msg := model.Message{
+			Role:      role,
+			Content:   contentBuf.String(),
+			ToolCalls: toolCalls,
+		}
+
+		if len(toolCalls) == 0 || finalStep {
+			final := finalResponseText(msg, finalStep, s.agent.maxSteps)
+			s.messages = append(s.messages, model.Message{
+				Role:    "assistant",
+				Content: msg.Content,
+			})
+			return Result{Final: final, Steps: step}, nil
+		}
+
+		s.messages = append(s.messages, msg)
+		s.agent.logf("[step %d/%d] executing %d tool(s)\n", step, s.agent.maxSteps, len(toolCalls))
+
+		for i, call := range toolCalls {
+			args := json.RawMessage(call.Function.Arguments)
+			s.agent.logToolStart(i+1, len(toolCalls), call.Function.Name, args)
+			started := time.Now()
+			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
+			output = truncateToolMessage(output, maxToolMessageChars)
+			s.agent.logToolFinish(time.Since(started), output, err)
+			if err != nil {
+				output = "tool error: " + err.Error()
+			}
+			s.messages = append(s.messages, model.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				Content:    output,
+			})
+		}
+	}
+
+	return Result{}, fmt.Errorf("%s", stepBudgetReachedText(s.agent.maxSteps))
+}
+
+func shouldStopSession(messages []model.Message) (bool, string) {
+	if hasRepeatedToolLoop(messages, repeatedToolWindow) {
+		return true, "Stopped after detecting a repeated tool-call loop. Ask to continue with a narrower instruction or inspect the latest tool output."
+	}
+	if hasConsecutiveToolErrors(messages, maxConsecutiveToolErrs) {
+		return true, "Stopped after repeated tool failures. Inspect the latest error and adjust the request or environment before continuing."
+	}
+	return false, ""
+}
+
+func hasConsecutiveToolErrors(messages []model.Message, threshold int) bool {
+	if threshold <= 0 {
+		return false
+	}
+	count := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "tool" {
+			continue
+		}
+		text := strings.ToLower(strings.TrimSpace(model.ContentString(msg.Content)))
+		if strings.HasPrefix(text, "tool error:") {
+			count++
+			if count >= threshold {
+				return true
+			}
+			continue
+		}
+		break
+	}
+	return false
+}
+
+func hasRepeatedToolLoop(messages []model.Message, window int) bool {
+	if window < 2 {
+		return false
+	}
+	var calls []string
+	for _, msg := range messages {
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			name := strings.TrimSpace(call.Function.Name)
+			args := compactSummaryText(call.Function.Arguments, 200)
+			if name == "" {
+				continue
+			}
+			calls = append(calls, name+" "+args)
+		}
+	}
+	if len(calls) < window {
+		return false
+	}
+	tail := calls[len(calls)-window:]
+	first := tail[0]
+	if first == "" {
+		return false
+	}
+	for _, item := range tail[1:] {
+		if item != first {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Session) buildRequest(finalStep bool) model.Request {
@@ -296,22 +532,44 @@ func pruneConversation(messages []model.Message, limit int) []model.Message {
 		return messages
 	}
 
-	kept := make([]model.Message, 0, len(messages))
-	kept = append(kept, messages[0])
-	total := messageSize(messages[0])
+	// Group messages so tool messages stay with their preceding assistant message.
+	type group struct {
+		msgs []model.Message
+		size int
+	}
+	var groups []group
+	groups = append(groups, group{msgs: []model.Message{messages[0]}, size: messageSize(messages[0])})
 
-	var tail []model.Message
-	for i := len(messages) - 1; i >= 1; i-- {
-		size := messageSize(messages[i])
-		if total+size > limit {
-			continue
+	current := group{}
+	for _, msg := range messages[1:] {
+		if msg.Role == "tool" {
+			current.msgs = append(current.msgs, msg)
+			current.size += messageSize(msg)
+		} else {
+			if len(current.msgs) > 0 {
+				groups = append(groups, current)
+			}
+			current = group{msgs: []model.Message{msg}, size: messageSize(msg)}
 		}
-		tail = append(tail, messages[i])
-		total += size
+	}
+	if len(current.msgs) > 0 {
+		groups = append(groups, current)
 	}
 
+	kept := make([]model.Message, 0, len(messages))
+	kept = append(kept, groups[0].msgs...)
+	total := groups[0].size
+
+	var tail []group
+	for i := len(groups) - 1; i >= 1; i-- {
+		if total+groups[i].size > limit {
+			continue
+		}
+		tail = append(tail, groups[i])
+		total += groups[i].size
+	}
 	for i := len(tail) - 1; i >= 0; i-- {
-		kept = append(kept, tail[i])
+		kept = append(kept, tail[i].msgs...)
 	}
 	return kept
 }
@@ -326,14 +584,14 @@ func summarizeConversationHistory(messages []model.Message, limit int) []model.M
 		return pruneConversation(messages, limit)
 	}
 
-	maxKeep := minInt(recentTurnsToKeep, len(turns))
+	maxKeep := min(recentTurnsToKeep, len(turns))
 	for keep := maxKeep; keep >= 1; keep-- {
 		older := turns[:len(turns)-keep]
 		recent := turns[len(turns)-keep:]
 
 		candidate := []model.Message{messages[0]}
 		if len(older) > 0 {
-			summary := summarizeTurns(older, minInt(maxSummaryChars, maxInt(400, limit/3)))
+			summary := summarizeTurns(older, min(maxSummaryChars, max(400, limit/3)))
 			if strings.TrimSpace(summary) != "" {
 				candidate = append(candidate, model.Message{
 					Role:    "system",
@@ -349,7 +607,7 @@ func summarizeConversationHistory(messages []model.Message, limit int) []model.M
 		}
 	}
 
-	summary := summarizeTurns(turns, minInt(maxSummaryChars, maxInt(300, limit/2)))
+	summary := summarizeTurns(turns, min(maxSummaryChars, max(300, limit/2)))
 	if strings.TrimSpace(summary) == "" {
 		return pruneConversation(messages, limit)
 	}
@@ -485,19 +743,6 @@ func messageSize(msg model.Message) int {
 	return size
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 func isContextLengthError(err error) bool {
 	if err == nil {

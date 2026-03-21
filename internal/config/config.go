@@ -19,6 +19,7 @@ type Config struct {
 	StateDir       string
 	MaxSteps       int
 	CommandTimeout time.Duration
+	ModelTimeout   time.Duration
 	Shell          string
 	ApprovalMode   string
 }
@@ -41,6 +42,7 @@ func FromEnv() Config {
 		StateDir:       getEnv("AGENT_STATE_DIR", stateDir),
 		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", defaultMaxSteps),
 		CommandTimeout: getEnvDuration("AGENT_COMMAND_TIMEOUT", 30*time.Second),
+		ModelTimeout:   getEnvDuration("MODEL_TIMEOUT", 180*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
 		ApprovalMode:   getEnv("AGENT_APPROVAL", "confirm"),
 	}
@@ -90,6 +92,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CommandTimeout <= 0 {
 		return fmt.Errorf("command timeout must be > 0")
+	}
+	if c.ModelTimeout <= 0 {
+		return fmt.Errorf("model timeout must be > 0")
 	}
 
 	abs, err := filepath.Abs(c.WorkDir)

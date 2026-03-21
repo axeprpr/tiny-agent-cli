@@ -3,10 +3,12 @@ package tools
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 )
 
 const (
@@ -22,10 +24,13 @@ type Approver interface {
 }
 
 type TerminalApprover struct {
+	mu          sync.Mutex
 	reader      *bufio.Reader
 	writer      io.Writer
 	mode        string
 	interactive bool
+	allowedCmds map[string]bool
+	allowedOps  map[string]bool
 }
 
 func NewTerminalApprover(reader *bufio.Reader, writer io.Writer, mode string, interactive bool) *TerminalApprover {
@@ -34,14 +39,20 @@ func NewTerminalApprover(reader *bufio.Reader, writer io.Writer, mode string, in
 		writer:      writer,
 		mode:        normalizeApprovalMode(mode),
 		interactive: interactive,
+		allowedCmds: make(map[string]bool),
+		allowedOps:  make(map[string]bool),
 	}
 }
 
 func (a *TerminalApprover) Mode() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.mode
 }
 
 func (a *TerminalApprover) SetMode(mode string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	mode = normalizeApprovalMode(mode)
 	switch mode {
 	case ApprovalConfirm, ApprovalDangerously:
@@ -53,20 +64,27 @@ func (a *TerminalApprover) SetMode(mode string) error {
 }
 
 func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bool, error) {
-	if a.mode == ApprovalDangerously {
+	command = strings.TrimSpace(command)
+	a.mu.Lock()
+	if a.mode == ApprovalDangerously || a.allowedCmds[command] {
+		a.mu.Unlock()
 		return true, nil
 	}
-	if !a.interactive || a.reader == nil {
+	interactive := a.interactive
+	reader := a.reader
+	writer := a.writer
+	a.mu.Unlock()
+	if !interactive || reader == nil {
 		return false, fmt.Errorf("command approval requires an interactive terminal; rerun with --dangerously to skip prompts")
 	}
 
 	for {
-		fmt.Fprintln(a.writer)
-		fmt.Fprintln(a.writer, "Command approval required:")
-		fmt.Fprintf(a.writer, "  %s\n", strings.TrimSpace(command))
-		fmt.Fprint(a.writer, "Run? [y]es / [n]o / [a]lways dangerously for this session: ")
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Command approval required:")
+		fmt.Fprintf(writer, "  %s\n", command)
+		fmt.Fprint(writer, "Run? [y]es / [n]o / [a]lways dangerously for this session: ")
 
-		line, err := a.reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return false, err
 		}
@@ -74,15 +92,20 @@ func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bo
 		answer := strings.ToLower(strings.TrimSpace(line))
 		switch answer {
 		case "y", "yes":
+			a.mu.Lock()
+			a.allowedCmds[command] = true
+			a.mu.Unlock()
 			return true, nil
 		case "n", "no", "":
 			return false, nil
 		case "a", "always", "dangerously":
+			a.mu.Lock()
 			a.mode = ApprovalDangerously
-			fmt.Fprintln(a.writer, "approval mode switched to dangerously for this session")
+			a.mu.Unlock()
+			fmt.Fprintln(writer, "approval mode switched to dangerously for this session")
 			return true, nil
 		default:
-			fmt.Fprintln(a.writer, "please answer y, n, or a")
+			fmt.Fprintln(writer, "please answer y, n, or a")
 		}
 
 		if err == io.EOF {
@@ -92,10 +115,18 @@ func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bo
 }
 
 func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string) (bool, error) {
-	if a.mode == ApprovalDangerously {
+	path = strings.TrimSpace(path)
+	opKey := WriteApprovalKey(path, content)
+	a.mu.Lock()
+	if a.mode == ApprovalDangerously || a.allowedOps[opKey] {
+		a.mu.Unlock()
 		return true, nil
 	}
-	if !a.interactive || a.reader == nil {
+	interactive := a.interactive
+	reader := a.reader
+	writer := a.writer
+	a.mu.Unlock()
+	if !interactive || reader == nil {
 		return false, fmt.Errorf("file write approval requires an interactive terminal; rerun with --dangerously to skip prompts")
 	}
 
@@ -109,14 +140,14 @@ func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string)
 	preview = strings.ReplaceAll(preview, "\n", "\\n")
 
 	for {
-		fmt.Fprintln(a.writer)
-		fmt.Fprintln(a.writer, "File write approval required:")
-		fmt.Fprintf(a.writer, "  path: %s\n", strings.TrimSpace(path))
-		fmt.Fprintf(a.writer, "  bytes: %d\n", len(content))
-		fmt.Fprintf(a.writer, "  preview: %s\n", preview)
-		fmt.Fprint(a.writer, "Write file? [y]es / [n]o / [a]lways dangerously for this session: ")
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "File write approval required:")
+		fmt.Fprintf(writer, "  path: %s\n", path)
+		fmt.Fprintf(writer, "  bytes: %d\n", len(content))
+		fmt.Fprintf(writer, "  preview: %s\n", preview)
+		fmt.Fprint(writer, "Write file? [y]es / [n]o / [a]lways dangerously for this session: ")
 
-		line, err := a.reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return false, err
 		}
@@ -124,21 +155,31 @@ func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string)
 		answer := strings.ToLower(strings.TrimSpace(line))
 		switch answer {
 		case "y", "yes":
+			a.mu.Lock()
+			a.allowedOps[opKey] = true
+			a.mu.Unlock()
 			return true, nil
 		case "n", "no", "":
 			return false, nil
 		case "a", "always", "dangerously":
+			a.mu.Lock()
 			a.mode = ApprovalDangerously
-			fmt.Fprintln(a.writer, "approval mode switched to dangerously for this session")
+			a.mu.Unlock()
+			fmt.Fprintln(writer, "approval mode switched to dangerously for this session")
 			return true, nil
 		default:
-			fmt.Fprintln(a.writer, "please answer y, n, or a")
+			fmt.Fprintln(writer, "please answer y, n, or a")
 		}
 
 		if err == io.EOF {
 			return false, nil
 		}
 	}
+}
+
+func WriteApprovalKey(path, content string) string {
+	h := sha256.Sum256([]byte(content))
+	return path + "\x00" + fmt.Sprintf("%x", h[:16])
 }
 
 func normalizeApprovalMode(mode string) string {

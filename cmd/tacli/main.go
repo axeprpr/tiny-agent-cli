@@ -35,6 +35,7 @@ type chatRuntime struct {
 	approver       tools.Approver
 	loop           *agent.Agent
 	session        *agent.Session
+	jobs           *jobManager
 	sessionName    string
 	outputMode     string
 	transcriptPath string
@@ -47,11 +48,27 @@ type chatRuntime struct {
 	dirtySession   bool
 }
 
+type memoryIntent struct {
+	action string
+	scope  string
+	body   string
+}
+
 const (
 	memorySummaryMaxMessages = 24
 	memorySummaryMaxChars    = 8000
 	memorySummaryEntryChars  = 320
 	autoMemoryTimeout        = 20 * time.Second
+	autoExploreMinChars      = 48
+)
+
+const (
+	memoryActionRemember = "remember"
+	memoryActionForget   = "forget"
+	memoryActionShow     = "show"
+	memoryScopeProject   = "project"
+	memoryScopeGlobal    = "global"
+	memoryScopeAll       = "all"
 )
 
 var memoryCandidateSplit = regexp.MustCompile(`[\n\r.!?。！？;；]+`)
@@ -226,6 +243,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
+	r.jobs = newJobManager(cfg, memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
 
 	if strings.TrimSpace(opts.session) != "" {
 		if _, err := r.loadSessionState(); err != nil {
@@ -257,25 +275,37 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: "context reset", exitCode: -1}
 	case "/help":
 		return runtimeCommandResult{handled: true, output: strings.Join([]string{
-			"/help                     show commands",
-			"/exit                     quit",
-			"/reset                    clear conversation context",
-			"/session [name|new]       switch or create a chat session",
-			"/status                   show session settings",
-			"/approval confirm|dangerously",
-			"/output raw|terminal",
-			"/model <name>",
-			"/scope                    show current memory scope",
-			"/memory                   show saved memory",
-			"/remember <text>           add a project memory note",
-			"/remember-global <text>    add a global memory note",
-			"/forget <query>            remove matching project memory notes",
-			"/forget-global <query>     remove matching global memory notes",
-			"/memorize                  summarize this session into project memory",
+			"Commands:",
+			"  /help                 Show this help",
+			"  /exit, /quit          Exit the chat",
+			"  /reset                Clear conversation context",
+			"  /session [name|new]   Switch or create a session",
+			"  /status               Show session and config status",
+			"  /scope                Show current project scope key",
+			"  /model <name>         Switch model for this session",
+			"  /approval <mode>      Set approval mode (confirm|dangerously)",
+			"  /memory               Show saved memory notes",
+			"  /remember <text>      Save a project memory note",
+			"  /remember-global <t>  Save a global memory note",
+			"  /forget <query>       Remove matching project memory",
+			"  /forget-global <q>    Remove matching global memory",
+			"  /memorize             Extract memory from conversation",
+			"  /bg <task>            Start a background job",
+			"  /jobs                 List background jobs",
+			"  /job <id>             Inspect a background job",
+			"  /job-send <id> <msg>  Send follow-up to a background job",
+			"  /job-cancel <id>      Cancel a background job",
+			"  /job-apply <id>       Apply job result to chat context",
+			"",
+			"Or just type naturally -- no command needed for most tasks.",
 		}, "\n"), exitCode: -1}
 	case "/status":
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmodel=%s\napproval=%s\noutput=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s",
-			r.sessionName, r.cfg.Model, r.approver.Mode(), r.outputMode, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath), exitCode: -1}
+		jobSummary := "jobs=0"
+		if r.jobs != nil {
+			jobSummary = r.jobs.Summary()
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\n%s",
+			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, jobSummary), exitCode: -1}
 	case "/session":
 		if len(fields) == 1 {
 			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
@@ -298,20 +328,59 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		_ = r.save()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf("approval mode set to %s", r.approver.Mode()), exitCode: -1}
 	case "/output":
-		if len(fields) != 2 || (fields[1] != "raw" && fields[1] != "terminal") {
-			return runtimeCommandResult{handled: true, output: "usage: /output raw|terminal", exitCode: -1}
-		}
-		r.outputMode = fields[1]
-		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("output mode set to %s", r.outputMode), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: "output mode command is deprecated in chat; terminal rendering is now the default", exitCode: -1}
 	case "/model":
 		if len(fields) < 2 {
 			return runtimeCommandResult{handled: true, output: "usage: /model <name>", exitCode: -1}
 		}
 		r.cfg.Model = strings.Join(fields[1:], " ")
 		r.rebuildLoop()
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("model set to %s for this session", r.cfg.Model), exitCode: -1}
+	case "/bg":
+		id, err := r.jobs.Start(strings.TrimSpace(input[len("/bg"):]))
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("started background job %s", id), exitCode: -1}
+	case "/jobs":
+		return runtimeCommandResult{handled: true, output: formatJobList(r.jobs.List()), exitCode: -1}
+	case "/job":
+		if len(fields) != 2 {
+			return runtimeCommandResult{handled: true, output: "usage: /job <id>", exitCode: -1}
+		}
+		snap, ok := r.jobs.Snapshot(fields[1])
+		if !ok {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("unknown job %q", fields[1]), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: formatJobSnapshot(snap), exitCode: -1}
+	case "/job-send":
+		if len(fields) < 3 {
+			return runtimeCommandResult{handled: true, output: "usage: /job-send <id> <text>", exitCode: -1}
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
+		if err := r.jobs.Send(fields[1], body); err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("queued follow-up for %s", fields[1]), exitCode: -1}
+	case "/job-cancel":
+		if len(fields) != 2 {
+			return runtimeCommandResult{handled: true, output: "usage: /job-cancel <id>", exitCode: -1}
+		}
+		if err := r.jobs.Cancel(fields[1]); err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("canceled %s", fields[1]), exitCode: -1}
+	case "/job-apply":
+		if len(fields) != 2 {
+			return runtimeCommandResult{handled: true, output: "usage: /job-apply <id>", exitCode: -1}
+		}
+		snap, ok := r.jobs.Snapshot(fields[1])
+		if !ok {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("unknown job %q", fields[1]), exitCode: -1}
+		}
+		r.injectJobSummary(snap)
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("model set to %s", r.cfg.Model), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("applied %s into current chat context", fields[1]), exitCode: -1}
 	case "/memory":
 		return runtimeCommandResult{handled: true, output: memory.FormatNotes(r.globalMemory, r.projectMemory), exitCode: -1}
 	case "/remember":
@@ -364,9 +433,16 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 }
 
 func (r *chatRuntime) rebuildLoop() {
-	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr)
+	var jobs tools.JobControl
+	if r.jobs != nil {
+		jobs = jobToolAdapter{manager: r.jobs}
+	}
+	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs)
 	r.session.SetAgent(r.loop)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
+	if r.jobs != nil {
+		r.jobs.UpdateConfig(r.cfg)
+	}
 }
 
 func (r *chatRuntime) setSessionName(name string) {
@@ -384,19 +460,8 @@ func (r *chatRuntime) loadSessionState() (bool, error) {
 		return false, err
 	}
 
-	if strings.TrimSpace(state.Model) != "" && state.Model != r.cfg.Model {
-		r.cfg.Model = state.Model
-		r.rebuildLoop()
-	}
 	if len(state.Messages) > 0 {
 		r.session.ReplaceMessages(state.Messages)
-	}
-	if strings.TrimSpace(state.OutputMode) != "" {
-		r.outputMode = state.OutputMode
-	}
-	if strings.TrimSpace(state.ApprovalMode) != "" {
-		r.cfg.ApprovalMode = state.ApprovalMode
-		_ = r.approver.SetMode(state.ApprovalMode)
 	}
 	return true, nil
 }
@@ -447,8 +512,24 @@ func (r *chatRuntime) describeSessions() string {
 }
 
 func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, error) {
+	return r.executeTaskStreaming(ctx, task, nil)
+}
+
+func (r *chatRuntime) executeTaskStreaming(ctx context.Context, task string, onToken func(string)) (string, error) {
+	if handled, output, err := r.tryHandleNaturalLanguageMemory(task); handled {
+		return output, err
+	}
+	r.maybeApplyReadyJobSummaries()
+	r.maybeStartAutoExplore(task)
+
 	_ = session.AppendTranscript(r.transcriptPath, "user", task)
-	result, err := r.session.RunTask(ctx, task)
+	var result agent.Result
+	var err error
+	if onToken != nil && r.loop.CanStream() {
+		result, err = r.session.RunTaskStreaming(ctx, task, onToken)
+	} else {
+		result, err = r.session.RunTask(ctx, task)
+	}
 	r.dirtySession = true
 	if err != nil {
 		_ = session.AppendTranscript(r.transcriptPath, "error", err.Error())
@@ -461,11 +542,457 @@ func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, err
 	return output, nil
 }
 
+func (r *chatRuntime) maybeStartAutoExplore(task string) {
+	if !shouldAutoStartExplore(task, r.cfg, r.jobs) {
+		return
+	}
+	subtask := buildAutoExploreTask(task)
+	id, err := r.jobs.Start(subtask)
+	if err != nil {
+		return
+	}
+	r.injectOrchestratorNote(id)
+}
+
+func (r *chatRuntime) injectOrchestratorNote(jobID string) {
+	msgs := r.session.Messages()
+	msgs = append(msgs, model.Message{
+		Role: "system",
+		Content: "Internal orchestration note: background exploration job " + jobID +
+			" is running for the current user request. Keep making progress in the main conversation. " +
+			"Use inspect_background_job or list_background_jobs later if the exploration results would help.",
+	})
+	r.session.ReplaceMessages(msgs)
+	r.dirtySession = true
+}
+
+func (r *chatRuntime) tryHandleNaturalLanguageMemory(task string) (bool, string, error) {
+	intent, ok := parseNaturalLanguageMemoryIntent(task)
+	if !ok {
+		return false, "", nil
+	}
+
+	output, err := r.applyMemoryIntent(intent)
+	if err != nil {
+		return true, "", err
+	}
+
+	_ = session.AppendTranscript(r.transcriptPath, "user", task)
+	_ = session.AppendTranscript(r.transcriptPath, "assistant", output)
+	r.appendLocalAssistantExchange(task, output)
+	if err := r.save(); err != nil {
+		return true, "", err
+	}
+	return true, output, nil
+}
+
+func (r *chatRuntime) maybeApplyReadyJobSummaries() {
+	if r.jobs == nil {
+		return
+	}
+	snaps := r.jobs.CollectReadyForApply()
+	if len(snaps) == 0 {
+		return
+	}
+	for _, snap := range snaps {
+		r.injectJobSummary(snap)
+		r.advanceTodoWithJobSummary(snap)
+		r.jobs.MarkApplied(snap.ID)
+	}
+}
+
+func (r *chatRuntime) advanceTodoWithJobSummary(snap jobSnapshot) {
+	if r.loop == nil {
+		return
+	}
+	items := append([]tools.TodoItem(nil), r.loop.TodoItems()...)
+	if len(items) == 0 {
+		next := uniqueTodoTexts(snap.Summary.NextSteps, nil)
+		if len(next) == 0 {
+			return
+		}
+		items = make([]tools.TodoItem, 0, len(next))
+		for _, text := range next {
+			items = append(items, tools.TodoItem{Text: text, Status: "pending"})
+		}
+		_ = r.loop.ReplaceTodo(items)
+		return
+	}
+
+	updated := append([]tools.TodoItem(nil), items...)
+	for i := range updated {
+		if updated[i].Status == "in_progress" {
+			updated[i].Status = "completed"
+			break
+		}
+	}
+	next := uniqueTodoTexts(snap.Summary.NextSteps, updated)
+	for _, text := range next {
+		updated = append(updated, tools.TodoItem{Text: text, Status: "pending"})
+	}
+	if sameTodoItems(items, updated) {
+		return
+	}
+	_ = r.loop.ReplaceTodo(updated)
+}
+
+func uniqueTodoTexts(texts []string, existing []tools.TodoItem) []string {
+	seen := make(map[string]bool, len(existing)+len(texts))
+	for _, item := range existing {
+		key := strings.ToLower(strings.TrimSpace(item.Text))
+		if key != "" {
+			seen[key] = true
+		}
+	}
+	var out []string
+	for _, text := range texts {
+		text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+		key := strings.ToLower(text)
+		if text == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, text)
+	}
+	return out
+}
+
+func sameTodoItems(a, b []tools.TodoItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *chatRuntime) applyMemoryIntent(intent memoryIntent) (string, error) {
+	switch intent.action {
+	case memoryActionShow:
+		return memory.FormatNotes(r.globalMemory, r.projectMemory), nil
+	case memoryActionRemember:
+		note, ok := normalizeRememberedNote(intent.body)
+		if !ok {
+			return "这条内容不适合记成长期记忆；如果你希望我记住稳定偏好或项目事实，请直接说明。", nil
+		}
+		scope := intent.scope
+		if scope == "" {
+			scope = inferMemoryScope(note)
+		}
+		if scope == memoryScopeGlobal {
+			r.globalMemory = memory.Add(r.globalMemory, note)
+		} else {
+			r.projectMemory = memory.Add(r.projectMemory, note)
+			scope = memoryScopeProject
+		}
+		r.refreshMemoryContext()
+		if err := r.saveMemory(); err != nil {
+			return "", err
+		}
+		if scope == memoryScopeGlobal {
+			return "已记住为全局偏好。", nil
+		}
+		return "已记住为当前项目记忆。", nil
+	case memoryActionForget:
+		scope := intent.scope
+		query := normalizeForgetQuery(intent.body)
+		if isLastMemoryQuery(query) {
+			desc, err := r.forgetLastMemory(scope)
+			if err != nil {
+				return "", err
+			}
+			return desc, nil
+		}
+		desc, err := r.forgetMatchingMemory(scope, query)
+		if err != nil {
+			return "", err
+		}
+		return desc, nil
+	default:
+		return "", nil
+	}
+}
+
+func (r *chatRuntime) appendLocalAssistantExchange(userText, assistantText string) {
+	msgs := r.session.Messages()
+	msgs = append(msgs,
+		model.Message{Role: "user", Content: strings.TrimSpace(userText)},
+		model.Message{Role: "assistant", Content: strings.TrimSpace(assistantText)},
+	)
+	r.session.ReplaceMessages(msgs)
+	r.dirtySession = true
+}
+
+func (r *chatRuntime) forgetLastMemory(scope string) (string, error) {
+	switch scope {
+	case memoryScopeGlobal:
+		if len(r.globalMemory) == 0 {
+			return "没有可删除的全局记忆。", nil
+		}
+		r.globalMemory = append([]string(nil), r.globalMemory[:len(r.globalMemory)-1]...)
+	case memoryScopeProject:
+		if len(r.projectMemory) == 0 {
+			return "没有可删除的项目记忆。", nil
+		}
+		r.projectMemory = append([]string(nil), r.projectMemory[:len(r.projectMemory)-1]...)
+	default:
+		switch {
+		case len(r.projectMemory) > 0:
+			r.projectMemory = append([]string(nil), r.projectMemory[:len(r.projectMemory)-1]...)
+			scope = memoryScopeProject
+		case len(r.globalMemory) > 0:
+			r.globalMemory = append([]string(nil), r.globalMemory[:len(r.globalMemory)-1]...)
+			scope = memoryScopeGlobal
+		default:
+			return "没有可删除的记忆。", nil
+		}
+	}
+	r.refreshMemoryContext()
+	if err := r.saveMemory(); err != nil {
+		return "", err
+	}
+	if scope == memoryScopeGlobal {
+		return "已删除最近一条全局记忆。", nil
+	}
+	return "已删除最近一条项目记忆。", nil
+}
+
+func (r *chatRuntime) forgetMatchingMemory(scope, query string) (string, error) {
+	if query == "" {
+		return "请明确要忘掉什么。", nil
+	}
+
+	removedGlobal := 0
+	removedProject := 0
+	switch scope {
+	case memoryScopeGlobal:
+		r.globalMemory, removedGlobal = memory.ForgetMatching(r.globalMemory, query)
+	case memoryScopeProject:
+		r.projectMemory, removedProject = memory.ForgetMatching(r.projectMemory, query)
+	default:
+		r.projectMemory, removedProject = memory.ForgetMatching(r.projectMemory, query)
+		r.globalMemory, removedGlobal = memory.ForgetMatching(r.globalMemory, query)
+	}
+	if removedGlobal+removedProject == 0 {
+		return "没有找到匹配的记忆。", nil
+	}
+	r.refreshMemoryContext()
+	if err := r.saveMemory(); err != nil {
+		return "", err
+	}
+	if removedGlobal > 0 && removedProject > 0 {
+		return fmt.Sprintf("已删除 %d 条记忆。", removedGlobal+removedProject), nil
+	}
+	if removedGlobal > 0 {
+		return fmt.Sprintf("已删除 %d 条全局记忆。", removedGlobal), nil
+	}
+	return fmt.Sprintf("已删除 %d 条项目记忆。", removedProject), nil
+}
+
+func parseNaturalLanguageMemoryIntent(input string) (memoryIntent, bool) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || strings.HasPrefix(trimmed, "/") {
+		return memoryIntent{}, false
+	}
+
+	if body, ok := matchMemoryPrefix(trimmed,
+		"remember that ", "remember this: ", "remember: ", "remember ",
+		"please remember ", "please remember that ",
+		"记住", "记一下", "记着", "请记住", "帮我记住", "请记一下", "帮我记一下",
+	); ok {
+		return memoryIntent{
+			action: memoryActionRemember,
+			scope:  detectMemoryScope(trimmed, body),
+			body:   body,
+		}, true
+	}
+
+	if body, ok := matchMemoryPrefix(trimmed,
+		"forget this: ", "forget that ", "forget ", "please forget ",
+		"忘掉", "忘了", "请忘掉", "帮我忘掉", "请忘了", "帮我忘了",
+	); ok {
+		return memoryIntent{
+			action: memoryActionForget,
+			scope:  detectMemoryScope(trimmed, body),
+			body:   body,
+		}, true
+	}
+
+	if isShowMemoryRequest(trimmed) {
+		return memoryIntent{action: memoryActionShow, scope: memoryScopeAll}, true
+	}
+	return memoryIntent{}, false
+}
+
+func matchMemoryPrefix(input string, prefixes ...string) (string, bool) {
+	trimmed := strings.TrimSpace(input)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range prefixes {
+		prefixLower := strings.ToLower(prefix)
+		if !strings.HasPrefix(lower, prefixLower) || len(trimmed) < len(prefix) {
+			continue
+		}
+		body := strings.TrimSpace(trimmed[len(prefix):])
+		body = strings.TrimLeft(body, " :：,，")
+		body = strings.TrimSpace(body)
+		if body != "" {
+			return body, true
+		}
+	}
+	return "", false
+}
+
+func isShowMemoryRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	switch lower {
+	case "memory", "show memory", "show memories", "show saved memory", "show memory notes",
+		"查看记忆", "看看记忆", "显示记忆", "记忆", "有哪些记忆", "看看你记住了什么":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectMemoryScope(fullInput, body string) string {
+	lowerFull := strings.ToLower(fullInput)
+	lowerBody := strings.ToLower(body)
+	switch {
+	case hasAny(lowerFull,
+		"global", "globally", "for all projects", "across projects",
+		"全局", "通用", "所有项目", "跨项目",
+	):
+		return memoryScopeGlobal
+	case hasAny(lowerFull,
+		"this project", "this repo", "this workspace",
+		"当前项目", "这个项目", "这个仓库", "当前仓库", "当前工作区",
+	):
+		return memoryScopeProject
+	case isPreferenceMemory(lowerBody):
+		return memoryScopeGlobal
+	case isProjectMemory(lowerBody):
+		return memoryScopeProject
+	default:
+		return ""
+	}
+}
+
+func normalizeRememberedNote(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "\"'`")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	if note, ok := normalizeStableMemoryNote(text); ok {
+		return note, true
+	}
+	text = strings.TrimRight(text, ".。!！")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) < 6 || len(text) > 180 {
+		return "", false
+	}
+	return text, true
+}
+
+func normalizeForgetQuery(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "\"'`")
+	text = strings.TrimLeft(text, "这个这条那条条记忆记录偏好项目全局 ")
+	text = strings.TrimSpace(text)
+	text = strings.TrimLeft(text, ":：,，")
+	return strings.TrimSpace(text)
+}
+
+func isLastMemoryQuery(query string) bool {
+	lower := strings.ToLower(strings.TrimSpace(query))
+	if lower == "" {
+		return true
+	}
+	return hasAny(lower,
+		"last", "latest", "most recent",
+		"上一条", "最近一条", "刚才那条", "刚刚那条", "刚记住的", "最新那条",
+	)
+}
+
+func inferMemoryScope(note string) string {
+	if isPreferenceMemory(strings.ToLower(note)) {
+		return memoryScopeGlobal
+	}
+	return memoryScopeProject
+}
+
+func shouldAutoStartExplore(task string, cfg config.Config, jobs *jobManager) bool {
+	task = strings.TrimSpace(task)
+	if jobs == nil || cfg.ApprovalMode != tools.ApprovalDangerously {
+		return false
+	}
+	if len(task) < autoExploreMinChars {
+		return false
+	}
+	lower := strings.ToLower(task)
+	if !hasAny(lower,
+		"analyze", "inspect", "review", "compare", "understand", "explore", "investigate",
+		"trace", "audit", "read through", "study",
+		"分析", "检查", "阅读", "研究", "梳理", "看看", "对比", "审查", "理解",
+	) {
+		return false
+	}
+	if hasAny(lower,
+		"small", "tiny", "one file", "single file",
+		"小改", "小修改", "单个文件", "一行", "几行",
+	) {
+		return false
+	}
+	if strings.Count(lower, " and ") >= 2 || strings.Count(lower, "，") >= 2 || hasAny(lower,
+		"repository", "repo", "codebase", "whole project", "whole repo",
+		"整个仓库", "整个项目", "代码库", "工作区", "全局",
+	) {
+		return true
+	}
+	return hasAny(lower,
+		"risks", "architecture", "flow", "dependency", "dependencies", "highest risk",
+		"风险", "架构", "流程", "依赖", "调用链", "关键路径",
+	)
+}
+
+func buildAutoExploreTask(task string) string {
+	return strings.TrimSpace(
+		"Explore the workspace for this request in read-only mode. " +
+			"Do not edit files. Inspect code, commands, and project structure as needed. " +
+			"Return a concise summary in exactly these sections:\n" +
+			"Key findings:\n" +
+			"- ...\n" +
+			"Relevant files:\n" +
+			"- ...\n" +
+			"Risks or unknowns:\n" +
+			"- ...\n" +
+			"Recommended next steps:\n" +
+			"- ...\n\n" +
+			"Request: " + task,
+	)
+}
+
 func (r *chatRuntime) newSession() *agent.Session {
 	return r.loop.NewSessionWithMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
 }
 
+func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
+	msgs := r.session.Messages()
+	msgs = append(msgs, model.Message{
+		Role:    "system",
+		Content: "Background result available for the current task. Use it as additional context if relevant:\n" + summarizeJobForSession(snap),
+	})
+	r.session.ReplaceMessages(msgs)
+	r.dirtySession = true
+}
+
 func (r *chatRuntime) refreshMemoryContext() {
+	if r.jobs != nil {
+		r.jobs.UpdateMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+	}
 	messages := r.session.Messages()
 	if len(messages) == 0 {
 		r.session = r.newSession()
@@ -476,12 +1003,11 @@ func (r *chatRuntime) refreshMemoryContext() {
 }
 
 func (r *chatRuntime) save() error {
-	r.cfg.ApprovalMode = r.approver.Mode()
 	return session.Save(r.statePath, session.State{
 		SessionName:  r.sessionName,
-		Model:        r.cfg.Model,
-		OutputMode:   r.outputMode,
-		ApprovalMode: r.approver.Mode(),
+		Model:        "",
+		OutputMode:   "",
+		ApprovalMode: "",
 		Messages:     r.session.Messages(),
 	})
 }
@@ -925,13 +1451,15 @@ func defaultChatSessionName(now time.Time) string {
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	approver := tools.NewTerminalApprover(reader, os.Stderr, cfg.ApprovalMode, interactive)
-	return buildAgentWith(cfg, approver, os.Stderr), approver
+	return buildAgentWith(cfg, approver, os.Stderr, nil), approver
 }
 
-func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer) *agent.Agent {
-	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
-	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver)
-	return agent.New(client, registry, cfg.MaxSteps, log)
+func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl) *agent.Agent {
+	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey, openaiapi.WithTimeout(cfg.ModelTimeout))
+	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver, jobs)
+	a := agent.New(client, registry, cfg.MaxSteps, log)
+	a.SetStreamClient(client)
+	return a
 }
 
 func modelContent(content any) string {

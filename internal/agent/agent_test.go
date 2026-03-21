@@ -204,3 +204,37 @@ func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 		t.Fatalf("expected final request to disable tools, got %#v", client.requests[1])
 	}
 }
+
+func TestHasConsecutiveToolErrors(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "tool", Content: "tool error: failed one"},
+		{Role: "tool", Content: "tool error: failed two"},
+		{Role: "tool", Content: "tool error: failed three"},
+	}
+	if !hasConsecutiveToolErrors(msgs, 3) {
+		t.Fatalf("expected consecutive tool errors to be detected")
+	}
+}
+
+func TestHasRepeatedToolLoop(t *testing.T) {
+	call := model.ToolCall{
+		ID:   "1",
+		Type: "function",
+		Function: model.ToolFunction{
+			Name:      "read_file",
+			Arguments: `{"path":"README.md"}`,
+		},
+	}
+	msgs := []model.Message{
+		{Role: "assistant", ToolCalls: []model.ToolCall{call}},
+		{Role: "tool", Content: "ok"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{call}},
+		{Role: "tool", Content: "ok"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{call}},
+		{Role: "tool", Content: "ok"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{call}},
+	}
+	if !hasRepeatedToolLoop(msgs, 4) {
+		t.Fatalf("expected repeated tool loop to be detected")
+	}
+}

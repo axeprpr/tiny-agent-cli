@@ -117,7 +117,7 @@ func shellInvocation(shell, command string) (string, []string) {
 	if runtime.GOOS == "windows" || strings.Contains(strings.ToLower(shell), "powershell") {
 		return shell, []string{"-NoProfile", "-Command", command}
 	}
-	return shell, []string{"-lc", command}
+	return shell, []string{"-c", command}
 }
 
 func validateCommand(command string) error {

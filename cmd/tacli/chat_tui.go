@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -36,6 +35,14 @@ type tuiApprovalMsg struct {
 type tuiTaskDoneMsg struct {
 	output string
 	err    error
+}
+
+type tuiJobUpdateMsg struct {
+	text string
+}
+
+type tuiStreamMsg struct {
+	token string
 }
 
 type tuiEntry struct {
@@ -70,12 +77,16 @@ type tuiApprover struct {
 	mu     sync.Mutex
 	mode   string
 	events chan tea.Msg
+	cmds   map[string]bool
+	writes map[string]bool
 }
 
 func newTUIApprover(mode string, events chan tea.Msg) *tuiApprover {
 	return &tuiApprover{
 		mode:   strings.TrimSpace(mode),
 		events: events,
+		cmds:   make(map[string]bool),
+		writes: make(map[string]bool),
 	}
 }
 
@@ -100,18 +111,25 @@ func (a *tuiApprover) SetMode(mode string) error {
 }
 
 func (a *tuiApprover) ApproveCommand(_ context.Context, command string) (bool, error) {
-	if a.Mode() == tools.ApprovalDangerously {
+	command = strings.TrimSpace(command)
+	a.mu.Lock()
+	if a.mode == tools.ApprovalDangerously || a.cmds[command] {
+		a.mu.Unlock()
 		return true, nil
 	}
+	a.mu.Unlock()
 	response := make(chan string, 1)
 	a.events <- tuiApprovalMsg{
 		title:    "Command approval",
-		body:     strings.TrimSpace(command),
+		body:     command,
 		response: response,
 	}
 	answer := <-response
 	switch answer {
 	case "yes":
+		a.mu.Lock()
+		a.cmds[command] = true
+		a.mu.Unlock()
 		return true, nil
 	case "always":
 		_ = a.SetMode(tools.ApprovalDangerously)
@@ -122,9 +140,14 @@ func (a *tuiApprover) ApproveCommand(_ context.Context, command string) (bool, e
 }
 
 func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (bool, error) {
-	if a.Mode() == tools.ApprovalDangerously {
+	path = strings.TrimSpace(path)
+	key := tools.WriteApprovalKey(path, content)
+	a.mu.Lock()
+	if a.mode == tools.ApprovalDangerously || a.writes[key] {
+		a.mu.Unlock()
 		return true, nil
 	}
+	a.mu.Unlock()
 
 	preview := strings.TrimSpace(content)
 	if preview == "" {
@@ -144,6 +167,9 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 	answer := <-response
 	switch answer {
 	case "yes":
+		a.mu.Lock()
+		a.writes[key] = true
+		a.mu.Unlock()
 		return true, nil
 	case "always":
 		_ = a.SetMode(tools.ApprovalDangerously)
@@ -152,6 +178,7 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 		return false, nil
 	}
 }
+
 
 type chatKeyMap struct {
 	Send     key.Binding
@@ -162,16 +189,18 @@ type chatKeyMap struct {
 	Filter   key.Binding
 	PageDown key.Binding
 	PageUp   key.Binding
+	Home     key.Binding
+	End      key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Switch, k.Filter, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Quit}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Switch, k.Filter, k.Help, k.Quit},
-		{k.PageUp, k.PageDown},
+		{k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
 
@@ -203,7 +232,7 @@ var (
 			Padding(0, 0, 1, 0)
 
 	titleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("230")).
+			Foreground(lipgloss.Color("252")).
 			Bold(true)
 
 	subtitleStyle = lipgloss.NewStyle().
@@ -224,20 +253,16 @@ var (
 			Bold(true)
 
 	activityLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("246")).
-				Bold(true)
+				Foreground(lipgloss.Color("244"))
 
 	userLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("81")).
-			Bold(true)
+			Foreground(lipgloss.Color("244"))
 
 	assistantLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42")).
-				Bold(true)
+				Foreground(lipgloss.Color("244"))
 
 	systemLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214")).
-				Bold(true)
+				Foreground(lipgloss.Color("214"))
 
 	userCardStyle      = lipgloss.NewStyle()
 	assistantCardStyle = lipgloss.NewStyle()
@@ -249,22 +274,26 @@ var (
 			Bold(true)
 
 	errorLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203")).
-			Bold(true)
+			Foreground(lipgloss.Color("203"))
 
 	messageBodyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	logBodyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	logBodyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	errorBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	codeBodyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Padding(1, 0, 1, 0)
+			Padding(0, 0, 1, 0)
 
 	paneTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("246")).
-			Bold(true).
+			Foreground(lipgloss.Color("242")).
 			Padding(0, 0, 1, 0)
+
+	todoLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("242"))
+
+	todoBodyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("246"))
 
 	approvalStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -273,7 +302,7 @@ var (
 			Background(lipgloss.Color("236"))
 
 	inputPaneStyle = lipgloss.NewStyle().
-			Padding(0, 0, 1, 0)
+			Padding(1, 0, 1, 0)
 
 	inputTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("246")).
@@ -286,11 +315,17 @@ var (
 			Foreground(lipgloss.Color("252")).
 			Background(lipgloss.Color("235")).
 			Padding(0, 1)
+
+	conversationStyle = lipgloss.NewStyle().
+				Padding(0, 0, 1, 0)
+
+	activityDrawerStyle = lipgloss.NewStyle().
+				Padding(0, 0, 0, 2)
 )
 
 func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta := textarea.New()
-	ta.Placeholder = "输入消息或 /help..."
+	ta.Placeholder = "直接输入你的任务..."
 	ta.Focus()
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
@@ -325,6 +360,8 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 			PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
 			PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
+			Home:     key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
+			End:      key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
 	}
 
@@ -349,8 +386,17 @@ func runChatTUI(runtime *chatRuntime) int {
 	events := make(chan tea.Msg, 256)
 	approver := newTUIApprover(runtime.cfg.ApprovalMode, events)
 	runtime.approver = approver
-	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events})
+	var jobs tools.JobControl
+	if runtime.jobs != nil {
+		jobs = jobToolAdapter{manager: runtime.jobs}
+	}
+	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs)
 	runtime.session.SetAgent(runtime.loop)
+	if runtime.jobs != nil {
+		runtime.jobs.SetNotifier(func(text string) {
+			events <- tuiJobUpdateMsg{text: text}
+		})
+	}
 
 	p := tea.NewProgram(newChatTUIModel(runtime, events), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -369,7 +415,9 @@ func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
 
 func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, task string) tea.Cmd {
 	return func() tea.Msg {
-		output, err := runtime.executeTask(context.Background(), task)
+		output, err := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
+			events <- tuiStreamMsg{token: token}
+		})
 		events <- tuiTaskDoneMsg{output: output, err: err}
 		return nil
 	}
@@ -423,6 +471,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PageDown):
 			keyHandled = true
 			m.chatViewport.HalfViewDown()
+		case key.Matches(msg, m.keys.Home):
+			keyHandled = true
+			m.chatViewport.GotoTop()
+		case key.Matches(msg, m.keys.End):
+			keyHandled = true
+			m.chatViewport.GotoBottom()
 		case key.Matches(msg, m.keys.Newline):
 			keyHandled = true
 			m.input.InsertString("\n")
@@ -432,7 +486,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if task == "" {
 				break
 			}
-			if m.approval == nil && m.busy {
+			if m.approval == nil && m.busy && !strings.HasPrefix(task, "/") {
 				break
 			}
 			m.input.Reset()
@@ -444,7 +498,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusText = approvalStatusText(answer)
 					m.approval = nil
 				} else {
-					m.entries = append(m.entries, tuiEntry{role: "system", text: "approval pending: reply with y, n, or a"})
+					m.entries = append(m.entries, tuiEntry{role: "approval", text: "审批仍在等待，输入 y 同意，n 拒绝，a 始终允许"})
 					m.statusText = "approval required"
 				}
 				m.refreshInputState()
@@ -477,27 +531,60 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
+		capLogs(&m.logs, 500)
 		m.appendActivityEntry(msg.kind, msg.text)
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
 		m.approval = &msg
 		m.logs = append(m.logs, tuiLogEntry{kind: "approval", text: msg.title + ": " + strings.ReplaceAll(msg.body, "\n", " | ")})
-		m.entries = append(m.entries, tuiEntry{role: "system", text: renderApprovalInlineText(&msg)})
+		capLogs(&m.logs, 500)
+		m.entries = append(m.entries, tuiEntry{role: "approval", text: renderApprovalInlineText(&msg)})
 		m.statusText = "approval required"
 		m.refreshInputState()
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiTaskDoneMsg:
 		m.busy = false
+		// Convert any streaming entry to assistant
+		for i := range m.entries {
+			if m.entries[i].role == "streaming" {
+				m.entries[i].role = "assistant"
+			}
+		}
 		if msg.err != nil {
 			m.entries = append(m.entries, tuiEntry{role: "error", text: msg.err.Error()})
 			m.statusText = "error"
 		} else {
-			m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
+			// Only add if no streaming entry captured the output
+			hasStreamed := false
+			for _, e := range m.entries {
+				if e.role == "assistant" && strings.TrimSpace(e.text) == strings.TrimSpace(msg.output) {
+					hasStreamed = true
+					break
+				}
+			}
+			if !hasStreamed {
+				m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
+			}
 			m.statusText = "ready"
 		}
 		m.refreshInputState()
+		m.refreshViewports()
+		cmds = append(cmds, waitForTUIEvent(m.events))
+	case tuiJobUpdateMsg:
+		m.logs = append(m.logs, tuiLogEntry{kind: "steps", text: msg.text})
+		capLogs(&m.logs, 500)
+		m.entries = append(m.entries, tuiEntry{role: "system", text: msg.text})
+		m.statusText = "background job update"
+		m.refreshViewports()
+		cmds = append(cmds, waitForTUIEvent(m.events))
+	case tuiStreamMsg:
+		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "streaming" {
+			m.entries = append(m.entries, tuiEntry{role: "streaming", text: msg.token})
+		} else {
+			m.entries[len(m.entries)-1].text += msg.token
+		}
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case spinner.TickMsg:
@@ -516,6 +603,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		m.logViewport, cmd = m.logViewport.Update(msg)
 		cmds = append(cmds, cmd)
+		// Dynamic input height
+		lines := strings.Count(m.input.Value(), "\n") + 1
+		newHeight := max(1, min(5, lines))
+		if newHeight != m.input.Height() {
+			m.input.SetHeight(newHeight)
+		}
 	}
 	m.resize()
 	return m, tea.Batch(cmds...)
@@ -525,11 +618,10 @@ func (m chatTUIModel) View() string {
 	header := m.renderHeader()
 
 	statusParts := []string{
-		"model=" + m.runtime.cfg.Model,
-		"approval=" + m.runtime.approver.Mode(),
-		"session=" + m.runtime.sessionName,
-		"activity=" + drawerStateLabel(m.showDrawer),
 		contextStatus(m.runtime, m.input.Value()),
+	}
+	if m.showDrawer {
+		statusParts = append(statusParts, "activity")
 	}
 	if m.busy {
 		statusParts = append(statusParts, m.spinner.View()+" "+m.statusText)
@@ -537,12 +629,7 @@ func (m chatTUIModel) View() string {
 		statusParts = append(statusParts, m.statusText)
 	}
 	if strings.TrimSpace(m.stepText) != "" {
-		statusParts = append(statusParts, m.stepText)
-	}
-
-	helpView := m.help.ShortHelpView(m.keys.ShortHelp())
-	if m.showFullHelp {
-		helpView = m.help.FullHelpView(m.keys.FullHelp())
+		statusParts = append(statusParts, chipAccentStyle.Render(m.stepText))
 	}
 
 	content := m.renderConversation()
@@ -552,10 +639,13 @@ func (m chatTUIModel) View() string {
 
 	parts := []string{
 		header,
+		m.renderTodoSummary(),
 		content,
 		m.renderComposer(),
 		statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  ")),
-		helpView,
+	}
+	if m.showFullHelp {
+		parts = append(parts, m.help.FullHelpView(m.keys.FullHelp()))
 	}
 	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
@@ -564,7 +654,7 @@ func (m *chatTUIModel) resize() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	footerHeight := 2
+	footerHeight := 1
 	if m.showFullHelp {
 		footerHeight = 4
 	}
@@ -619,13 +709,16 @@ func (m *chatTUIModel) renderEntries() string {
 		case "user":
 			label = userLabelStyle
 			body = messageBodyStyle
-		case "assistant":
+		case "assistant", "streaming":
 			label = assistantLabelStyle
 			body = codeBodyStyle
 		case "activity":
 			label = activityLabelStyle
 			body = logBodyStyle
 		case "system":
+			label = systemLabelStyle
+			body = messageBodyStyle
+		case "approval":
 			label = systemLabelStyle
 			body = messageBodyStyle
 		case "error":
@@ -639,12 +732,21 @@ func (m *chatTUIModel) renderEntries() string {
 		if text == "" {
 			continue
 		}
-		if entry.role == "assistant" {
+		if entry.role == "assistant" || entry.role == "streaming" {
 			text = renderMarkdown(text, bodyWidth)
+		}
+		if entry.role == "approval" {
+			block := lipgloss.JoinVertical(
+				lipgloss.Left,
+				label.Render("approval"),
+				approvalStyle.Width(bodyWidth).Render(text),
+			)
+			rendered = append(rendered, block)
+			continue
 		}
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
-			label.Render(strings.ToUpper(entry.role)),
+			label.Render(entry.role),
 			body.Width(bodyWidth).Render(text),
 		)
 		rendered = append(rendered, block)
@@ -673,18 +775,18 @@ func (m *chatTUIModel) renderLogs() string {
 	}
 	for _, entry := range filtered[start:] {
 		style := logBodyStyle
-		prefix := "[step]"
+		prefix := "step"
 		switch entry.kind {
 		case "tools":
-			prefix = "[tool]"
+			prefix = "tool"
 		case "approval":
-			prefix = "[ask ]"
+			prefix = "ask"
 			style = systemLabelStyle
 		case "error":
-			prefix = "[err ]"
+			prefix = "error"
 			style = errorBodyStyle
 		}
-		out = append(out, style.Width(width).Render(prefix+" "+entry.text))
+		out = append(out, style.Width(width).Render(prefix+"  "+entry.text))
 	}
 	return strings.Join(out, "\n")
 }
@@ -707,29 +809,41 @@ func contextStatus(runtime *chatRuntime, input string) string {
 }
 
 func estimateTokenUsage(messages []model.Message, draft string) int {
-	chars := 0
+	count := 0
 	for _, msg := range messages {
-		chars += len(model.ContentString(msg.Content)) + len(msg.Role) + len(msg.ToolCallID)
+		text := model.ContentString(msg.Content) + msg.Role + msg.ToolCallID
 		for _, call := range msg.ToolCalls {
-			chars += len(call.ID) + len(call.Type) + len(call.Function.Name) + len(call.Function.Arguments)
+			text += call.ID + call.Type + call.Function.Name + call.Function.Arguments
+		}
+		count += estimateStringTokens(text)
+	}
+	count += estimateStringTokens(draft)
+	return count
+}
+
+func estimateStringTokens(s string) int {
+	count := 0
+	for _, r := range s {
+		if isCJK(r) {
+			count += 6
+		} else {
+			count++
 		}
 	}
-	chars += len(draft)
-	return chars / 4
+	return count / 4
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+func isCJK(r rune) bool {
+	return (r >= 0x2E80 && r <= 0x9FFF) ||
+		(r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0xFE30 && r <= 0xFE4F) ||
+		(r >= 0x20000 && r <= 0x2FA1F)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func capLogs(logs *[]tuiLogEntry, limit int) {
+	if len(*logs) > limit {
+		*logs = (*logs)[len(*logs)-limit:]
 	}
-	return b
 }
 
 func activityDrawerHeight(total int) int {
@@ -874,76 +988,81 @@ func renderMarkdown(text string, width int) string {
 	return strings.TrimSpace(out)
 }
 
-var markdownRenderers sync.Map
+var (
+	mdCacheMu   sync.Mutex
+	mdCache     = make(map[int]*glamour.TermRenderer)
+	mdCacheKeys []int
+)
+
+const mdCacheLimit = 8
 
 func markdownRenderer(width int) (*glamour.TermRenderer, error) {
-	if renderer, ok := markdownRenderers.Load(width); ok {
-		return renderer.(*glamour.TermRenderer), nil
+	mdCacheMu.Lock()
+	defer mdCacheMu.Unlock()
+
+	if r, ok := mdCache[width]; ok {
+		return r, nil
 	}
-	renderer, err := glamour.NewTermRenderer(
+	r, err := glamour.NewTermRenderer(
 		glamour.WithStandardStyle("dark"),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
 		return nil, err
 	}
-	markdownRenderers.Store(width, renderer)
-	return renderer, nil
+	if len(mdCache) >= mdCacheLimit {
+		oldest := mdCacheKeys[0]
+		mdCacheKeys = mdCacheKeys[1:]
+		delete(mdCache, oldest)
+	}
+	mdCache[width] = r
+	mdCacheKeys = append(mdCacheKeys, width)
+	return r, nil
 }
 
 func (m chatTUIModel) renderHeader() string {
-	titleRow := lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		titleStyle.Render("tiny-agent-cli"),
-		" ",
-		subtitleStyle.Render("tiny terminal agent for local shells"),
-		"  ",
-		tagStyle.Render("single binary"),
-	)
-
 	chips := []string{
-		chipMutedStyle.Render("workdir " + filepath.Base(m.runtime.cfg.WorkDir)),
-		chipMutedStyle.Render("shell " + filepath.Base(m.runtime.cfg.Shell)),
-		chipAccentStyle.Render("model " + m.runtime.cfg.Model),
+		titleStyle.Render("tacli"),
+		chipAccentStyle.Render(m.runtime.cfg.Model),
+		chipMutedStyle.Render(m.runtime.sessionName),
 	}
 	if m.runtime.approver.Mode() == tools.ApprovalDangerously {
 		chips = append(chips, chipWarnStyle.Render("dangerously"))
 	} else {
 		chips = append(chips, chipMutedStyle.Render("confirm"))
 	}
-	return headerStyle.Width(max(20, m.width-2)).Render(
-		lipgloss.JoinVertical(
-			lipgloss.Left,
-			titleRow,
-			chipMutedStyle.Render(strings.Join(chips, "  ·  ")),
-		),
-	)
+	return headerStyle.Width(max(20, m.width-2)).Render(strings.Join(chips, "  ·  "))
 }
 
 func (m chatTUIModel) renderConversation() string {
 	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
-		fmt.Sprintf("Conversation  %d msg", len(m.entries)),
+		fmt.Sprintf("%d messages", len(m.entries)),
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View())
+	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View()))
+}
+
+func (m chatTUIModel) renderTodoSummary() string {
+	items := m.runtime.loop.TodoItems()
+	if len(items) == 0 {
+		return ""
+	}
+	width := max(20, m.width-2)
+	lines := []string{todoLabelStyle.Render("plan")}
+	for _, item := range items {
+		lines = append(lines, todoBodyStyle.Width(width).Render(todoLine(item)))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (m chatTUIModel) renderActivityDrawer() string {
 	title := paneTitleStyle.Width(max(20, m.logViewport.Width)).Render(
-		fmt.Sprintf("Activity drawer  %s  %d evt  Ctrl+O hide", strings.ToUpper(m.logFilter), m.filteredLogCount()),
+		fmt.Sprintf("activity  %s  %d", strings.ToUpper(m.logFilter), m.filteredLogCount()),
 	)
-	return lipgloss.JoinVertical(
+	return activityDrawerStyle.Render(lipgloss.JoinVertical(
 		lipgloss.Left,
-		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.logViewport.Width))),
 		title,
 		m.logViewport.View(),
-	)
-}
-
-func drawerStateLabel(show bool) string {
-	if show {
-		return "drawer"
-	}
-	return "hidden"
+	))
 }
 
 func (m chatTUIModel) renderComposer() string {
@@ -956,6 +1075,17 @@ func (m chatTUIModel) renderComposer() string {
 			m.input.View(),
 		),
 	)
+}
+
+func todoLine(item tools.TodoItem) string {
+	switch item.Status {
+	case "completed":
+		return "[done] " + item.Text
+	case "in_progress":
+		return "[doing] " + item.Text
+	default:
+		return "[todo] " + item.Text
+	}
 }
 
 func (m chatTUIModel) filteredLogCount() int {
@@ -973,25 +1103,26 @@ func (m chatTUIModel) filteredLogCount() int {
 
 func (m *chatTUIModel) refreshInputState() {
 	m.input.Prompt = ""
-	m.input.SetHeight(1)
+	lines := strings.Count(m.input.Value(), "\n") + 1
+	m.input.SetHeight(max(1, min(5, lines)))
 	switch {
 	case m.approval != nil:
-		m.input.Placeholder = "输入 y / n / a ..."
+		m.input.Placeholder = "y 同意  n 拒绝  a 始终允许"
 	case m.busy:
-		m.input.Placeholder = "正在执行，等待下一步..."
+		m.input.Placeholder = "正在执行，你可以继续输入..."
 	default:
-		m.input.Placeholder = "输入消息或 /help..."
+		m.input.Placeholder = "直接输入你的任务..."
 	}
 }
 
 func (m chatTUIModel) composerHint() string {
 	switch {
 	case m.approval != nil:
-		return "审批等待中，输入 y 同意，n 拒绝，a 设为 dangerously"
+		return "审批等待中"
 	case m.busy:
-		return "执行过程已并入上方对话，当前任务运行中"
+		return "当前任务运行中"
 	default:
-		return fmt.Sprintf("当前会话 %s，Enter 发送，Ctrl+J 换行，Ctrl+O 活动，/help 命令", m.runtime.sessionName)
+		return "Enter 发送"
 	}
 }
 
@@ -1007,12 +1138,12 @@ func (m *chatTUIModel) appendActivityEntry(kind, text string) {
 	case kind == "error":
 		m.entries = append(m.entries, tuiEntry{role: "error", text: text})
 	case isToolStartLine(kind, text):
-		m.entries = append(m.entries, tuiEntry{role: "activity", text: "[tool] " + text})
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: "tool  " + text})
 	case isToolResultLine(text):
 		if m.mergeLastActivityLine(text) {
 			return
 		}
-		m.entries = append(m.entries, tuiEntry{role: "activity", text: "[tool]\n" + normalizeActivityContinuation(text)})
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: "tool\n" + normalizeActivityContinuation(text)})
 	default:
 		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(kind, text)})
 	}
@@ -1094,12 +1225,13 @@ func renderApprovalInlineText(msg *tuiApprovalMsg) string {
 		return ""
 	}
 
-	lines := []string{strings.TrimSpace(msg.title)}
+	lines := []string{}
 	titleLower := strings.ToLower(strings.TrimSpace(msg.title))
 	switch {
 	case strings.Contains(titleLower, "command"):
-		lines = append(lines, strings.TrimSpace(msg.body))
+		lines = append(lines, "需要执行命令")
 	case strings.Contains(titleLower, "file write"):
+		lines = append(lines, "需要写入文件")
 		fields := parseApprovalFields(msg.body)
 		if path := fields["path"]; path != "" {
 			lines = append(lines, "path: "+path)
@@ -1107,14 +1239,10 @@ func renderApprovalInlineText(msg *tuiApprovalMsg) string {
 		if bytes := fields["bytes"]; bytes != "" {
 			lines = append(lines, "bytes: "+bytes)
 		}
-		if preview := fields["preview"]; preview != "" {
-			lines = append(lines, "preview:")
-			lines = append(lines, strings.ReplaceAll(preview, "\\n", "\n"))
-		}
 	default:
-		lines = append(lines, strings.TrimSpace(msg.body))
+		lines = append(lines, "需要你的确认")
 	}
-	lines = append(lines, "reply with y, n, or a")
+	lines = append(lines, "输入 y 同意，n 拒绝，a 始终允许")
 	return strings.Join(lines, "\n")
 }
 

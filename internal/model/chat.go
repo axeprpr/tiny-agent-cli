@@ -12,6 +12,7 @@ type Request struct {
 	Tools       []Tool    `json:"tools,omitempty"`
 	ToolChoice  string    `json:"tool_choice,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 }
 
 type Response struct {
@@ -49,6 +50,25 @@ type ToolCall struct {
 type ToolFunction struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+}
+
+// StreamDelta is the incremental content in a single SSE chunk.
+type StreamDelta struct {
+	Role      string     `json:"role,omitempty"`
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// StreamChoice is one choice inside a streaming chunk.
+type StreamChoice struct {
+	Index        int         `json:"index"`
+	Delta        StreamDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
+}
+
+// StreamChunk is a single SSE "data:" object.
+type StreamChunk struct {
+	Choices []StreamChoice `json:"choices"`
 }
 
 func ContentString(value any) string {
