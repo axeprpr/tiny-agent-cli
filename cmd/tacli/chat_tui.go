@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
+	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/tools"
 )
@@ -325,7 +326,7 @@ var (
 
 func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta := textarea.New()
-	ta.Placeholder = "直接输入你的任务..."
+	ta.Placeholder = i18n.T("tui.placeholder.default")
 	ta.Focus()
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
@@ -376,7 +377,7 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			}
 		}
 	}
-	m.statusText = "ready"
+	m.statusText = i18n.T("tui.status.ready")
 	m.refreshInputState()
 	m.refreshViewports()
 	return m
@@ -400,7 +401,7 @@ func runChatTUI(runtime *chatRuntime) int {
 
 	p := tea.NewProgram(newChatTUIModel(runtime, events), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "chat ui error: %v\n", err)
+		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
 		runtime.beforeExit()
 		return 1
 	}
@@ -452,9 +453,9 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			keyHandled = true
 			m.showDrawer = !m.showDrawer
 			if m.showDrawer {
-				m.statusText = "activity drawer shown"
+				m.statusText = i18n.T("tui.status.drawer.shown")
 			} else {
-				m.statusText = "activity drawer hidden"
+				m.statusText = i18n.T("tui.status.drawer.hidden")
 			}
 		case key.Matches(msg, m.keys.Filter):
 			keyHandled = true
@@ -462,7 +463,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showDrawer {
 				m.statusText = "log filter: " + m.logFilter
 			} else {
-				m.statusText = "activity filter updated"
+				m.statusText = i18n.T("tui.status.filter.updated")
 			}
 			m.refreshViewports()
 		case key.Matches(msg, m.keys.PageUp):
@@ -498,8 +499,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusText = approvalStatusText(answer)
 					m.approval = nil
 				} else {
-					m.entries = append(m.entries, tuiEntry{role: "approval", text: "审批仍在等待，输入 y 同意，n 拒绝，a 始终允许"})
-					m.statusText = "approval required"
+					m.entries = append(m.entries, tuiEntry{role: "approval", text: i18n.T("tui.approval.waiting")})
+					m.statusText = i18n.T("tui.status.approval")
 				}
 				m.refreshInputState()
 				m.refreshViewports()
@@ -524,7 +525,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, tuiEntry{role: "user", text: task})
 			m.refreshViewports()
 			m.busy = true
-			m.statusText = "running"
+			m.statusText = i18n.T("tui.status.running")
 			m.refreshInputState()
 			cmds = append(cmds, runTaskCmd(m.runtime, m.events, task))
 		}
@@ -540,7 +541,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, tuiLogEntry{kind: "approval", text: msg.title + ": " + strings.ReplaceAll(msg.body, "\n", " | ")})
 		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "approval", text: renderApprovalInlineText(&msg)})
-		m.statusText = "approval required"
+		m.statusText = i18n.T("tui.status.approval")
 		m.refreshInputState()
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
@@ -554,7 +555,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.entries = append(m.entries, tuiEntry{role: "error", text: msg.err.Error()})
-			m.statusText = "error"
+			m.statusText = i18n.T("tui.status.error")
 		} else {
 			// Only add if no streaming entry captured the output
 			hasStreamed := false
@@ -567,7 +568,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !hasStreamed {
 				m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
 			}
-			m.statusText = "ready"
+			m.statusText = i18n.T("tui.status.ready")
 		}
 		m.refreshInputState()
 		m.refreshViewports()
@@ -576,7 +577,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, tuiLogEntry{kind: "steps", text: msg.text})
 		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "system", text: msg.text})
-		m.statusText = "background job update"
+		m.statusText = i18n.T("tui.status.bg.update")
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiStreamMsg:
@@ -756,7 +757,7 @@ func (m *chatTUIModel) renderEntries() string {
 
 func (m *chatTUIModel) renderLogs() string {
 	if len(m.logs) == 0 {
-		return logBodyStyle.Render("No tool activity yet.")
+		return logBodyStyle.Render(i18n.T("tui.label.no.activity"))
 	}
 	width := max(16, m.logViewport.Width-2)
 	filtered := make([]tuiLogEntry, 0, len(m.logs))
@@ -766,7 +767,7 @@ func (m *chatTUIModel) renderLogs() string {
 		}
 	}
 	if len(filtered) == 0 {
-		return logBodyStyle.Render("No matching activity.")
+		return logBodyStyle.Render(i18n.T("tui.label.no.match"))
 	}
 	out := make([]string, 0, len(filtered))
 	start := 0
@@ -947,7 +948,7 @@ func renderApprovalModal(msg *tuiApprovalMsg, width int) string {
 		parts = append(parts, renderApprovalBody(msg.body, width))
 	}
 
-	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render("[y] yes   [n] no   [a] always dangerously"))
+	parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render(i18n.T("tui.approval.bar")))
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
@@ -1036,7 +1037,7 @@ func (m chatTUIModel) renderHeader() string {
 
 func (m chatTUIModel) renderConversation() string {
 	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
-		fmt.Sprintf("%d messages", len(m.entries)),
+		fmt.Sprintf(i18n.T("tui.label.messages"), len(m.entries)),
 	)
 	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View()))
 }
@@ -1047,7 +1048,7 @@ func (m chatTUIModel) renderTodoSummary() string {
 		return ""
 	}
 	width := max(20, m.width-2)
-	lines := []string{todoLabelStyle.Render("plan")}
+	lines := []string{todoLabelStyle.Render(i18n.T("tui.label.plan"))}
 	for _, item := range items {
 		lines = append(lines, todoBodyStyle.Width(width).Render(todoLine(item)))
 	}
@@ -1056,7 +1057,7 @@ func (m chatTUIModel) renderTodoSummary() string {
 
 func (m chatTUIModel) renderActivityDrawer() string {
 	title := paneTitleStyle.Width(max(20, m.logViewport.Width)).Render(
-		fmt.Sprintf("activity  %s  %d", strings.ToUpper(m.logFilter), m.filteredLogCount()),
+		fmt.Sprintf(i18n.T("tui.label.activity"), strings.ToUpper(m.logFilter), m.filteredLogCount()),
 	)
 	return activityDrawerStyle.Render(lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -1107,22 +1108,22 @@ func (m *chatTUIModel) refreshInputState() {
 	m.input.SetHeight(max(1, min(5, lines)))
 	switch {
 	case m.approval != nil:
-		m.input.Placeholder = "y 同意  n 拒绝  a 始终允许"
+		m.input.Placeholder = i18n.T("tui.placeholder.approval")
 	case m.busy:
-		m.input.Placeholder = "正在执行，你可以继续输入..."
+		m.input.Placeholder = i18n.T("tui.placeholder.busy")
 	default:
-		m.input.Placeholder = "直接输入你的任务..."
+		m.input.Placeholder = i18n.T("tui.placeholder.default")
 	}
 }
 
 func (m chatTUIModel) composerHint() string {
 	switch {
 	case m.approval != nil:
-		return "审批等待中"
+		return i18n.T("tui.hint.approval")
 	case m.busy:
-		return "当前任务运行中"
+		return i18n.T("tui.hint.busy")
 	default:
-		return "Enter 发送"
+		return i18n.T("tui.hint.send")
 	}
 }
 
@@ -1229,9 +1230,9 @@ func renderApprovalInlineText(msg *tuiApprovalMsg) string {
 	titleLower := strings.ToLower(strings.TrimSpace(msg.title))
 	switch {
 	case strings.Contains(titleLower, "command"):
-		lines = append(lines, "需要执行命令")
+		lines = append(lines, i18n.T("tui.approval.command"))
 	case strings.Contains(titleLower, "file write"):
-		lines = append(lines, "需要写入文件")
+		lines = append(lines, i18n.T("tui.approval.write"))
 		fields := parseApprovalFields(msg.body)
 		if path := fields["path"]; path != "" {
 			lines = append(lines, "path: "+path)
@@ -1240,9 +1241,9 @@ func renderApprovalInlineText(msg *tuiApprovalMsg) string {
 			lines = append(lines, "bytes: "+bytes)
 		}
 	default:
-		lines = append(lines, "需要你的确认")
+		lines = append(lines, i18n.T("tui.approval.general"))
 	}
-	lines = append(lines, "输入 y 同意，n 拒绝，a 始终允许")
+	lines = append(lines, i18n.T("tui.approval.hint"))
 	return strings.Join(lines, "\n")
 }
 
@@ -1262,22 +1263,22 @@ func parseApprovalAnswer(text string) (string, bool) {
 func approvalStatusText(answer string) string {
 	switch answer {
 	case "yes":
-		return "approval granted"
+		return i18n.T("tui.approval.granted")
 	case "always":
-		return "approval mode switched to dangerously"
+		return i18n.T("tui.approval.mode")
 	default:
-		return "approval denied"
+		return i18n.T("tui.approval.denied")
 	}
 }
 
 func approvalResponseText(answer string) string {
 	switch answer {
 	case "yes":
-		return "approval granted"
+		return i18n.T("tui.approval.granted")
 	case "always":
-		return "approval granted and mode switched to dangerously"
+		return i18n.T("tui.approval.always")
 	default:
-		return "approval denied"
+		return i18n.T("tui.approval.denied")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/session"
@@ -287,7 +288,7 @@ func TestExecuteTaskNaturalLanguageRemember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeTask failed: %v", err)
 	}
-	if output != "已记住为全局偏好。" {
+	if output != i18n.T("mem.saved.global") {
 		t.Fatalf("unexpected output: %q", output)
 	}
 	if !reflect.DeepEqual(r.globalMemory, []string{"以后默认中文简洁回答"}) {
@@ -303,7 +304,7 @@ func TestExecuteTaskNaturalLanguageForgetLast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeTask failed: %v", err)
 	}
-	if output != "已删除最近一条项目记忆。" {
+	if output != i18n.T("mem.deleted.last.project") {
 		t.Fatalf("unexpected output: %q", output)
 	}
 	if !reflect.DeepEqual(r.projectMemory, []string{"当前项目使用 Go"}) {

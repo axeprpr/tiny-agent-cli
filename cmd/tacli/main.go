@@ -14,6 +14,7 @@ import (
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/model/openaiapi"
@@ -78,6 +79,9 @@ func main() {
 }
 
 func run(args []string) int {
+	cfg := config.FromEnv()
+	initLanguage(cfg.StateDir)
+
 	args, globalDangerously := peelGlobalDangerously(args)
 	if len(args) == 0 {
 		if tools.IsInteractiveTerminal(os.Stdin) {
@@ -272,33 +276,9 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/reset":
 		r.session = r.newSession()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: "context reset", exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1}
 	case "/help":
-		return runtimeCommandResult{handled: true, output: strings.Join([]string{
-			"Commands:",
-			"  /help                 Show this help",
-			"  /exit, /quit          Exit the chat",
-			"  /reset                Clear conversation context",
-			"  /session [name|new]   Switch or create a session",
-			"  /status               Show session and config status",
-			"  /scope                Show current project scope key",
-			"  /model <name>         Switch model for this session",
-			"  /approval <mode>      Set approval mode (confirm|dangerously)",
-			"  /memory               Show saved memory notes",
-			"  /remember <text>      Save a project memory note",
-			"  /remember-global <t>  Save a global memory note",
-			"  /forget <query>       Remove matching project memory",
-			"  /forget-global <q>    Remove matching global memory",
-			"  /memorize             Extract memory from conversation",
-			"  /bg <task>            Start a background job",
-			"  /jobs                 List background jobs",
-			"  /job <id>             Inspect a background job",
-			"  /job-send <id> <msg>  Send follow-up to a background job",
-			"  /job-cancel <id>      Cancel a background job",
-			"  /job-apply <id>       Apply job result to chat context",
-			"",
-			"Or just type naturally -- no command needed for most tasks.",
-		}, "\n"), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("help"), exitCode: -1}
 	case "/status":
 		jobSummary := "jobs=0"
 		if r.jobs != nil {
@@ -319,114 +299,114 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.scopeKey, exitCode: -1}
 	case "/approval":
 		if len(fields) != 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /approval confirm|dangerously", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.approval.usage"), exitCode: -1}
 		}
 		if err := r.approver.SetMode(fields[1]); err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		r.cfg.ApprovalMode = r.approver.Mode()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("approval mode set to %s", r.approver.Mode()), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.approval.set"), r.approver.Mode()), exitCode: -1}
 	case "/output":
-		return runtimeCommandResult{handled: true, output: "output mode command is deprecated in chat; terminal rendering is now the default", exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.output.deprecated"), exitCode: -1}
 	case "/model":
 		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /model <name>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.model.usage"), exitCode: -1}
 		}
 		r.cfg.Model = strings.Join(fields[1:], " ")
 		r.rebuildLoop()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("model set to %s for this session", r.cfg.Model), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model), exitCode: -1}
 	case "/bg":
 		id, err := r.jobs.Start(strings.TrimSpace(input[len("/bg"):]))
 		if err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("started background job %s", id), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.bg.started"), id), exitCode: -1}
 	case "/jobs":
 		return runtimeCommandResult{handled: true, output: formatJobList(r.jobs.List()), exitCode: -1}
 	case "/job":
 		if len(fields) != 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /job <id>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.job.usage"), exitCode: -1}
 		}
 		snap, ok := r.jobs.Snapshot(fields[1])
 		if !ok {
-			return runtimeCommandResult{handled: true, output: fmt.Sprintf("unknown job %q", fields[1]), exitCode: -1}
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.job.unknown"), fields[1]), exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: formatJobSnapshot(snap), exitCode: -1}
 	case "/job-send":
 		if len(fields) < 3 {
-			return runtimeCommandResult{handled: true, output: "usage: /job-send <id> <text>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobsend.usage"), exitCode: -1}
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
 		if err := r.jobs.Send(fields[1], body); err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("queued follow-up for %s", fields[1]), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobsend.ok"), fields[1]), exitCode: -1}
 	case "/job-cancel":
 		if len(fields) != 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /job-cancel <id>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobcancel.usage"), exitCode: -1}
 		}
 		if err := r.jobs.Cancel(fields[1]); err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("canceled %s", fields[1]), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobcancel.ok"), fields[1]), exitCode: -1}
 	case "/job-apply":
 		if len(fields) != 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /job-apply <id>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobapply.usage"), exitCode: -1}
 		}
 		snap, ok := r.jobs.Snapshot(fields[1])
 		if !ok {
-			return runtimeCommandResult{handled: true, output: fmt.Sprintf("unknown job %q", fields[1]), exitCode: -1}
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.job.unknown"), fields[1]), exitCode: -1}
 		}
 		r.injectJobSummary(snap)
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("applied %s into current chat context", fields[1]), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobapply.ok"), fields[1]), exitCode: -1}
 	case "/memory":
 		return runtimeCommandResult{handled: true, output: memory.FormatNotes(r.globalMemory, r.projectMemory), exitCode: -1}
 	case "/remember":
 		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /remember <text>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.remember.usage"), exitCode: -1}
 		}
 		r.projectMemory = memory.Add(r.projectMemory, strings.TrimSpace(input[len("/remember"):]))
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: "project memory saved", exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.remember.ok"), exitCode: -1}
 	case "/remember-global":
 		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /remember-global <text>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.rememberg.usage"), exitCode: -1}
 		}
 		r.globalMemory = memory.Add(r.globalMemory, strings.TrimSpace(input[len("/remember-global"):]))
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: "global memory saved", exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.rememberg.ok"), exitCode: -1}
 	case "/forget":
 		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /forget <query>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.forget.usage"), exitCode: -1}
 		}
 		updated, removed := memory.ForgetMatching(r.projectMemory, strings.TrimSpace(input[len("/forget"):]))
 		r.projectMemory = updated
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("removed %d project memory note(s)", removed), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.forget.ok"), removed), exitCode: -1}
 	case "/forget-global":
 		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: "usage: /forget-global <query>", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.forgetg.usage"), exitCode: -1}
 		}
 		updated, removed := memory.ForgetMatching(r.globalMemory, strings.TrimSpace(input[len("/forget-global"):]))
 		r.globalMemory = updated
 		r.refreshMemoryContext()
 		_ = r.saveMemory()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("removed %d global memory note(s)", removed), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.forgetg.ok"), removed), exitCode: -1}
 	case "/memorize":
 		added, err := r.summarizeMemory()
 		if err != nil {
-			return runtimeCommandResult{handled: true, output: fmt.Sprintf("memorize error: %v", err), exitCode: -1}
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.memorize.err"), err), exitCode: -1}
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("added %d memory note(s)", added), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.memorize.ok"), added), exitCode: -1}
 	default:
 		return runtimeCommandResult{handled: false, exitCode: -1}
 	}
@@ -676,7 +656,7 @@ func (r *chatRuntime) applyMemoryIntent(intent memoryIntent) (string, error) {
 	case memoryActionRemember:
 		note, ok := normalizeRememberedNote(intent.body)
 		if !ok {
-			return "这条内容不适合记成长期记忆；如果你希望我记住稳定偏好或项目事实，请直接说明。", nil
+			return i18n.T("mem.reject"), nil
 		}
 		scope := intent.scope
 		if scope == "" {
@@ -693,9 +673,9 @@ func (r *chatRuntime) applyMemoryIntent(intent memoryIntent) (string, error) {
 			return "", err
 		}
 		if scope == memoryScopeGlobal {
-			return "已记住为全局偏好。", nil
+			return i18n.T("mem.saved.global"), nil
 		}
-		return "已记住为当前项目记忆。", nil
+		return i18n.T("mem.saved.project"), nil
 	case memoryActionForget:
 		scope := intent.scope
 		query := normalizeForgetQuery(intent.body)
@@ -730,12 +710,12 @@ func (r *chatRuntime) forgetLastMemory(scope string) (string, error) {
 	switch scope {
 	case memoryScopeGlobal:
 		if len(r.globalMemory) == 0 {
-			return "没有可删除的全局记忆。", nil
+			return i18n.T("mem.no.global.delete"), nil
 		}
 		r.globalMemory = append([]string(nil), r.globalMemory[:len(r.globalMemory)-1]...)
 	case memoryScopeProject:
 		if len(r.projectMemory) == 0 {
-			return "没有可删除的项目记忆。", nil
+			return i18n.T("mem.no.project.delete"), nil
 		}
 		r.projectMemory = append([]string(nil), r.projectMemory[:len(r.projectMemory)-1]...)
 	default:
@@ -747,7 +727,7 @@ func (r *chatRuntime) forgetLastMemory(scope string) (string, error) {
 			r.globalMemory = append([]string(nil), r.globalMemory[:len(r.globalMemory)-1]...)
 			scope = memoryScopeGlobal
 		default:
-			return "没有可删除的记忆。", nil
+			return i18n.T("mem.no.delete"), nil
 		}
 	}
 	r.refreshMemoryContext()
@@ -755,14 +735,14 @@ func (r *chatRuntime) forgetLastMemory(scope string) (string, error) {
 		return "", err
 	}
 	if scope == memoryScopeGlobal {
-		return "已删除最近一条全局记忆。", nil
+		return i18n.T("mem.deleted.last.global"), nil
 	}
-	return "已删除最近一条项目记忆。", nil
+	return i18n.T("mem.deleted.last.project"), nil
 }
 
 func (r *chatRuntime) forgetMatchingMemory(scope, query string) (string, error) {
 	if query == "" {
-		return "请明确要忘掉什么。", nil
+		return i18n.T("mem.forget.what"), nil
 	}
 
 	removedGlobal := 0
@@ -777,19 +757,19 @@ func (r *chatRuntime) forgetMatchingMemory(scope, query string) (string, error) 
 		r.globalMemory, removedGlobal = memory.ForgetMatching(r.globalMemory, query)
 	}
 	if removedGlobal+removedProject == 0 {
-		return "没有找到匹配的记忆。", nil
+		return i18n.T("mem.no.match"), nil
 	}
 	r.refreshMemoryContext()
 	if err := r.saveMemory(); err != nil {
 		return "", err
 	}
 	if removedGlobal > 0 && removedProject > 0 {
-		return fmt.Sprintf("已删除 %d 条记忆。", removedGlobal+removedProject), nil
+		return fmt.Sprintf(i18n.T("mem.deleted.mixed"), removedGlobal+removedProject), nil
 	}
 	if removedGlobal > 0 {
-		return fmt.Sprintf("已删除 %d 条全局记忆。", removedGlobal), nil
+		return fmt.Sprintf(i18n.T("mem.deleted.global"), removedGlobal), nil
 	}
-	return fmt.Sprintf("已删除 %d 条项目记忆。", removedProject), nil
+	return fmt.Sprintf(i18n.T("mem.deleted.project"), removedProject), nil
 }
 
 func parseNaturalLanguageMemoryIntent(input string) (memoryIntent, bool) {
@@ -1033,9 +1013,9 @@ func (r *chatRuntime) saveMemory() error {
 func (r *chatRuntime) beforeExit() {
 	if r.autoMemoryExit && r.dirtySession {
 		if added, err := r.summarizeMemory(); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-memory error: %v\n", err)
+			fmt.Fprintf(os.Stderr, i18n.T("auto.memory.err"), err)
 		} else if added > 0 {
-			fmt.Fprintf(os.Stderr, "auto-memorized %d note(s)\n", added)
+			fmt.Fprintf(os.Stderr, i18n.T("auto.memory.ok"), added)
 		}
 	}
 	_ = r.save()
@@ -1484,6 +1464,32 @@ func formatRunOutput(text, mode string) string {
 	default:
 		return strings.TrimSpace(text)
 	}
+}
+
+func initLanguage(stateDir string) {
+	if i18n.LoadFromFile(stateDir) {
+		return
+	}
+	if !tools.IsInteractiveTerminal(os.Stdin) {
+		i18n.Set(i18n.LangEN)
+		return
+	}
+	fmt.Fprintln(os.Stderr, i18n.T("lang.prompt"))
+	fmt.Fprintln(os.Stderr, i18n.T("lang.en"))
+	fmt.Fprintln(os.Stderr, i18n.T("lang.cn"))
+	fmt.Fprint(os.Stderr, i18n.T("lang.ask"))
+
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	choice := strings.TrimSpace(line)
+	switch choice {
+	case "2", "cn", "中文":
+		i18n.Set(i18n.LangCN)
+	default:
+		i18n.Set(i18n.LangEN)
+	}
+	_ = i18n.SaveToFile(stateDir, i18n.Lang())
+	fmt.Fprintln(os.Stderr, i18n.T("lang.saved"))
 }
 
 func printUsage() {
