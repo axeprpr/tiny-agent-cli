@@ -411,7 +411,7 @@ func runChatTUI(runtime *chatRuntime) int {
 	p := tea.NewProgram(newChatTUIModel(runtime, events), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
-		runtime.beforeExit()
+		runtime.beforeExit(false)
 		return 1
 	}
 	return 0
@@ -454,13 +454,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		immediateRefresh = true
 	case tea.InterruptMsg:
-		m.runtime.beforeExit()
+		m.runtime.beforeExit(false)
 		return m, tea.Quit
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			keyHandled = true
-			m.runtime.beforeExit()
+			m.runtime.beforeExit(false)
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Help):
 			keyHandled = true
@@ -534,7 +534,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.refreshInputState()
 					if result.exitCode >= 0 {
-						m.runtime.beforeExit()
+						m.runtime.beforeExit(true)
 						return m, tea.Quit
 					}
 					break

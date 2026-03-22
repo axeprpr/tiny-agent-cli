@@ -475,3 +475,19 @@ func TestBuildAutoExploreTaskRequiresStructuredSections(t *testing.T) {
 		}
 	}
 }
+
+func TestBeforeExitCtrlCStyleSkipsAutoMemorySummarization(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.autoMemoryExit = true
+	r.dirtySession = true
+	r.projectMemory = []string{"existing note"}
+
+	r.beforeExit(false)
+
+	if r.dirtySession != true {
+		t.Fatalf("expected dirty session to remain true when auto memory is skipped")
+	}
+	if !reflect.DeepEqual(r.projectMemory, []string{"existing note"}) {
+		t.Fatalf("unexpected project memory: %#v", r.projectMemory)
+	}
+}

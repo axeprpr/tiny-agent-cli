@@ -202,11 +202,11 @@ func runChat(args []string) int {
 					fmt.Fprintln(os.Stderr, result.output)
 				}
 				if result.exitCode >= 0 {
-					runtime.beforeExit()
+					runtime.beforeExit(true)
 					return result.exitCode
 				}
 				if readErr != nil {
-					runtime.beforeExit()
+					runtime.beforeExit(true)
 					return 0
 				}
 				continue
@@ -221,7 +221,7 @@ func runChat(args []string) int {
 		}
 
 		if readErr != nil {
-			runtime.beforeExit()
+			runtime.beforeExit(true)
 			return 0
 		}
 	}
@@ -1010,8 +1010,8 @@ func (r *chatRuntime) saveMemory() error {
 	return memory.Save(r.memoryPath, state)
 }
 
-func (r *chatRuntime) beforeExit() {
-	if r.autoMemoryExit && r.dirtySession {
+func (r *chatRuntime) beforeExit(allowAutoMemory bool) {
+	if allowAutoMemory && r.autoMemoryExit && r.dirtySession {
 		if added, err := r.summarizeMemory(); err != nil {
 			fmt.Fprintf(os.Stderr, i18n.T("auto.memory.err"), err)
 		} else if added > 0 {
