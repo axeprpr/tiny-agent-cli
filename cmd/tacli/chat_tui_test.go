@@ -129,6 +129,18 @@ func TestRenderEntriesKeepsStreamingTextPlain(t *testing.T) {
 	}
 }
 
+func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 20),
+		entries:      []tuiEntry{{role: "assistant", text: "# heading\n\n- item"}},
+	}
+
+	got := m.renderEntries()
+	if !strings.Contains(got, "# heading") || !strings.Contains(got, "- item") {
+		t.Fatalf("expected assistant text to remain plain, got %q", got)
+	}
+}
+
 func TestComposerHintHiddenByDefault(t *testing.T) {
 	m := chatTUIModel{}
 	if got := m.composerHint(); got != "" {

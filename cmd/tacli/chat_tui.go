@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"tiny-agent-cli/internal/i18n"
@@ -837,9 +836,6 @@ func (m *chatTUIModel) renderEntries() string {
 			m.entryBlocks[i] = ""
 			continue
 		}
-		if entry.role == "assistant" {
-			text = renderMarkdown(text, bodyWidth)
-		}
 		if entry.role == "approval" {
 			block := lipgloss.JoinVertical(
 				lipgloss.Left,
@@ -1124,51 +1120,6 @@ func parseApprovalFields(body string) map[string]string {
 		fields[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
 	}
 	return fields
-}
-
-func renderMarkdown(text string, width int) string {
-	width = max(20, width)
-	renderer, err := markdownRenderer(width)
-	if err != nil {
-		return text
-	}
-	out, err := renderer.Render(text)
-	if err != nil {
-		return text
-	}
-	return strings.TrimSpace(out)
-}
-
-var (
-	mdCacheMu   sync.Mutex
-	mdCache     = make(map[int]*glamour.TermRenderer)
-	mdCacheKeys []int
-)
-
-const mdCacheLimit = 8
-
-func markdownRenderer(width int) (*glamour.TermRenderer, error) {
-	mdCacheMu.Lock()
-	defer mdCacheMu.Unlock()
-
-	if r, ok := mdCache[width]; ok {
-		return r, nil
-	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return nil, err
-	}
-	if len(mdCache) >= mdCacheLimit {
-		oldest := mdCacheKeys[0]
-		mdCacheKeys = mdCacheKeys[1:]
-		delete(mdCache, oldest)
-	}
-	mdCache[width] = r
-	mdCacheKeys = append(mdCacheKeys, width)
-	return r, nil
 }
 
 func (m chatTUIModel) renderHeader() string {
