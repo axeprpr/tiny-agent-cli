@@ -87,3 +87,62 @@ jobs:
         with:
           files: dist-artifacts/*
           overwrite_files: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Upload OSS mirror
+        env:
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_PREFIX: ${{ secrets.ALIYUN_OSS_PREFIX }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet oss2
+          python <<'PY'
+          import mimetypes
+          import os
+          from pathlib import Path
+
+          import oss2
+
+          endpoint = os.environ["ALIYUN_OSS_ENDPOINT"].strip()
+          bucket_name = os.environ["ALIYUN_OSS_BUCKET"].strip()
+          access_key_id = os.environ["ALIYUN_ACCESS_KEY_ID"].strip()
+          access_key_secret = os.environ["ALIYUN_ACCESS_KEY_SECRET"].strip()
+          ref_name = os.environ["GITHUB_REF_NAME"].strip()
+          prefix = os.environ.get("ALIYUN_OSS_PREFIX", "tacli/").strip().strip("/")
+          base_prefix = prefix or "tacli"
+
+          auth = oss2.Auth(access_key_id, access_key_secret)
+          bucket = oss2.Bucket(auth, f"https://{endpoint}", bucket_name)
+
+          targets = [f"{base_prefix}/{ref_name}", f"{base_prefix}/latest"]
+          files = sorted(p for p in Path("dist-artifacts").iterdir() if p.is_file())
+          if not files:
+              raise SystemExit("no artifacts found in dist-artifacts")
+
+          urls = []
+          for artifact in files:
+              content_type, _ = mimetypes.guess_type(artifact.name)
+              headers = {}
+              if content_type:
+                  headers["Content-Type"] = content_type
+              for target in targets:
+                  key = f"{target}/{artifact.name}"
+                  bucket.put_object_from_file(key, str(artifact), headers=headers)
+                  urls.append(f"https://{bucket_name}.{endpoint}/{key}")
+                  print(f"uploaded {artifact.name} -> {key}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("\n## OSS mirror\n")
+                  for url in urls:
+                      fh.write(f"- `{url}`\n")
+          PY
