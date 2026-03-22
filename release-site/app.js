@@ -11,7 +11,6 @@ const copy = {
   en: {
     intro: "Minimal terminal coding agent. Download the latest binary for your platform.",
     featuresTitle: "Features",
-    releaseNotes: "Release Notes",
     latestVersionLabel: "Latest Version",
     updatedLabel: "Updated",
     routeLabel: "Download Source",
@@ -43,7 +42,6 @@ const copy = {
   zh: {
     intro: "极简终端编码代理。直接下载适合你平台的最新版二进制。",
     featuresTitle: "功能简介",
-    releaseNotes: "发行说明",
     latestVersionLabel: "最新版本",
     updatedLabel: "更新时间",
     routeLabel: "下载源",
@@ -137,8 +135,6 @@ function render() {
   const config = state.config || {};
   const release = state.release;
   const tag = release?.tag_name || lang.loadingVersion;
-  const notesUrl =
-    release?.html_url || `https://github.com/${config.owner || "axeprpr"}/${config.repo || "tiny-agent-cli"}/releases`;
   const publishedAt = release?.published_at
     ? new Date(release.published_at).toLocaleString(state.language === "zh" ? "zh-CN" : "en-US", {
         dateStyle: "medium",
@@ -156,7 +152,6 @@ function render() {
   document.getElementById("latest-version").textContent = tag;
   document.getElementById("latest-published-at").textContent = publishedAt;
   document.getElementById("active-route-label").textContent = usingOss ? lang.routeOssValue : lang.routeGitHubValue;
-  document.getElementById("release-notes-link").href = notesUrl;
   document.getElementById("route-panel").textContent =
     state.route === "china"
       ? ossReady
