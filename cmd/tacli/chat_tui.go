@@ -329,16 +329,6 @@ var (
 			Background(lipgloss.Color("235")).
 			Padding(0, 1)
 
-	markdownHeadingStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("230")).
-				Bold(true)
-
-	markdownBulletStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("81"))
-
-	markdownQuoteStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("244"))
-
 	conversationStyle = lipgloss.NewStyle().
 				Padding(0, 0, 1, 0)
 
@@ -846,9 +836,6 @@ func (m *chatTUIModel) renderEntries() string {
 			m.entryBlocks[i] = ""
 			continue
 		}
-		if entry.role == "assistant" {
-			text = renderLightMarkdown(text, bodyWidth)
-		}
 		if entry.role == "approval" {
 			block := lipgloss.JoinVertical(
 				lipgloss.Left,
@@ -1133,108 +1120,6 @@ func parseApprovalFields(body string) map[string]string {
 		fields[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
 	}
 	return fields
-}
-
-func renderLightMarkdown(text string, width int) string {
-	width = max(20, width)
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-
-	var out []string
-	var codeLines []string
-	inCodeBlock := false
-
-	flushCode := func() {
-		if len(codeLines) == 0 {
-			return
-		}
-		out = append(out, codeBlockStyle.Width(width).Render(strings.Join(codeLines, "\n")))
-		codeLines = nil
-	}
-
-	for _, raw := range lines {
-		line := strings.TrimRight(raw, " \t")
-		trimmed := strings.TrimSpace(line)
-
-		if strings.HasPrefix(trimmed, "```") {
-			if inCodeBlock {
-				flushCode()
-				inCodeBlock = false
-			} else {
-				inCodeBlock = true
-			}
-			continue
-		}
-		if inCodeBlock {
-			codeLines = append(codeLines, line)
-			continue
-		}
-		if trimmed == "" {
-			out = append(out, "")
-			continue
-		}
-
-		switch {
-		case strings.HasPrefix(trimmed, "# "):
-			out = append(out, markdownHeadingStyle.Width(width).Render(strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))))
-		case strings.HasPrefix(trimmed, "## "):
-			out = append(out, markdownHeadingStyle.Width(width).Render(strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))))
-		case strings.HasPrefix(trimmed, "### "):
-			out = append(out, markdownHeadingStyle.Width(width).Render(strings.TrimSpace(strings.TrimPrefix(trimmed, "### "))))
-		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "):
-			item := strings.TrimSpace(trimmed[2:])
-			out = append(out, lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				markdownBulletStyle.Render("• "),
-				bodyTextStyle(width-2).Render(item),
-			))
-		case isNumberedListItem(trimmed):
-			marker, item := splitNumberedListItem(trimmed)
-			out = append(out, lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				markdownBulletStyle.Render(marker+" "),
-				bodyTextStyle(max(10, width-len(marker)-1)).Render(item),
-			))
-		case strings.HasPrefix(trimmed, ">"):
-			quote := strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))
-			out = append(out, markdownQuoteStyle.Width(width).Render("│ "+quote))
-		default:
-			out = append(out, bodyTextStyle(width).Render(trimmed))
-		}
-	}
-
-	if inCodeBlock {
-		flushCode()
-	}
-
-	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
-func bodyTextStyle(width int) lipgloss.Style {
-	return codeBodyStyle.Width(max(10, width))
-}
-
-func isNumberedListItem(line string) bool {
-	dot := strings.Index(line, ". ")
-	if dot <= 0 {
-		return false
-	}
-	for _, r := range line[:dot] {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func splitNumberedListItem(line string) (string, string) {
-	dot := strings.Index(line, ". ")
-	if dot <= 0 {
-		return "", strings.TrimSpace(line)
-	}
-	return line[:dot+1], strings.TrimSpace(line[dot+2:])
 }
 
 func (m chatTUIModel) renderHeader() string {
