@@ -232,6 +232,8 @@ type chatTUIModel struct {
 	entriesWidth  int
 	logsWidth     int
 	refreshQueued bool
+	entryKeys     []string
+	entryBlocks   []string
 }
 
 var (
@@ -446,6 +448,7 @@ func (m chatTUIModel) Init() tea.Cmd {
 func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	keyHandled := false
+	mouseHandled := false
 	immediateRefresh := false
 
 	switch msg := msg.(type) {
@@ -549,6 +552,15 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshInputState()
 			cmds = append(cmds, runTaskCmd(m.runtime, m.events, task))
 		}
+	case tea.MouseMsg:
+		mouseHandled = true
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.showDrawer {
+			m.logViewport, cmd = m.logViewport.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
@@ -642,7 +654,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if !keyHandled {
+	if !keyHandled && !mouseHandled {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		m.chatViewport, cmd = m.chatViewport.Update(msg)
@@ -763,9 +775,17 @@ func (m *chatTUIModel) renderEntries() string {
 	if m.chatViewport.Width <= 0 {
 		return ""
 	}
-	var rendered []string
 	bodyWidth := max(20, m.chatViewport.Width-3)
-	for _, entry := range m.entries {
+	if len(m.entryKeys) != len(m.entries) {
+		m.entryKeys = make([]string, len(m.entries))
+		m.entryBlocks = make([]string, len(m.entries))
+	}
+	for i, entry := range m.entries {
+		key := fmt.Sprintf("%d|%s|%s", bodyWidth, entry.role, entry.text)
+		if m.entryKeys[i] == key && m.entryBlocks[i] != "" {
+			continue
+		}
+
 		var label lipgloss.Style
 		var body lipgloss.Style
 		switch entry.role {
@@ -793,6 +813,8 @@ func (m *chatTUIModel) renderEntries() string {
 		}
 		text := strings.TrimSpace(entry.text)
 		if text == "" {
+			m.entryKeys[i] = key
+			m.entryBlocks[i] = ""
 			continue
 		}
 		if entry.role == "assistant" {
@@ -804,7 +826,8 @@ func (m *chatTUIModel) renderEntries() string {
 				label.Render("approval"),
 				approvalStyle.Width(bodyWidth).Render(text),
 			)
-			rendered = append(rendered, block)
+			m.entryKeys[i] = key
+			m.entryBlocks[i] = block
 			continue
 		}
 		block := lipgloss.JoinVertical(
@@ -812,6 +835,15 @@ func (m *chatTUIModel) renderEntries() string {
 			label.Render(entry.role),
 			body.Width(bodyWidth).Render(text),
 		)
+		m.entryKeys[i] = key
+		m.entryBlocks[i] = block
+	}
+
+	rendered := make([]string, 0, len(m.entryBlocks))
+	for _, block := range m.entryBlocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
 		rendered = append(rendered, block)
 	}
 	return strings.Join(rendered, "\n\n")

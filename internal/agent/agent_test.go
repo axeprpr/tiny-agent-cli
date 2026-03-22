@@ -99,6 +99,19 @@ func TestTruncateToolMessageShrinksLargeOutput(t *testing.T) {
 	}
 }
 
+func TestSummarizeOutputKeepsSeveralLines(t *testing.T) {
+	got := summarizeOutput("line one\nline two\nline three\nline four")
+	want := []string{"line one", "line two", "line three", "... 1 more lines"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected summary length: %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected summary at %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
 type stubChatClient struct {
 	resp model.Response
 	err  error
@@ -173,6 +186,156 @@ func (s *scriptedChatClient) Complete(_ context.Context, req model.Request) (mod
 		return model.Response{}, nil
 	}
 	return s.responses[index], nil
+}
+
+type scriptedStreamClient struct {
+	sequences [][]model.StreamChunk
+	requests  int
+	err       error
+}
+
+func (s *scriptedStreamClient) CompleteStream(_ context.Context, _ model.Request) (<-chan model.StreamChunk, <-chan error) {
+	var chunks []model.StreamChunk
+	if s.requests < len(s.sequences) {
+		chunks = s.sequences[s.requests]
+	}
+	s.requests++
+
+	ch := make(chan model.StreamChunk, len(chunks))
+	errc := make(chan error, 1)
+	for _, chunk := range chunks {
+		ch <- chunk
+	}
+	close(ch)
+	errc <- s.err
+	close(errc)
+	return ch, errc
+}
+
+func TestRunTaskStreamingSeparatesMultipleToolCalls(t *testing.T) {
+	addIndex := 0
+	mulIndex := 1
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+	registry := tools.NewRegistry(".", "bash", time.Second, nil)
+	agent := New(client, registry, 32768, nil)
+	streamClient := &scriptedStreamClient{
+		sequences: [][]model.StreamChunk{
+			{
+				{
+					Choices: []model.StreamChoice{
+						{
+							Index: 0,
+							Delta: model.StreamDelta{
+								Role: "assistant",
+								ToolCalls: []model.ToolCall{
+									{
+										Index: &addIndex,
+										ID:    "add:0",
+										Type:  "function",
+										Function: model.ToolFunction{
+											Name:      "run_command",
+											Arguments: "",
+										},
+									},
+									{
+										Index: &mulIndex,
+										ID:    "mul:1",
+										Type:  "function",
+										Function: model.ToolFunction{
+											Name:      "run_command",
+											Arguments: "",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Choices: []model.StreamChoice{
+						{
+							Index: 0,
+							Delta: model.StreamDelta{
+								ToolCalls: []model.ToolCall{
+									{
+										Index: &addIndex,
+										Function: model.ToolFunction{Arguments: `{"command":"printf add"}`},
+									},
+									{
+										Index: &mulIndex,
+										Function: model.ToolFunction{Arguments: `{"command":"printf mul"}`},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				{
+					Choices: []model.StreamChoice{
+						{
+							Index: 0,
+							Delta: model.StreamDelta{
+								Role:    "assistant",
+								Content: "done",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	agent.SetStreamClient(streamClient)
+
+	session := agent.NewSession()
+	result, err := session.RunTaskStreaming(context.Background(), "run tools", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	msgs := session.Messages()
+	if len(msgs) < 5 {
+		t.Fatalf("unexpected messages: %#v", msgs)
+	}
+	var assistant model.Message
+	found := false
+	for _, msg := range msgs {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			assistant = msg
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected assistant tool-call message, got %#v", msgs)
+	}
+	if len(assistant.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %#v", assistant.ToolCalls)
+	}
+	if assistant.ToolCalls[0].Function.Name != "run_command" || assistant.ToolCalls[1].Function.Name != "run_command" {
+		t.Fatalf("unexpected tool names: %#v", assistant.ToolCalls)
+	}
+	if assistant.ToolCalls[0].Function.Arguments != `{"command":"printf add"}` {
+		t.Fatalf("unexpected first args: %q", assistant.ToolCalls[0].Function.Arguments)
+	}
+	if assistant.ToolCalls[1].Function.Arguments != `{"command":"printf mul"}` {
+		t.Fatalf("unexpected second args: %q", assistant.ToolCalls[1].Function.Arguments)
+	}
+	if assistant.ToolCalls[0].Index != nil || assistant.ToolCalls[1].Index != nil {
+		t.Fatalf("stream-only tool indexes should not leak into stored messages: %#v", assistant.ToolCalls)
+	}
 }
 
 func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {

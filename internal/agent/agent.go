@@ -262,7 +262,8 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 
 		var contentBuf strings.Builder
 		var role string
-		toolCallMap := map[int]*model.ToolCall{}
+		toolCallMap := map[string]*model.ToolCall{}
+		var toolCallOrder []string
 
 		for chunk := range chunks {
 			for _, choice := range chunk.Choices {
@@ -277,18 +278,27 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 					}
 				}
 				for _, tc := range d.ToolCalls {
-					existing, ok := toolCallMap[choice.Index]
+					key := streamToolCallKey(choice.Index, tc, len(toolCallOrder))
+					existing, ok := toolCallMap[key]
 					if !ok {
-						existing = &model.ToolCall{ID: tc.ID, Type: tc.Type, Function: tc.Function}
-						toolCallMap[choice.Index] = existing
+						copy := tc
+						existing = &copy
+						toolCallMap[key] = existing
+						toolCallOrder = append(toolCallOrder, key)
 					} else {
 						if tc.ID != "" {
 							existing.ID = tc.ID
 						}
 						if tc.Function.Name != "" {
-							existing.Function.Name += tc.Function.Name
+							if existing.Function.Name == "" {
+								existing.Function.Name = tc.Function.Name
+							} else {
+								existing.Function.Name += tc.Function.Name
+							}
 						}
-						existing.Function.Arguments += tc.Function.Arguments
+						if tc.Function.Arguments != "" {
+							existing.Function.Arguments += tc.Function.Arguments
+						}
 					}
 				}
 			}
@@ -308,10 +318,10 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		}
 
 		var toolCalls []model.ToolCall
-		for i := 0; i < len(toolCallMap); i++ {
-			if tc, ok := toolCallMap[i]; ok {
-				toolCalls = append(toolCalls, *tc)
-			}
+		for _, key := range toolCallOrder {
+			tc := *toolCallMap[key]
+			tc.Index = nil
+			toolCalls = append(toolCalls, tc)
 		}
 
 		msg := model.Message{
@@ -791,9 +801,13 @@ func (a *Agent) logToolFinish(elapsed time.Duration, output string, err error) {
 	}
 	a.logf("        %s in %s", status, roundDuration(elapsed))
 
-	summary := summarizeOutput(output)
-	if summary != "" {
-		a.logf(" | %s", summary)
+	lines := summarizeOutput(output)
+	if len(lines) > 0 {
+		a.logf(" | %s\n", lines[0])
+		for _, line := range lines[1:] {
+			a.logf("        | %s\n", line)
+		}
+		return
 	}
 	a.logf("\n")
 }
@@ -809,22 +823,39 @@ func roundDuration(d time.Duration) time.Duration {
 	}
 }
 
-func summarizeOutput(text string) string {
+func summarizeOutput(text string) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ""
+		return nil
 	}
 
-	lines := strings.Split(text, "\n")
-	first := strings.TrimSpace(lines[0])
-	if len(first) > 72 {
-		first = first[:72] + "..."
+	rawLines := strings.Split(text, "\n")
+	limit := min(3, len(rawLines))
+	out := make([]string, 0, limit+1)
+	for _, line := range rawLines[:limit] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 160 {
+			line = line[:160] + "..."
+		}
+		out = append(out, line)
 	}
+	if len(rawLines) > limit {
+		out = append(out, fmt.Sprintf("... %d more lines", len(rawLines)-limit))
+	}
+	return out
+}
 
-	if len(lines) == 1 {
-		return first
+func streamToolCallKey(choiceIndex int, tc model.ToolCall, fallback int) string {
+	if tc.Index != nil {
+		return fmt.Sprintf("%d:%d", choiceIndex, *tc.Index)
 	}
-	return fmt.Sprintf("%d lines, first: %s", len(lines), first)
+	if strings.TrimSpace(tc.ID) != "" {
+		return fmt.Sprintf("%d:id:%s", choiceIndex, tc.ID)
+	}
+	return fmt.Sprintf("%d:fallback:%d", choiceIndex, fallback)
 }
 
 func FormatTerminalOutput(text string) string {
