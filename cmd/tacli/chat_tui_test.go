@@ -136,8 +136,22 @@ func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
 	}
 
 	got := m.renderEntries()
-	if !strings.Contains(got, "# heading") || !strings.Contains(got, "- item") {
-		t.Fatalf("expected assistant text to remain plain, got %q", got)
+	if !strings.Contains(got, "heading") || !strings.Contains(got, "• item") {
+		t.Fatalf("expected assistant text to remain visible, got %q", got)
+	}
+}
+
+func TestRenderLightMarkdownFormatsCodeBlock(t *testing.T) {
+	got := renderLightMarkdown("```go\nfmt.Println(\"hi\")\n```", 60)
+	if !strings.Contains(got, "fmt.Println(\"hi\")") {
+		t.Fatalf("expected code block content to remain, got %q", got)
+	}
+}
+
+func TestRenderLightMarkdownFormatsNumberedList(t *testing.T) {
+	got := renderLightMarkdown("1. first\n2. second", 60)
+	if !strings.Contains(got, "1. ") || !strings.Contains(got, "second") {
+		t.Fatalf("expected numbered list to remain, got %q", got)
 	}
 }
 
