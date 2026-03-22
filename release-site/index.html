@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>tacli Downloads</title>
+    <meta
+      name="description"
+      content="Download tacli binaries from GitHub Releases or Aliyun OSS."
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <div>
+          <h1>tacli</h1>
+          <p class="intro" data-i18n="intro">
+            Minimal terminal coding agent. Download the latest binary for your platform.
+          </p>
+        </div>
+        <div class="toolbar">
+          <div class="toggle" id="language-toggle">
+            <button class="is-active" data-language="en">English</button>
+            <button data-language="zh-CN">中文</button>
+          </div>
+          <a
+            id="release-notes-link"
+            class="link-button"
+            href="https://github.com/axeprpr/tiny-agent-cli/releases"
+            target="_blank"
+            rel="noreferrer"
+            data-i18n="releaseNotes"
+            >Release Notes</a
+          >
+        </div>
+      </header>
+
+      <section class="summary">
+        <div class="summary-item">
+          <div class="label" data-i18n="latestVersionLabel">Latest Version</div>
+          <div id="latest-version" class="value">Loading</div>
+        </div>
+        <div class="summary-item">
+          <div class="label" data-i18n="updatedLabel">Updated</div>
+          <div id="latest-published-at" class="value">Waiting</div>
+        </div>
+        <div class="summary-item">
+          <div class="label" data-i18n="routeLabel">Download Source</div>
+          <div id="active-route-label" class="value">GitHub Releases</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="featuresTitle">Features</h2>
+        <ul id="feature-list" class="feature-list"></ul>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="installTitle">Install</h2>
+        <p class="muted" data-i18n="installIntro">
+          Pick the matching binary below. If you are in mainland China, switch to OSS.
+        </p>
+        <div class="install-block">
+          <div class="label" data-i18n="routeLabel">Download Source</div>
+          <div class="toggle" id="route-toggle">
+            <button class="is-active" data-route="global" data-i18n="routeGlobal">Global</button>
+            <button data-route="china" data-i18n="routeChina">China Mainland</button>
+          </div>
+        </div>
+        <div class="install-block">
+          <div class="label" data-i18n="installCommandLabel">Quick install</div>
+          <pre id="install-command">curl -fsSL https://github.com/axeprpr/tiny-agent-cli/releases/latest/download/tacli-linux-amd64 -o tacli</pre>
+        </div>
+        <p id="route-panel" class="muted"></p>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="downloadsTitle">Downloads</h2>
+        <div id="download-cards" class="download-list"></div>
+      </section>
+    </main>
+
+    <template id="card-template">
+      <article class="download-item">
+        <div class="download-main">
+          <div class="download-name"></div>
+          <div class="download-meta"></div>
+        </div>
+        <a class="download-link" target="_blank" rel="noreferrer"></a>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
