@@ -69,8 +69,18 @@
           </div>
         </div>
         <div class="install-block">
-          <div class="label" data-i18n="installCommandLabel">Quick install</div>
+          <div class="command-header">
+            <div class="label" data-i18n="installCommandLabel">Quick install</div>
+            <button class="copy-button" data-copy-target="install-command" data-i18n="copyButton">复制</button>
+          </div>
           <pre id="install-command">curl -fsSL https://github.com/axeprpr/tiny-agent-cli/releases/latest/download/tacli-linux-amd64 -o tacli</pre>
+        </div>
+        <div class="install-block">
+          <div class="command-header">
+            <div class="label" data-i18n="runCommandLabel">Run</div>
+            <button class="copy-button" data-copy-target="run-command" data-i18n="copyButton">复制</button>
+          </div>
+          <pre id="run-command">export MODEL_BASE_URL='http://127.0.0.1:11434/v1' && export MODEL_NAME='your-model' && /usr/local/bin/tacli</pre>
         </div>
         <p id="route-panel" class="muted"></p>
       </section>

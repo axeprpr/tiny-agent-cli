@@ -10,3 +10,4 @@ coverage/
 *.log
 *.out
 *.test
+.vercel

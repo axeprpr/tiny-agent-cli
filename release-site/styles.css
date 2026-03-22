@@ -162,6 +162,23 @@ h2 {
   margin-top: 14px;
 }
 
+.command-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.copy-button {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  border-radius: 8px;
+  height: 32px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
 pre {
   margin: 8px 0 0;
   padding: 12px;

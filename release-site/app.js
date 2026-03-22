@@ -19,7 +19,9 @@ const copy = {
     installIntro: "Pick the matching binary below. If you are in mainland China, switch to OSS.",
     routeGlobal: "Global",
     routeChina: "China Mainland",
-    installCommandLabel: "Quick install",
+    installCommandLabel: "Install",
+    runCommandLabel: "Run",
+    copyButton: "Copy",
     downloadsTitle: "Downloads",
     features: [
       "One small binary. No Node.js, no Python runtime, no background service.",
@@ -49,7 +51,9 @@ const copy = {
     installIntro: "选择对应平台的二进制。如果你在中国大陆，切到 OSS 即可。",
     routeGlobal: "全球",
     routeChina: "中国大陆",
-    installCommandLabel: "快速安装",
+    installCommandLabel: "安装命令",
+    runCommandLabel: "运行命令",
+    copyButton: "复制",
     downloadsTitle: "下载地址",
     features: [
       "单文件二进制。不需要 Node.js、不需要 Python 运行时、不需要后台服务。",
@@ -71,8 +75,8 @@ const copy = {
 };
 
 const state = {
-  language: /^zh/i.test(navigator.language || "") ? "zh" : "en",
-  route: /^zh/i.test(navigator.language || "") ? "china" : "global",
+  language: "zh",
+  route: "china",
   release: null,
   config: null,
 };
@@ -96,6 +100,22 @@ function bindToggles() {
     if (!button) return;
     state.route = button.dataset.route;
     render();
+  });
+
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-target]");
+    if (!button) return;
+    const target = document.getElementById(button.dataset.copyTarget);
+    if (!target) return;
+    try {
+      await navigator.clipboard.writeText(target.textContent);
+      button.textContent = state.language === "zh" ? "已复制" : "Copied";
+    } catch {
+      button.textContent = state.language === "zh" ? "复制失败" : "Copy failed";
+    }
+    window.setTimeout(() => {
+      button.textContent = copy[state.language].copyButton;
+    }, 1200);
   });
 }
 
@@ -166,7 +186,9 @@ function renderInstallCommand(usingOss, config) {
     ? `${config.ossMirrorBase.replace(/\/$/, "")}/latest`
     : `https://github.com/${config.owner || "axeprpr"}/${config.repo || "tiny-agent-cli"}/releases/latest/download`;
   document.getElementById("install-command").textContent =
-    `curl -fsSL ${base}/tacli-linux-amd64 -o tacli && chmod +x tacli`;
+    `curl -fsSL ${base}/tacli-linux-amd64 -o /usr/local/bin/tacli && chmod +x /usr/local/bin/tacli`;
+  document.getElementById("run-command").textContent =
+    `export MODEL_BASE_URL='http://127.0.0.1:11434/v1' && export MODEL_NAME='your-model' && /usr/local/bin/tacli`;
 }
 
 function renderDownloads(usingOss, config) {
