@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -45,6 +46,8 @@ type tuiJobUpdateMsg struct {
 type tuiStreamMsg struct {
 	token string
 }
+
+type tuiRefreshMsg struct{}
 
 type tuiEntry struct {
 	role string
@@ -205,29 +208,30 @@ func (k chatKeyMap) FullHelp() [][]key.Binding {
 }
 
 type chatTUIModel struct {
-	runtime      *chatRuntime
-	events       chan tea.Msg
-	chatViewport viewport.Model
-	logViewport  viewport.Model
-	input        textarea.Model
-	spinner      spinner.Model
-	help         help.Model
-	keys         chatKeyMap
-	entries      []tuiEntry
-	logs         []tuiLogEntry
-	approval     *tuiApprovalMsg
-	width        int
-	height       int
-	busy         bool
-	stepText     string
-	statusText   string
-	showFullHelp bool
-	showDrawer   bool
-	logFilter    string
-	entriesDirty bool
-	logsDirty    bool
-	entriesWidth int
-	logsWidth    int
+	runtime       *chatRuntime
+	events        chan tea.Msg
+	chatViewport  viewport.Model
+	logViewport   viewport.Model
+	input         textarea.Model
+	spinner       spinner.Model
+	help          help.Model
+	keys          chatKeyMap
+	entries       []tuiEntry
+	logs          []tuiLogEntry
+	approval      *tuiApprovalMsg
+	width         int
+	height        int
+	busy          bool
+	stepText      string
+	statusText    string
+	showFullHelp  bool
+	showDrawer    bool
+	logFilter     string
+	entriesDirty  bool
+	logsDirty     bool
+	entriesWidth  int
+	logsWidth     int
+	refreshQueued bool
 }
 
 var (
@@ -419,6 +423,12 @@ func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
 	}
 }
 
+func scheduleViewportRefresh() tea.Cmd {
+	return tea.Tick(time.Second/30, func(time.Time) tea.Msg {
+		return tuiRefreshMsg{}
+	})
+}
+
 func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, task string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
@@ -436,12 +446,13 @@ func (m chatTUIModel) Init() tea.Cmd {
 func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	keyHandled := false
+	immediateRefresh := false
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.resize()
+		immediateRefresh = true
 	case tea.InterruptMsg:
 		m.runtime.beforeExit()
 		return m, tea.Quit
@@ -471,7 +482,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusText = i18n.T("tui.status.filter.updated")
 			}
 			m.logsDirty = true
-			m.refreshViewports()
+			immediateRefresh = true
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
 			m.chatViewport.HalfViewUp()
@@ -510,7 +521,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.entriesDirty = true
 				m.refreshInputState()
-				m.refreshViewports()
+				immediateRefresh = true
 				break
 			}
 			if strings.HasPrefix(task, "/") {
@@ -519,7 +530,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if strings.TrimSpace(result.output) != "" {
 						m.entries = append(m.entries, tuiEntry{role: "system", text: result.output})
 						m.entriesDirty = true
-						m.refreshViewports()
+						immediateRefresh = true
 					}
 					m.refreshInputState()
 					if result.exitCode >= 0 {
@@ -532,7 +543,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.entries = append(m.entries, tuiEntry{role: "user", text: task})
 			m.entriesDirty = true
-			m.refreshViewports()
+			immediateRefresh = true
 			m.busy = true
 			m.statusText = i18n.T("tui.status.running")
 			m.refreshInputState()
@@ -545,7 +556,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendActivityEntry(msg.kind, msg.text)
 		m.logsDirty = true
 		m.entriesDirty = true
-		m.refreshViewports()
+		if !m.refreshQueued {
+			m.refreshQueued = true
+			cmds = append(cmds, scheduleViewportRefresh())
+		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
 		m.approval = &msg
@@ -556,10 +570,11 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsDirty = true
 		m.entriesDirty = true
 		m.refreshInputState()
-		m.refreshViewports()
+		immediateRefresh = true
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiTaskDoneMsg:
 		m.busy = false
+		m.refreshQueued = false
 		// Convert any streaming entry to assistant
 		for i := range m.entries {
 			if m.entries[i].role == "streaming" {
@@ -585,7 +600,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.entriesDirty = true
 		m.refreshInputState()
-		m.refreshViewports()
+		immediateRefresh = true
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiJobUpdateMsg:
 		m.logs = append(m.logs, tuiLogEntry{kind: "steps", text: msg.text})
@@ -594,7 +609,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = i18n.T("tui.status.bg.update")
 		m.logsDirty = true
 		m.entriesDirty = true
-		m.refreshViewports()
+		if !m.refreshQueued {
+			m.refreshQueued = true
+			cmds = append(cmds, scheduleViewportRefresh())
+		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiStreamMsg:
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "streaming" {
@@ -603,8 +621,18 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries[len(m.entries)-1].text += msg.token
 		}
 		m.entriesDirty = true
-		m.refreshViewports()
+		if !m.refreshQueued {
+			m.refreshQueued = true
+			cmds = append(cmds, scheduleViewportRefresh())
+		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
+	case tuiRefreshMsg:
+		m.refreshQueued = false
+		immediateRefresh = true
+		if m.entriesDirty || m.logsDirty {
+			m.refreshQueued = true
+			cmds = append(cmds, scheduleViewportRefresh())
+		}
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -628,7 +656,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetHeight(newHeight)
 		}
 	}
-	m.resize()
+	m.resize(immediateRefresh)
 	return m, tea.Batch(cmds...)
 }
 
@@ -668,7 +696,7 @@ func (m chatTUIModel) View() string {
 	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
-func (m *chatTUIModel) resize() {
+func (m *chatTUIModel) resize(forceRefresh bool) {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
@@ -695,7 +723,7 @@ func (m *chatTUIModel) resize() {
 		m.entriesDirty = true
 		m.logsDirty = true
 	}
-	if widthChanged || m.entriesDirty || m.logsDirty {
+	if widthChanged || forceRefresh {
 		m.refreshViewports()
 	}
 }
@@ -767,7 +795,7 @@ func (m *chatTUIModel) renderEntries() string {
 		if text == "" {
 			continue
 		}
-		if entry.role == "assistant" || entry.role == "streaming" {
+		if entry.role == "assistant" {
 			text = renderMarkdown(text, bodyWidth)
 		}
 		if entry.role == "approval" {

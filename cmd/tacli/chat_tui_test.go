@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 
 	"tiny-agent-cli/internal/agent"
@@ -90,6 +91,40 @@ func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
 	}
 	if m.chatViewport.View() != content || m.logViewport.View() != logContent {
 		t.Fatalf("expected viewport content to remain stable without rerender")
+	}
+}
+
+func TestResizeSkipsDirtyRefreshUntilForced(t *testing.T) {
+	m := chatTUIModel{
+		width:        100,
+		height:       30,
+		chatViewport: viewport.New(96, 18),
+		logViewport:  viewport.New(96, 7),
+		input:        textarea.New(),
+		entries:      []tuiEntry{{role: "assistant", text: "hello"}},
+		entriesDirty: true,
+	}
+
+	m.resize(false)
+	if !m.entriesDirty {
+		t.Fatalf("expected resize without force to leave dirty flag set")
+	}
+
+	m.resize(true)
+	if m.entriesDirty {
+		t.Fatalf("expected forced resize to refresh dirty content")
+	}
+}
+
+func TestRenderEntriesKeepsStreamingTextPlain(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 20),
+		entries:      []tuiEntry{{role: "streaming", text: "# heading"}},
+	}
+
+	got := m.renderEntries()
+	if !strings.Contains(got, "# heading") {
+		t.Fatalf("expected streaming text to remain plain, got %q", got)
 	}
 }
 
