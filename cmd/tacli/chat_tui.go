@@ -1130,6 +1130,7 @@ func markdownRenderer(width int) (*glamour.TermRenderer, error) {
 func (m chatTUIModel) renderHeader() string {
 	chips := []string{
 		titleStyle.Render("tacli"),
+		chipMutedStyle.Render(version),
 		chipAccentStyle.Render(m.runtime.cfg.Model),
 		chipMutedStyle.Render(m.runtime.sessionName),
 	}
