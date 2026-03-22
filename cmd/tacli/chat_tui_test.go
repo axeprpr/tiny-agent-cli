@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
+
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
 	"tiny-agent-cli/internal/tools"
@@ -48,7 +50,7 @@ func TestRenderTodoSummary(t *testing.T) {
 	r := &chatRuntime{
 		cfg: config.Config{Model: "test-model"},
 	}
-	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 1, nil)
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
 	if err := r.loop.ReplaceTodo([]tools.TodoItem{
 		{Text: "inspect auth flow", Status: "completed"},
 		{Text: "patch refresh logic", Status: "pending"},
@@ -59,5 +61,52 @@ func TestRenderTodoSummary(t *testing.T) {
 	got := m.renderTodoSummary()
 	if !strings.Contains(got, "plan") || !strings.Contains(got, "[done] inspect auth flow") {
 		t.Fatalf("unexpected todo summary: %q", got)
+	}
+}
+
+func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 20),
+		logViewport:  viewport.New(80, 10),
+		entries:      []tuiEntry{{role: "assistant", text: "hello"}},
+		logs:         []tuiLogEntry{{kind: "steps", text: "executing 1 tool(s)"}},
+		entriesDirty: true,
+		logsDirty:    true,
+	}
+
+	m.refreshViewports()
+	if m.entriesDirty || m.logsDirty {
+		t.Fatalf("expected refresh to clear dirty flags")
+	}
+
+	entriesWidth := m.entriesWidth
+	logsWidth := m.logsWidth
+	content := m.chatViewport.View()
+	logContent := m.logViewport.View()
+
+	m.refreshViewports()
+	if m.entriesWidth != entriesWidth || m.logsWidth != logsWidth {
+		t.Fatalf("expected cached widths to remain unchanged")
+	}
+	if m.chatViewport.View() != content || m.logViewport.View() != logContent {
+		t.Fatalf("expected viewport content to remain stable without rerender")
+	}
+}
+
+func TestComposerHintHiddenByDefault(t *testing.T) {
+	m := chatTUIModel{}
+	if got := m.composerHint(); got != "" {
+		t.Fatalf("expected default composer hint to be hidden, got %q", got)
+	}
+}
+
+func TestContextStatusShowsTokenCounts(t *testing.T) {
+	r := &chatRuntime{
+		cfg:     config.Config{ContextWindow: 32768},
+		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	got := contextStatus(r, "hello world")
+	if !strings.Contains(got, "ctx ") || !strings.Contains(got, "tok") || !strings.Contains(got, "left") {
+		t.Fatalf("unexpected context status: %q", got)
 	}
 }

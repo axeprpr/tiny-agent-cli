@@ -14,8 +14,6 @@ import (
 
 const (
 	maxToolMessageChars    = 6000
-	maxConversationChars   = 24000
-	retryConversationChars = 12000
 	maxSummaryChars        = 1800
 	recentTurnsToKeep      = 3
 	maxConsecutiveToolErrs = 3
@@ -47,6 +45,7 @@ Behavior:
   - explore: inspect files, commands, or evidence before editing
   - build: make targeted changes and verify them
 - Choose the smallest useful next step, then verify the result before continuing.
+- When listing results, findings, checks, or next steps, put each item on its own line as a standard Markdown list. Do not pack multiple bullet points into one paragraph.
 - Do not narrate intent with phrases like "let me", "I will", "I am going to", or "first I will".
 - Do not describe the user or their request in the third person.
 - Do not say that you will remember, confirm, summarize, or prepare an answer.
@@ -83,11 +82,11 @@ type StreamClient interface {
 }
 
 type Agent struct {
-	client       chatClient
-	streamClient StreamClient
-	registry     *tools.Registry
-	maxSteps     int
-	log          io.Writer
+	client        chatClient
+	streamClient  StreamClient
+	registry      *tools.Registry
+	contextWindow int
+	log           io.Writer
 }
 
 type Session struct {
@@ -95,12 +94,15 @@ type Session struct {
 	messages []model.Message
 }
 
-func New(client chatClient, registry *tools.Registry, maxSteps int, log io.Writer) *Agent {
+func New(client chatClient, registry *tools.Registry, contextWindow int, log io.Writer) *Agent {
+	if contextWindow <= 0 {
+		contextWindow = 32768
+	}
 	return &Agent{
-		client:   client,
-		registry: registry,
-		maxSteps: maxSteps,
-		log:      log,
+		client:        client,
+		registry:      registry,
+		contextWindow: contextWindow,
+		log:           log,
 	}
 }
 
@@ -172,28 +174,20 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		Content: task,
 	})
 
-	for step := 1; step <= s.agent.maxSteps; step++ {
-		finalStep := step == s.agent.maxSteps
-		s.messages = compactConversation(s.messages, maxConversationChars)
+	for {
+		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
-			s.agent.logf("[step %d/%d] stopping early: %s\n", step, s.agent.maxSteps, reason)
-			return Result{Final: reason, Steps: step - 1}, nil
-		}
-		if finalStep {
-			s.agent.logf("[step %d/%d] finalizing answer with current context\n", step, s.agent.maxSteps)
-		} else {
-			s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+			s.agent.logf("stopping early: %s\n", reason)
+			return Result{Final: reason}, nil
 		}
 
-		req := s.buildRequest(finalStep)
+		req := s.buildRequest()
 		resp, err := s.agent.client.Complete(ctx, req)
 		if err != nil {
 			if isContextLengthError(err) {
-				trimmed := compactConversation(s.messages, retryConversationChars)
-				if len(trimmed) < len(s.messages) {
-					s.messages = trimmed
-					s.agent.logf("[step %d/%d] context too long, retrying with shorter history\n", step, s.agent.maxSteps)
-					req = s.buildRequest(finalStep)
+				if s.compactForRetry() {
+					s.agent.logf("context too long, retrying with shorter history\n")
+					req = s.buildRequest()
 					resp, err = s.agent.client.Complete(ctx, req)
 				}
 			}
@@ -206,13 +200,13 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 
 		msg := resp.Choices[0].Message
-		if len(msg.ToolCalls) == 0 || finalStep {
-			final := finalResponseText(msg, finalStep, s.agent.maxSteps)
+		if len(msg.ToolCalls) == 0 {
+			final := finalResponseText(msg)
 			s.messages = append(s.messages, model.Message{
 				Role:    "assistant",
 				Content: msg.Content,
 			})
-			return Result{Final: final, Steps: step}, nil
+			return Result{Final: final}, nil
 		}
 
 		s.messages = append(s.messages, model.Message{
@@ -221,7 +215,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			ToolCalls: msg.ToolCalls,
 		})
 
-		s.agent.logf("[step %d/%d] executing %d tool(s)\n", step, s.agent.maxSteps, len(msg.ToolCalls))
+		s.agent.logf("executing %d tool(s)\n", len(msg.ToolCalls))
 
 		for i, call := range msg.ToolCalls {
 			args := json.RawMessage(call.Function.Arguments)
@@ -242,8 +236,6 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			})
 		}
 	}
-
-	return Result{}, fmt.Errorf("%s", stepBudgetReachedText(s.agent.maxSteps))
 }
 
 // RunTaskStreaming is like RunTask but streams assistant tokens via onToken.
@@ -257,20 +249,14 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		Content: task,
 	})
 
-	for step := 1; step <= s.agent.maxSteps; step++ {
-		finalStep := step == s.agent.maxSteps
-		s.messages = compactConversation(s.messages, maxConversationChars)
+	for {
+		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
-			s.agent.logf("[step %d/%d] stopping early: %s\n", step, s.agent.maxSteps, reason)
-			return Result{Final: reason, Steps: step - 1}, nil
-		}
-		if finalStep {
-			s.agent.logf("[step %d/%d] finalizing answer with current context\n", step, s.agent.maxSteps)
-		} else {
-			s.agent.logf("[step %d/%d] requesting model\n", step, s.agent.maxSteps)
+			s.agent.logf("stopping early: %s\n", reason)
+			return Result{Final: reason}, nil
 		}
 
-		req := s.buildRequest(finalStep)
+		req := s.buildRequest()
 
 		chunks, errc := s.agent.streamClient.CompleteStream(ctx, req)
 
@@ -309,11 +295,8 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		}
 		if err := <-errc; err != nil {
 			if isContextLengthError(err) {
-				trimmed := compactConversation(s.messages, retryConversationChars)
-				if len(trimmed) < len(s.messages) {
-					s.messages = trimmed
-					s.agent.logf("[step %d/%d] context too long, retrying\n", step, s.agent.maxSteps)
-					step--
+				if s.compactForRetry() {
+					s.agent.logf("context too long, retrying\n")
 					continue
 				}
 			}
@@ -337,17 +320,17 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			ToolCalls: toolCalls,
 		}
 
-		if len(toolCalls) == 0 || finalStep {
-			final := finalResponseText(msg, finalStep, s.agent.maxSteps)
+		if len(toolCalls) == 0 {
+			final := finalResponseText(msg)
 			s.messages = append(s.messages, model.Message{
 				Role:    "assistant",
 				Content: msg.Content,
 			})
-			return Result{Final: final, Steps: step}, nil
+			return Result{Final: final}, nil
 		}
 
 		s.messages = append(s.messages, msg)
-		s.agent.logf("[step %d/%d] executing %d tool(s)\n", step, s.agent.maxSteps, len(toolCalls))
+		s.agent.logf("executing %d tool(s)\n", len(toolCalls))
 
 		for i, call := range toolCalls {
 			args := json.RawMessage(call.Function.Arguments)
@@ -366,8 +349,6 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			})
 		}
 	}
-
-	return Result{}, fmt.Errorf("%s", stepBudgetReachedText(s.agent.maxSteps))
 }
 
 func shouldStopSession(messages []model.Message) (bool, string) {
@@ -437,32 +418,66 @@ func hasRepeatedToolLoop(messages []model.Message, window int) bool {
 	return true
 }
 
-func (s *Session) buildRequest(finalStep bool) model.Request {
+func (s *Session) buildRequest() model.Request {
 	req := model.Request{
 		Messages: s.messages,
+		Tools:    s.agent.registry.Definitions(),
 	}
-	if finalStep {
-		req.ToolChoice = "none"
-		return req
-	}
-	req.Tools = s.agent.registry.Definitions()
 	req.ToolChoice = "auto"
 	return req
 }
 
-func finalResponseText(msg model.Message, finalStep bool, maxSteps int) string {
+func finalResponseText(msg model.Message) string {
 	final := strings.TrimSpace(model.ContentString(msg.Content))
 	if final != "" {
 		return final
 	}
-	if finalStep {
-		return stepBudgetReachedText(maxSteps)
-	}
 	return "(empty response)"
 }
 
-func stepBudgetReachedText(maxSteps int) string {
-	return fmt.Sprintf("Step budget reached (%d). The session is still active. Send `continue` to keep going, or ask a narrower follow-up. You can usually continue until the context window fills up", maxSteps)
+func (s *Session) compactForContext() bool {
+	limit := contextSoftLimitChars(s.agent.contextWindow)
+	if conversationSize(s.messages) <= limit {
+		return false
+	}
+	trimmed := compactConversation(s.messages, contextTargetChars(s.agent.contextWindow))
+	if conversationSize(trimmed) >= conversationSize(s.messages) {
+		return false
+	}
+	s.messages = trimmed
+	s.agent.logf("compacted conversation to stay within context budget\n")
+	return true
+}
+
+func (s *Session) compactForRetry() bool {
+	trimmed := compactConversation(s.messages, contextRetryChars(s.agent.contextWindow))
+	if conversationSize(trimmed) >= conversationSize(s.messages) {
+		return false
+	}
+	s.messages = trimmed
+	return true
+}
+
+func contextSoftLimitChars(window int) int {
+	window = normalizeContextWindow(window)
+	return max(12000, window*4*85/100)
+}
+
+func contextTargetChars(window int) int {
+	window = normalizeContextWindow(window)
+	return max(9000, window*4*65/100)
+}
+
+func contextRetryChars(window int) int {
+	window = normalizeContextWindow(window)
+	return max(6000, window*4/2)
+}
+
+func normalizeContextWindow(window int) int {
+	if window <= 0 {
+		return 32768
+	}
+	return window
 }
 
 func truncateToolMessage(text string, limit int) string {
@@ -742,7 +757,6 @@ func messageSize(msg model.Message) int {
 	}
 	return size
 }
-
 
 func isContextLengthError(err error) bool {
 	if err == nil {

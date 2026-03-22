@@ -108,7 +108,7 @@ func (s stubChatClient) Complete(context.Context, model.Request) (model.Response
 	return s.resp, s.err
 }
 
-func TestRunTaskStepBudgetFinalizesWithContinueHintWhenModelStillWantsTools(t *testing.T) {
+func TestRunTaskStopsRepeatedToolLoopWithoutStepBudget(t *testing.T) {
 	agent := New(stubChatClient{
 		resp: model.Response{
 			Choices: []model.Choice{
@@ -128,14 +128,36 @@ func TestRunTaskStepBudgetFinalizesWithContinueHintWhenModelStillWantsTools(t *t
 				},
 			},
 		},
-	}, tools.NewRegistry(".", "bash", time.Second, nil), 1, nil)
+	}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
 
 	result, err := agent.NewSession().RunTask(context.Background(), "inspect repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result.Final, "Send `continue` to keep going") {
-		t.Fatalf("expected continue hint, got %q", result.Final)
+	if !strings.Contains(result.Final, "repeated tool-call loop") {
+		t.Fatalf("expected loop stop, got %q", result.Final)
+	}
+}
+
+func TestCompactForContextUsesConfiguredWindow(t *testing.T) {
+	session := New(stubChatClient{}, tools.NewRegistry(".", "bash", time.Second, nil), 64, nil).NewSession()
+	session.messages = append(session.messages,
+		model.Message{Role: "user", Content: strings.Repeat("older context ", 900)},
+		model.Message{Role: "assistant", Content: strings.Repeat("assistant reply ", 900)},
+		model.Message{Role: "user", Content: "recent user"},
+		model.Message{Role: "assistant", Content: "recent answer"},
+	)
+
+	before := conversationSize(session.messages)
+	if !session.compactForContext() {
+		t.Fatalf("expected context compaction to trigger")
+	}
+	after := conversationSize(session.messages)
+	if after >= before {
+		t.Fatalf("expected compacted conversation to shrink: before=%d after=%d", before, after)
+	}
+	if model.ContentString(session.messages[len(session.messages)-2].Content) != "recent user" {
+		t.Fatalf("expected recent user message to remain, got %#v", session.messages)
 	}
 }
 
@@ -186,7 +208,7 @@ func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 		},
 	}
 
-	agent := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 2, nil)
+	agent := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
 	result, err := agent.NewSession().RunTask(context.Background(), "inspect repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -200,8 +222,8 @@ func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 	if len(client.requests[0].Tools) == 0 || client.requests[0].ToolChoice != "auto" {
 		t.Fatalf("expected first request to allow tools, got %#v", client.requests[0])
 	}
-	if len(client.requests[1].Tools) != 0 || client.requests[1].ToolChoice != "none" {
-		t.Fatalf("expected final request to disable tools, got %#v", client.requests[1])
+	if len(client.requests[1].Tools) == 0 || client.requests[1].ToolChoice != "auto" {
+		t.Fatalf("expected follow-up request to keep tools enabled, got %#v", client.requests[1])
 	}
 }
 

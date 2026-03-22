@@ -24,7 +24,7 @@ type Config struct {
 	ApprovalMode   string
 }
 
-const defaultMaxSteps = 24
+const defaultMaxSteps = 0
 
 func FromEnv() Config {
 	workDir, err := os.Getwd()
@@ -83,9 +83,6 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("model is required")
-	}
-	if c.MaxSteps <= 0 {
-		return fmt.Errorf("max steps must be > 0")
 	}
 	if c.ContextWindow <= 0 {
 		return fmt.Errorf("context window must be > 0")

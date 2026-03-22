@@ -1437,7 +1437,7 @@ func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Ap
 func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl) *agent.Agent {
 	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey, openaiapi.WithTimeout(cfg.ModelTimeout))
 	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver, jobs)
-	a := agent.New(client, registry, cfg.MaxSteps, log)
+	a := agent.New(client, registry, cfg.ContextWindow, log)
 	a.SetStreamClient(client)
 	return a
 }

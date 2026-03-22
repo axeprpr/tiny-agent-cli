@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestFromEnvUsesHigherDefaultMaxSteps(t *testing.T) {
+func TestFromEnvLeavesMaxStepsDisabledByDefault(t *testing.T) {
 	t.Setenv("AGENT_MAX_STEPS", "")
 
 	cfg := FromEnv()

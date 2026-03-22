@@ -232,7 +232,7 @@ func TestSaveDoesNotPersistApprovalMode(t *testing.T) {
 }
 
 func agentSessionStub() *agent.Session {
-	a := agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 1, nil)
+	a := agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
 	return a.NewSession()
 }
 
@@ -340,7 +340,7 @@ func newMemoryTestRuntime(t *testing.T) *chatRuntime {
 		Shell:          "bash",
 		ApprovalMode:   tools.ApprovalConfirm,
 	}
-	loop := agent.New(chatClientStub{}, tools.NewRegistry(dir, "bash", time.Second, nil, nil), 1, nil)
+	loop := agent.New(chatClientStub{}, tools.NewRegistry(dir, "bash", time.Second, nil, nil), 32768, nil)
 	r := &chatRuntime{
 		cfg:            cfg,
 		reader:         bufio.NewReader(strings.NewReader("")),

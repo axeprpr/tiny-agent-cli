@@ -180,7 +180,6 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 	}
 }
 
-
 type chatKeyMap struct {
 	Send     key.Binding
 	Newline  key.Binding
@@ -225,6 +224,10 @@ type chatTUIModel struct {
 	showFullHelp bool
 	showDrawer   bool
 	logFilter    string
+	entriesDirty bool
+	logsDirty    bool
+	entriesWidth int
+	logsWidth    int
 }
 
 var (
@@ -364,6 +367,8 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Home:     key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
 			End:      key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
+		entriesDirty: true,
+		logsDirty:    true,
 	}
 
 	for _, msg := range runtime.session.Messages() {
@@ -465,6 +470,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.statusText = i18n.T("tui.status.filter.updated")
 			}
+			m.logsDirty = true
 			m.refreshViewports()
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
@@ -502,6 +508,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.entries = append(m.entries, tuiEntry{role: "approval", text: i18n.T("tui.approval.waiting")})
 					m.statusText = i18n.T("tui.status.approval")
 				}
+				m.entriesDirty = true
 				m.refreshInputState()
 				m.refreshViewports()
 				break
@@ -511,6 +518,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if result.handled {
 					if strings.TrimSpace(result.output) != "" {
 						m.entries = append(m.entries, tuiEntry{role: "system", text: result.output})
+						m.entriesDirty = true
 						m.refreshViewports()
 					}
 					m.refreshInputState()
@@ -523,6 +531,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.entries = append(m.entries, tuiEntry{role: "user", text: task})
+			m.entriesDirty = true
 			m.refreshViewports()
 			m.busy = true
 			m.statusText = i18n.T("tui.status.running")
@@ -534,6 +543,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
 		capLogs(&m.logs, 500)
 		m.appendActivityEntry(msg.kind, msg.text)
+		m.logsDirty = true
+		m.entriesDirty = true
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
@@ -542,6 +553,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "approval", text: renderApprovalInlineText(&msg)})
 		m.statusText = i18n.T("tui.status.approval")
+		m.logsDirty = true
+		m.entriesDirty = true
 		m.refreshInputState()
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
@@ -570,6 +583,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.statusText = i18n.T("tui.status.ready")
 		}
+		m.entriesDirty = true
 		m.refreshInputState()
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
@@ -578,6 +592,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "system", text: msg.text})
 		m.statusText = i18n.T("tui.status.bg.update")
+		m.logsDirty = true
+		m.entriesDirty = true
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiStreamMsg:
@@ -586,6 +602,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.entries[len(m.entries)-1].text += msg.token
 		}
+		m.entriesDirty = true
 		m.refreshViewports()
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case spinner.TickMsg:
@@ -668,31 +685,48 @@ func (m *chatTUIModel) resize() {
 	}
 	m.chatViewport.Height = max(6, availableHeight-drawerHeight)
 	m.logViewport.Height = drawerHeight
-	m.chatViewport.Width = max(18, contentWidth)
-	m.logViewport.Width = max(18, contentWidth)
+	newChatWidth := max(18, contentWidth)
+	newLogWidth := max(18, contentWidth)
+	widthChanged := m.chatViewport.Width != newChatWidth || m.logViewport.Width != newLogWidth
+	m.chatViewport.Width = newChatWidth
+	m.logViewport.Width = newLogWidth
 	m.input.SetWidth(max(20, contentWidth-4))
-	m.refreshViewports()
+	if widthChanged {
+		m.entriesDirty = true
+		m.logsDirty = true
+	}
+	if widthChanged || m.entriesDirty || m.logsDirty {
+		m.refreshViewports()
+	}
 }
 
 func (m *chatTUIModel) refreshViewports() {
 	if m.chatViewport.Width > 0 {
-		atBottom := m.chatViewport.AtBottom()
-		offset := m.chatViewport.YOffset
-		m.chatViewport.SetContent(m.renderEntries())
-		if atBottom {
-			m.chatViewport.GotoBottom()
-		} else {
-			m.chatViewport.SetYOffset(offset)
+		if m.entriesDirty || m.entriesWidth != m.chatViewport.Width {
+			atBottom := m.chatViewport.AtBottom()
+			offset := m.chatViewport.YOffset
+			m.chatViewport.SetContent(m.renderEntries())
+			if atBottom {
+				m.chatViewport.GotoBottom()
+			} else {
+				m.chatViewport.SetYOffset(offset)
+			}
+			m.entriesDirty = false
+			m.entriesWidth = m.chatViewport.Width
 		}
 	}
 	if m.logViewport.Width > 0 {
-		atBottom := m.logViewport.AtBottom()
-		offset := m.logViewport.YOffset
-		m.logViewport.SetContent(m.renderLogs())
-		if atBottom {
-			m.logViewport.GotoBottom()
-		} else {
-			m.logViewport.SetYOffset(offset)
+		if m.logsDirty || m.logsWidth != m.logViewport.Width {
+			atBottom := m.logViewport.AtBottom()
+			offset := m.logViewport.YOffset
+			m.logViewport.SetContent(m.renderLogs())
+			if atBottom {
+				m.logViewport.GotoBottom()
+			} else {
+				m.logViewport.SetYOffset(offset)
+			}
+			m.logsDirty = false
+			m.logsWidth = m.logViewport.Width
 		}
 	}
 }
@@ -805,8 +839,20 @@ func contextStatus(runtime *chatRuntime, input string) string {
 	if remaining < 0 {
 		remaining = 0
 	}
-	pct := remaining * 100 / window
-	return fmt.Sprintf("ctx≈%d%% free", pct)
+	return fmt.Sprintf("ctx %s/%s tok  left %s", compactTokenCount(used), compactTokenCount(window), compactTokenCount(remaining))
+}
+
+func compactTokenCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
+	case n >= 10_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.2fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func estimateTokenUsage(messages []model.Message, draft string) int {
@@ -1067,14 +1113,15 @@ func (m chatTUIModel) renderActivityDrawer() string {
 }
 
 func (m chatTUIModel) renderComposer() string {
-	hints := inputHintStyle.Render(m.composerHint())
+	lines := []string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
+	}
+	if hint := strings.TrimSpace(m.composerHint()); hint != "" {
+		lines = append(lines, inputHintStyle.Render(hint))
+	}
+	lines = append(lines, m.input.View())
 	return inputPaneStyle.Width(max(20, m.width-2)).Render(
-		lipgloss.JoinVertical(
-			lipgloss.Left,
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
-			hints,
-			m.input.View(),
-		),
+		lipgloss.JoinVertical(lipgloss.Left, lines...),
 	)
 }
 
