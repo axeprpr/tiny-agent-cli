@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
@@ -143,5 +144,41 @@ func TestContextStatusShowsTokenCounts(t *testing.T) {
 	got := contextStatus(r, "hello world")
 	if !strings.Contains(got, "ctx ") || !strings.Contains(got, "tok") || !strings.Contains(got, "left") {
 		t.Fatalf("unexpected context status: %q", got)
+	}
+}
+
+func TestMouseWheelScrollIsBatched(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 3),
+		input:        textarea.New(),
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6", "7", "8",
+	}, "\n"))
+
+	msg := tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress}
+
+	updated, cmd := m.Update(msg)
+	m = updated.(chatTUIModel)
+	if cmd == nil {
+		t.Fatalf("expected scroll tick to be scheduled")
+	}
+	if m.chatViewport.YOffset != 0 {
+		t.Fatalf("expected wheel event to defer viewport movement, got offset %d", m.chatViewport.YOffset)
+	}
+
+	updated, _ = m.Update(msg)
+	m = updated.(chatTUIModel)
+	if m.pendingScroll != 6 {
+		t.Fatalf("expected pending scroll to accumulate, got %d", m.pendingScroll)
+	}
+
+	updated, _ = m.Update(tuiMouseScrollMsg{})
+	m = updated.(chatTUIModel)
+	if m.pendingScroll != 0 {
+		t.Fatalf("expected pending scroll to flush, got %d", m.pendingScroll)
+	}
+	if m.chatViewport.YOffset != 5 {
+		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
 	}
 }

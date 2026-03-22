@@ -49,6 +49,8 @@ type tuiStreamMsg struct {
 
 type tuiRefreshMsg struct{}
 
+type tuiMouseScrollMsg struct{}
+
 type tuiEntry struct {
 	role string
 	text string
@@ -234,6 +236,8 @@ type chatTUIModel struct {
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
+	pendingScroll int
+	scrollQueued  bool
 }
 
 var (
@@ -431,6 +435,12 @@ func scheduleViewportRefresh() tea.Cmd {
 	})
 }
 
+func scheduleMouseScroll() tea.Cmd {
+	return tea.Tick(time.Second/60, func(time.Time) tea.Msg {
+		return tuiMouseScrollMsg{}
+	})
+}
+
 func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, task string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
@@ -554,12 +564,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		mouseHandled = true
-		var cmd tea.Cmd
-		m.chatViewport, cmd = m.chatViewport.Update(msg)
-		cmds = append(cmds, cmd)
-		if m.showDrawer {
-			m.logViewport, cmd = m.logViewport.Update(msg)
-			cmds = append(cmds, cmd)
+		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
+			m.pendingScroll += delta
+			if !m.scrollQueued {
+				m.scrollQueued = true
+				cmds = append(cmds, scheduleMouseScroll())
+			}
+			break
 		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
@@ -644,6 +655,15 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.entriesDirty || m.logsDirty {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
+		}
+	case tuiMouseScrollMsg:
+		m.scrollQueued = false
+		if m.pendingScroll != 0 {
+			applyMouseScroll(&m.chatViewport, m.pendingScroll)
+			if m.showDrawer {
+				applyMouseScroll(&m.logViewport, m.pendingScroll)
+			}
+			m.pendingScroll = 0
 		}
 	case spinner.TickMsg:
 		if m.busy {
@@ -950,6 +970,30 @@ func isCJK(r rune) bool {
 func capLogs(logs *[]tuiLogEntry, limit int) {
 	if len(*logs) > limit {
 		*logs = (*logs)[len(*logs)-limit:]
+	}
+}
+
+func mouseScrollDelta(msg tea.MouseMsg, step int) (int, bool) {
+	if msg.Action != tea.MouseActionPress {
+		return 0, false
+	}
+	step = max(1, step)
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return -step, true
+	case tea.MouseButtonWheelDown:
+		return step, true
+	default:
+		return 0, false
+	}
+}
+
+func applyMouseScroll(vp *viewport.Model, delta int) {
+	switch {
+	case delta < 0:
+		vp.ScrollUp(-delta)
+	case delta > 0:
+		vp.ScrollDown(delta)
 	}
 }
 
