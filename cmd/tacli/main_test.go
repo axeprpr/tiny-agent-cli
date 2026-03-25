@@ -143,6 +143,65 @@ func TestResolveChatSessionName(t *testing.T) {
 	}
 }
 
+func TestStartupMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		interactive bool
+		want        string
+	}{
+		{name: "interactive default", args: nil, interactive: true, want: "chat"},
+		{name: "non interactive default", args: nil, interactive: false, want: "run"},
+		{name: "explicit chat", args: []string{"chat"}, interactive: true, want: "chat"},
+		{name: "explicit run", args: []string{"run", "inspect repo"}, interactive: true, want: "run"},
+		{name: "task shorthand", args: []string{"inspect repo"}, interactive: true, want: "run"},
+		{name: "global dangerously chat", args: []string{"-d", "chat"}, interactive: true, want: "chat"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := startupMode(tt.args, tt.interactive); got != tt.want {
+				t.Fatalf("unexpected mode: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldPromptForLanguage(t *testing.T) {
+	if !shouldPromptForLanguage("chat", true) {
+		t.Fatalf("expected interactive chat to prompt for language")
+	}
+	if shouldPromptForLanguage("run", true) {
+		t.Fatalf("expected run mode not to prompt for language")
+	}
+	if shouldPromptForLanguage("chat", false) {
+		t.Fatalf("expected non-interactive chat not to prompt for language")
+	}
+}
+
+func TestDefaultStartupLanguage(t *testing.T) {
+	oldLCAll := os.Getenv("LC_ALL")
+	oldLCMessages := os.Getenv("LC_MESSAGES")
+	oldLang := os.Getenv("LANG")
+	t.Cleanup(func() {
+		_ = os.Setenv("LC_ALL", oldLCAll)
+		_ = os.Setenv("LC_MESSAGES", oldLCMessages)
+		_ = os.Setenv("LANG", oldLang)
+	})
+
+	_ = os.Setenv("LC_ALL", "")
+	_ = os.Setenv("LC_MESSAGES", "")
+	_ = os.Setenv("LANG", "zh_CN.UTF-8")
+	if got := defaultStartupLanguage(); got != i18n.LangCN {
+		t.Fatalf("expected Chinese from LANG, got %q", got)
+	}
+
+	_ = os.Setenv("LANG", "en_US.UTF-8")
+	if got := defaultStartupLanguage(); got != i18n.LangEN {
+		t.Fatalf("expected English from LANG, got %q", got)
+	}
+}
+
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",

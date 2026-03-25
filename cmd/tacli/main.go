@@ -80,8 +80,7 @@ func main() {
 
 func run(args []string) int {
 	cfg := config.FromEnv()
-	initLanguage(cfg.StateDir)
-
+	initLanguage(cfg.StateDir, startupMode(args, tools.IsInteractiveTerminal(os.Stdin)))
 	args, globalDangerously := peelGlobalDangerously(args)
 	if len(args) == 0 {
 		if tools.IsInteractiveTerminal(os.Stdin) {
@@ -108,6 +107,22 @@ func run(args []string) int {
 		return 0
 	default:
 		return runTask(withDangerouslyFlag(args, globalDangerously))
+	}
+}
+
+func startupMode(args []string, interactive bool) string {
+	args, _ = peelGlobalDangerously(args)
+	if len(args) == 0 {
+		if interactive {
+			return "chat"
+		}
+		return "run"
+	}
+	switch args[0] {
+	case "chat":
+		return "chat"
+	default:
+		return "run"
 	}
 }
 
@@ -1466,14 +1481,17 @@ func formatRunOutput(text, mode string) string {
 	}
 }
 
-func initLanguage(stateDir string) {
+func initLanguage(stateDir, mode string) {
 	if i18n.LoadFromFile(stateDir) {
 		return
 	}
-	if !tools.IsInteractiveTerminal(os.Stdin) {
-		i18n.Set(i18n.LangEN)
+
+	if !shouldPromptForLanguage(mode, tools.IsInteractiveTerminal(os.Stdin)) {
+		i18n.Set(defaultStartupLanguage())
+		_ = i18n.SaveToFile(stateDir, i18n.Lang())
 		return
 	}
+
 	fmt.Fprintln(os.Stderr, i18n.T("lang.prompt"))
 	fmt.Fprintln(os.Stderr, i18n.T("lang.en"))
 	fmt.Fprintln(os.Stderr, i18n.T("lang.cn"))
@@ -1490,6 +1508,23 @@ func initLanguage(stateDir string) {
 	}
 	_ = i18n.SaveToFile(stateDir, i18n.Lang())
 	fmt.Fprintln(os.Stderr, i18n.T("lang.saved"))
+}
+
+func shouldPromptForLanguage(mode string, interactive bool) bool {
+	return mode == "chat" && interactive
+}
+
+func defaultStartupLanguage() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+		if strings.Contains(value, "zh") || strings.Contains(value, "cn") {
+			return i18n.LangCN
+		}
+		if value != "" {
+			return i18n.LangEN
+		}
+	}
+	return i18n.LangEN
 }
 
 func printUsage() {
