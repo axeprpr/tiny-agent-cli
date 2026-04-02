@@ -53,10 +53,10 @@ It is not trying to be the biggest agent platform. It is trying to be the one yo
 
 ## Core Ideas
 
-- `PDCA` prompt discipline
-  The built-in prompt nudges the model to plan, do, check, and adjust.
-- `ReAct` tool use
-  The model is pushed to inspect first, act second, verify after.
+- `Evidence-first execution`
+  The built-in prompt pushes the model to inspect files and outputs before acting.
+- `Direct tool-driven workflow`
+  The model is pushed to call tools, validate results, then continue with the next smallest step.
 - `Safe by default`
   Shell commands require confirmation unless you opt into `--dangerously`.
 - `Scoped memory`
