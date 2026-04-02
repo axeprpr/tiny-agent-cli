@@ -2,8 +2,12 @@ package harness
 
 import (
 	"bufio"
+	"context"
 	"io"
+	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
@@ -45,6 +49,18 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 	if loop != nil {
 		toolNames = loop.ToolNames()
 	}
+	var skills []agent.PromptSkill
+	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
+		skills = make([]agent.PromptSkill, 0, len(discovered))
+		for _, item := range discovered {
+			skills = append(skills, agent.PromptSkill{
+				Name:        item.Name,
+				Description: item.Description,
+				Path:        item.Path,
+			})
+		}
+	}
+	gitBranch, gitStatus := gitPromptContext(cfg.WorkDir)
 	return agent.PromptContext{
 		MemoryText:   memoryText,
 		WorkDir:      cfg.WorkDir,
@@ -52,9 +68,57 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 		ApprovalMode: cfg.ApprovalMode,
 		Model:        cfg.Model,
 		ToolNames:    toolNames,
+		Skills:       skills,
+		GitBranch:    gitBranch,
+		GitStatus:    gitStatus,
 		SessionMode:  sessionMode,
 		AgentRole:    roleFromSessionMode(sessionMode),
 	}
+}
+
+func gitPromptContext(workDir string) (branch string, status string) {
+	branchOut, err := runGitPromptCmd(workDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", ""
+	}
+	branch = strings.TrimSpace(branchOut)
+	if branch == "" || branch == "HEAD" {
+		branch = strings.TrimSpace(firstLine(branchOut))
+	}
+
+	statusOut, err := runGitPromptCmd(workDir, "status", "--porcelain")
+	if err != nil {
+		return branch, ""
+	}
+	lines := strings.Split(strings.TrimSpace(statusOut), "\n")
+	changes := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			changes++
+		}
+	}
+	if changes == 0 {
+		return branch, "clean"
+	}
+	return branch, "dirty(" + strconv.Itoa(changes) + " changes)"
+}
+
+func runGitPromptCmd(workDir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func firstLine(text string) string {
+	if idx := strings.IndexByte(text, '\n'); idx >= 0 {
+		return text[:idx]
+	}
+	return text
 }
 
 func roleFromSessionMode(sessionMode string) string {

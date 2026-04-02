@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ type Registry struct {
 
 func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver Approver, jobs ...JobControl) *Registry {
 	r := &Registry{tools: make(map[string]Tool)}
-	todos := newTodoStore()
+	todos := newTodoStoreWithPath(filepath.Join(workDir, ".tacli", "tasks-v2.json"))
 	r.todo = todos
 	r.permission = newApprovalPermissionDecider(workDir, approver)
 	r.hooks = append(r.hooks, NewDefaultHooks()...)
@@ -46,6 +47,7 @@ func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver A
 	if len(jobs) > 0 && jobs[0] != nil {
 		toolset = append(toolset,
 			newStartBackgroundJobTool(jobs[0]),
+			newDelegateSubagentTool(jobs[0]),
 			newListBackgroundJobsTool(jobs[0]),
 			newInspectBackgroundJobTool(jobs[0]),
 			newSendBackgroundJobTool(jobs[0]),
@@ -184,6 +186,11 @@ func (r *Registry) Preview(name string, raw json.RawMessage) string {
 		return compactPreviewString(args["command"], 80)
 	case "start_background_job":
 		return compactPreviewString(args["task"], 80)
+	case "delegate_subagent":
+		return joinPreviewParts(
+			compactKeyValue("role", args["role"], 24),
+			compactKeyValue("task", args["task"], 80),
+		)
 	case "send_background_job":
 		return joinPreviewParts(
 			compactKeyValue("id", args["id"], 24),

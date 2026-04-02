@@ -19,9 +19,11 @@ const (
 	recentTurnsToKeep      = 3
 	maxConsecutiveToolErrs = 3
 	repeatedToolWindow     = 4
+	todoNagRoundThreshold  = 3
 )
 
 const syntheticSummaryPrefix = "[compacted summary]"
+const todoNagPrefix = "[todo reminder]"
 
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
@@ -56,8 +58,9 @@ type Agent struct {
 }
 
 type Session struct {
-	agent    *Agent
-	messages []model.Message
+	agent                *Agent
+	messages             []model.Message
+	roundsSinceTodoPatch int
 }
 
 func New(client chatClient, registry *tools.Registry, contextWindow int, log io.Writer) *Agent {
@@ -164,6 +167,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	turn := 0
 	for {
 		turn++
+		s.maybeInjectTodoReminder()
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
@@ -267,6 +271,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 				Content:    output,
 			})
 		}
+		s.trackTodoRounds(msg.ToolCalls)
 	}
 }
 
@@ -284,6 +289,7 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 	turn := 0
 	for {
 		turn++
+		s.maybeInjectTodoReminder()
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
@@ -425,7 +431,70 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 				Content:    output,
 			})
 		}
+		s.trackTodoRounds(toolCalls)
 	}
+}
+
+func (s *Session) maybeInjectTodoReminder() {
+	if s == nil || s.roundsSinceTodoPatch < todoNagRoundThreshold {
+		return
+	}
+	if !hasRecentToolActivity(s.messages, todoNagRoundThreshold) {
+		return
+	}
+	if hasRecentTodoReminder(s.messages) {
+		return
+	}
+	s.messages = append(s.messages, model.Message{
+		Role: "system",
+		Content: todoNagPrefix + "\n" +
+			"You have been doing multi-step work for several rounds without updating the plan. " +
+			"Call update_todo to reflect progress (completed/in_progress/pending) before continuing.",
+	})
+	s.roundsSinceTodoPatch = 0
+}
+
+func (s *Session) trackTodoRounds(calls []model.ToolCall) {
+	if len(calls) == 0 {
+		return
+	}
+	for _, call := range calls {
+		if strings.EqualFold(strings.TrimSpace(call.Function.Name), "update_todo") {
+			s.roundsSinceTodoPatch = 0
+			return
+		}
+	}
+	s.roundsSinceTodoPatch++
+}
+
+func hasRecentToolActivity(messages []model.Message, rounds int) bool {
+	if rounds <= 0 {
+		return false
+	}
+	seen := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			seen++
+			if seen >= rounds {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasRecentTodoReminder(messages []model.Message) bool {
+	for i := len(messages) - 1; i >= 0 && i >= len(messages)-4; i-- {
+		msg := messages[i]
+		if msg.Role != "system" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), todoNagPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldStopSession(messages []model.Message) (bool, string) {
@@ -572,17 +641,66 @@ func truncateToolMessage(text string, limit int) string {
 }
 
 func compactConversation(messages []model.Message, limit int) []model.Message {
-	compacted := stripSyntheticSummaries(messages)
-	compacted = preprocessConversation(compacted)
-	if conversationSize(compacted) <= limit {
-		return compacted
+	layer1 := preprocessConversation(stripSyntheticSummaries(messages))
+	if conversationSize(layer1) <= limit {
+		return layer1
 	}
 
-	if summarized := summarizeConversationHistory(compacted, limit); len(summarized) > 0 {
-		return summarized
+	layer2 := summarizeConversationHistory(layer1, limit)
+	if len(layer2) > 0 && conversationSize(layer2) <= limit {
+		return layer2
 	}
 
-	return pruneConversation(compacted, limit)
+	return compactConversationAggressive(layer1, limit)
+}
+
+func compactConversationAggressive(messages []model.Message, limit int) []model.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	aggressive := make([]model.Message, len(messages))
+	copy(aggressive, messages)
+	if aggressive[0].Role == "system" {
+		aggressive[0].Content = compactSummaryText(model.ContentString(aggressive[0].Content), max(400, min(1200, limit/3)))
+	}
+	for i := 1; i < len(aggressive)-1; i++ {
+		switch aggressive[i].Role {
+		case "assistant":
+			if len(aggressive[i].ToolCalls) > 0 {
+				aggressive[i].Content = ""
+				for j := range aggressive[i].ToolCalls {
+					aggressive[i].ToolCalls[j].Function.Arguments = compactSummaryText(aggressive[i].ToolCalls[j].Function.Arguments, 100)
+				}
+			} else {
+				aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 320)
+			}
+		case "tool":
+			aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 220)
+		case "user":
+			aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 240)
+		}
+	}
+	pruned := pruneConversation(aggressive, limit)
+	if conversationSize(pruned) <= limit {
+		return pruned
+	}
+
+	if len(pruned) == 0 {
+		return pruned
+	}
+	if len(pruned) == 1 {
+		pruned[0].Content = compactSummaryText(model.ContentString(pruned[0].Content), max(80, limit/2))
+		return pruned
+	}
+
+	out := []model.Message{pruned[0], pruned[len(pruned)-1]}
+	if conversationSize(out) <= limit {
+		return out
+	}
+	budget := max(80, limit/3)
+	out[0].Content = compactSummaryText(model.ContentString(out[0].Content), budget)
+	out[1].Content = compactSummaryText(model.ContentString(out[1].Content), budget)
+	return out
 }
 
 func preprocessConversation(messages []model.Message) []model.Message {

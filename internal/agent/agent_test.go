@@ -89,6 +89,35 @@ func TestCompactConversationAddsSyntheticSummaryForOlderTurns(t *testing.T) {
 	}
 }
 
+func TestCompactConversationAggressiveLayerStillKeepsLatestTurn(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: strings.Repeat("system ", 1200)},
+		{Role: "user", Content: strings.Repeat("old user ", 800)},
+		{Role: "assistant", Content: strings.Repeat("old assistant ", 800), ToolCalls: []model.ToolCall{{
+			ID:   "1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: strings.Repeat("{\"path\":\"README.md\"}", 200),
+			},
+		}}},
+		{Role: "tool", ToolCallID: "1", Content: strings.Repeat("huge output ", 2000)},
+		{Role: "user", Content: "latest user request"},
+		{Role: "assistant", Content: "latest answer"},
+	}
+
+	got := compactConversation(messages, 700)
+	if conversationSize(got) > 700 {
+		t.Fatalf("expected compacted size <= 700, got %d", conversationSize(got))
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected compacted conversation")
+	}
+	if model.ContentString(got[len(got)-1].Content) != "latest answer" {
+		t.Fatalf("expected latest assistant answer to remain, got %#v", got)
+	}
+}
+
 func TestTruncateToolMessageShrinksLargeOutput(t *testing.T) {
 	got := truncateToolMessage(strings.Repeat("B", 5000), 900)
 	if len(got) >= 5000 {
@@ -421,5 +450,60 @@ func TestHasRepeatedToolLoop(t *testing.T) {
 	}
 	if !hasRepeatedToolLoop(msgs, 4) {
 		t.Fatalf("expected repeated tool loop to be detected")
+	}
+}
+
+func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "list_files",
+					Arguments: `{"path":"."}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "grep",
+					Arguments: `{"pattern":"Goal","path":"docs"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-3",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "read_file",
+					Arguments: `{"path":"docs/plan.md"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done"}}}},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	result, err := a.NewSession().RunTask(context.Background(), "inspect repo and summarize")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 4 {
+		t.Fatalf("unexpected request count: %d", len(client.requests))
+	}
+	fourth := client.requests[3]
+	found := false
+	for _, msg := range fourth.Messages {
+		if msg.Role == "system" && strings.Contains(model.ContentString(msg.Content), todoNagPrefix) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected todo reminder in request 4 messages: %#v", fourth.Messages)
 	}
 }

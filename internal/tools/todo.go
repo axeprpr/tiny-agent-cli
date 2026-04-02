@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"tiny-agent-cli/internal/model"
 )
@@ -13,6 +16,13 @@ import (
 type todoStore struct {
 	mu    sync.Mutex
 	items []TodoItem
+	path  string
+}
+
+type taskFileV2 struct {
+	Version   int        `json:"version"`
+	UpdatedAt string     `json:"updated_at,omitempty"`
+	Items     []TodoItem `json:"items"`
 }
 
 type TodoItem struct {
@@ -29,7 +39,13 @@ type showTodoTool struct {
 }
 
 func newTodoStore() *todoStore {
-	return &todoStore{}
+	return newTodoStoreWithPath("")
+}
+
+func newTodoStoreWithPath(path string) *todoStore {
+	store := &todoStore{path: strings.TrimSpace(path)}
+	_ = store.load()
+	return store
 }
 
 func newUpdateTodoTool(store *todoStore) Tool {
@@ -166,7 +182,81 @@ func (s *todoStore) Replace(items []TodoItem) error {
 	s.mu.Lock()
 	s.items = normalized
 	s.mu.Unlock()
+	if err := s.save(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *todoStore) load() error {
+	if s == nil || strings.TrimSpace(s.path) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil
+	}
+
+	var items []TodoItem
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+	} else {
+		var payload taskFileV2
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		items = payload.Items
+	}
+
+	normalized := make([]TodoItem, 0, len(items))
+	for _, item := range items {
+		text := strings.Join(strings.Fields(strings.TrimSpace(item.Text)), " ")
+		status := normalizeTodoStatus(item.Status)
+		if text == "" || status == "" {
+			continue
+		}
+		normalized = append(normalized, TodoItem{Text: text, Status: status})
+	}
+	s.mu.Lock()
+	s.items = normalized
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *todoStore) save() error {
+	if s == nil || strings.TrimSpace(s.path) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	items := append([]TodoItem(nil), s.items...)
+	s.mu.Unlock()
+
+	payload := taskFileV2{
+		Version:   2,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Items:     items,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return err
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 func todoStatusLabel(status string) string {

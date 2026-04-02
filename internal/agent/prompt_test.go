@@ -51,3 +51,28 @@ func TestBuildSystemPromptIncludesRoleGuidance(t *testing.T) {
 		t.Fatalf("missing verify role guidance: %s", prompt)
 	}
 }
+
+func TestBuildSystemPromptIncludesSkills(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		Skills: []PromptSkill{
+			{Name: "playwright", Description: "Browser automation", Path: "/skills/playwright/SKILL.md"},
+		},
+	})
+	for _, want := range []string{"Available skills:", "playwright: Browser automation"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesGitContext(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		GitBranch: "main",
+		GitStatus: "dirty(2 changes)",
+	})
+	for _, want := range []string{"Git context:", "branch=main", "status=dirty(2 changes)"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

@@ -2,7 +2,11 @@ package harness
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +63,42 @@ func TestRoleFromSessionMode(t *testing.T) {
 		if got := roleFromSessionMode(tt.mode); got != tt.want {
 			t.Fatalf("mode %q: got %q want %q", tt.mode, got, tt.want)
 		}
+	}
+}
+
+func TestGitPromptContextCleanAndDirty(t *testing.T) {
+	workDir := t.TempDir()
+	runGit(t, workDir, "init")
+	runGit(t, workDir, "config", "user.email", "test@example.com")
+	runGit(t, workDir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, workDir, "add", "README.md")
+	runGit(t, workDir, "commit", "-m", "init")
+
+	branch, status := gitPromptContext(workDir)
+	if strings.TrimSpace(branch) == "" {
+		t.Fatalf("expected branch, got empty")
+	}
+	if status != "clean" {
+		t.Fatalf("expected clean status, got %q", status)
+	}
+
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("hello world\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	_, dirty := gitPromptContext(workDir)
+	if !strings.HasPrefix(dirty, "dirty(") {
+		t.Fatalf("expected dirty status, got %q", dirty)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
 }
 

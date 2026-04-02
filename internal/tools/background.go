@@ -47,6 +47,10 @@ type sendBackgroundJobTool struct {
 	jobs JobControl
 }
 
+type delegateSubagentTool struct {
+	jobs JobControl
+}
+
 func newStartBackgroundJobTool(jobs JobControl) Tool {
 	return &startBackgroundJobTool{jobs: jobs}
 }
@@ -61,6 +65,10 @@ func newInspectBackgroundJobTool(jobs JobControl) Tool {
 
 func newSendBackgroundJobTool(jobs JobControl) Tool {
 	return &sendBackgroundJobTool{jobs: jobs}
+}
+
+func newDelegateSubagentTool(jobs JobControl) Tool {
+	return &delegateSubagentTool{jobs: jobs}
 }
 
 func (t *startBackgroundJobTool) Definition() model.Tool {
@@ -229,6 +237,48 @@ func (t *sendBackgroundJobTool) Call(_ context.Context, raw json.RawMessage) (st
 		return "", err
 	}
 	return fmt.Sprintf("queued follow-up for %s", args.ID), nil
+}
+
+func (t *delegateSubagentTool) Definition() model.Tool {
+	return model.Tool{
+		Type: "function",
+		Function: model.FunctionSpec{
+			Name:        "delegate_subagent",
+			Description: "Delegate a bounded subtask to a background subagent and continue foreground work.",
+			Parameters: map[string]any{
+				"type":     "object",
+				"required": []string{"task"},
+				"properties": map[string]any{
+					"role": map[string]any{
+						"type":        "string",
+						"description": "Optional role: general|explore|plan|implement|verify",
+					},
+					"task": map[string]any{
+						"type":        "string",
+						"description": "Concrete subtask instructions for the delegated subagent",
+					},
+				},
+			},
+		},
+	}
+}
+
+func (t *delegateSubagentTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
+	var args struct {
+		Role string `json:"role"`
+		Task string `json:"task"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return "", fmt.Errorf("decode args: %w", err)
+	}
+	id, err := t.jobs.StartWithRole(args.Role, args.Task)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(args.Role) == "" {
+		return fmt.Sprintf("delegated subagent job %s", id), nil
+	}
+	return fmt.Sprintf("delegated subagent job %s role=%s", id, strings.TrimSpace(args.Role)), nil
 }
 
 func SingleLineText(text string) string {

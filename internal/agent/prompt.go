@@ -12,8 +12,17 @@ type PromptContext struct {
 	ApprovalMode string
 	Model        string
 	ToolNames    []string
+	Skills       []PromptSkill
+	GitBranch    string
+	GitStatus    string
 	SessionMode  string
 	AgentRole    string
+}
+
+type PromptSkill struct {
+	Name        string
+	Description string
+	Path        string
 }
 
 const baseSystemPrompt = `You are a terminal coding agent.
@@ -52,8 +61,10 @@ func BuildSystemPrompt(ctx PromptContext) string {
 	sections := []string{
 		baseSystemPrompt,
 		renderRuntimeSection(ctx),
+		renderGitSection(ctx),
 		renderRoleSection(ctx),
 		renderToolSection(ctx.ToolNames),
+		renderSkillSection(ctx.Skills),
 		renderMemorySection(ctx.MemoryText),
 	}
 	var out []string
@@ -114,6 +125,22 @@ func renderRoleSection(ctx PromptContext) string {
 	}
 }
 
+func renderGitSection(ctx PromptContext) string {
+	branch := strings.TrimSpace(ctx.GitBranch)
+	status := strings.TrimSpace(ctx.GitStatus)
+	if branch == "" && status == "" {
+		return ""
+	}
+	var lines []string
+	if branch != "" {
+		lines = append(lines, "branch="+branch)
+	}
+	if status != "" {
+		lines = append(lines, "status="+status)
+	}
+	return "Git context:\n- " + strings.Join(lines, "\n- ")
+}
+
 func renderToolSection(names []string) string {
 	if len(names) == 0 {
 		return ""
@@ -124,6 +151,41 @@ func renderToolSection(names []string) string {
 		sorted = sorted[:32]
 	}
 	return "Available tools:\n- " + strings.Join(sorted, "\n- ")
+}
+
+func renderSkillSection(skills []PromptSkill) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	items := append([]PromptSkill(nil), skills...)
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	if len(items) > 16 {
+		items = items[:16]
+	}
+
+	var lines []string
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		line := name
+		desc := strings.TrimSpace(item.Description)
+		if desc != "" {
+			line += ": " + desc
+		}
+		path := strings.TrimSpace(item.Path)
+		if path != "" {
+			line += " (" + path + ")"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Available skills:\n- " + strings.Join(lines, "\n- ")
 }
 
 func renderMemorySection(memoryText string) string {
