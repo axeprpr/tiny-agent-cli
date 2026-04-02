@@ -531,6 +531,8 @@ func hasConsecutiveToolErrors(messages []model.Message, threshold int) bool {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role != "tool" {
+			// Only a trailing block of tool errors should stop the session.
+			// Once any other message appears, the user can keep going.
 			if count > 0 {
 				break
 			}

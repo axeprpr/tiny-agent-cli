@@ -163,6 +163,42 @@ func TestRenderLogsSkipsHiddenInternalStepLines(t *testing.T) {
 	}
 }
 
+func TestRenderEntriesOmitsInlineActivityWhenDrawerShown(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 20),
+		showDrawer:   true,
+		entries: []tuiEntry{
+			{role: "assistant", text: "final answer"},
+			{role: "activity", text: "tool  [1/1] read_file README.md"},
+		},
+	}
+
+	got := m.renderEntries()
+	if !strings.Contains(got, "final answer") {
+		t.Fatalf("expected assistant content to remain visible, got %q", got)
+	}
+	if strings.Contains(got, "read_file") {
+		t.Fatalf("expected inline activity to be hidden while drawer is shown, got %q", got)
+	}
+}
+
+func TestTUILogWriterSanitizesToolCallID(t *testing.T) {
+	events := make(chan tea.Msg, 1)
+	writer := tuiLogWriter{events: events}
+
+	if _, err := writer.Write([]byte("[1/1] read_file id=call_123 path=README.md\n")); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	msg := (<-events).(tuiLogMsg)
+	if strings.Contains(msg.text, "id=") {
+		t.Fatalf("expected tool call id to be hidden from TUI logs, got %q", msg.text)
+	}
+	if !strings.Contains(msg.text, "read_file") {
+		t.Fatalf("expected tool name to remain visible, got %q", msg.text)
+	}
+}
+
 func TestComposerHintHiddenByDefault(t *testing.T) {
 	m := chatTUIModel{}
 	if got := m.composerHint(); got != "" {

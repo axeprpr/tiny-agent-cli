@@ -297,11 +297,11 @@ func TestRunTaskStreamingSeparatesMultipleToolCalls(t *testing.T) {
 							Delta: model.StreamDelta{
 								ToolCalls: []model.ToolCall{
 									{
-										Index: &addIndex,
+										Index:    &addIndex,
 										Function: model.ToolFunction{Arguments: `{"command":"printf add"}`},
 									},
 									{
-										Index: &mulIndex,
+										Index:    &mulIndex,
 										Function: model.ToolFunction{Arguments: `{"command":"printf mul"}`},
 									},
 								},
@@ -495,6 +495,18 @@ func TestHasConsecutiveToolErrorsStopsAtNewUserMessage(t *testing.T) {
 	}
 	if hasConsecutiveToolErrors(msgs, 3) {
 		t.Fatalf("expected new user message to reset recoverable tool error stop")
+	}
+}
+
+func TestHasConsecutiveToolErrorsStopsAtSystemMessage(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "tool", Content: "tool error: failed one"},
+		{Role: "tool", Content: "tool error: failed two"},
+		{Role: "tool", Content: "tool error: failed three"},
+		{Role: "system", Content: "resume after fixing the environment"},
+	}
+	if hasConsecutiveToolErrors(msgs, 3) {
+		t.Fatalf("expected non-tool boundary to reset recoverable tool error stop")
 	}
 }
 

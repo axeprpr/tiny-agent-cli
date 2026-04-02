@@ -75,6 +75,10 @@ func (w *tuiLogWriter) Write(p []byte) (int, error) {
 	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = sanitizeUserVisibleLogLine(line)
 		if line != "" && !isHiddenActivityLogLine(line) {
 			w.events <- tuiLogMsg{kind: classifyLogKind(line), text: line}
 		}
@@ -811,11 +815,12 @@ func (m *chatTUIModel) renderEntries() string {
 		return ""
 	}
 	bodyWidth := max(20, m.chatViewport.Width-3)
-	if len(m.entryKeys) != len(m.entries) {
-		m.entryKeys = make([]string, len(m.entries))
-		m.entryBlocks = make([]string, len(m.entries))
+	visibleEntries := m.visibleConversationEntries()
+	if len(m.entryKeys) != len(visibleEntries) {
+		m.entryKeys = make([]string, len(visibleEntries))
+		m.entryBlocks = make([]string, len(visibleEntries))
 	}
-	for i, entry := range m.entries {
+	for i, entry := range visibleEntries {
 		key := fmt.Sprintf("%d|%s|%s", bodyWidth, entry.role, entry.text)
 		if m.entryKeys[i] == key && m.entryBlocks[i] != "" {
 			continue
@@ -1162,8 +1167,9 @@ func (m chatTUIModel) renderHeader() string {
 }
 
 func (m chatTUIModel) renderConversation() string {
+	visibleEntries := m.visibleConversationEntries()
 	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
-		fmt.Sprintf(i18n.T("tui.label.messages"), len(m.entries)),
+		fmt.Sprintf(i18n.T("tui.label.messages"), len(visibleEntries)),
 	)
 	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View()))
 }
@@ -1255,7 +1261,7 @@ func (m chatTUIModel) composerHint() string {
 }
 
 func (m *chatTUIModel) appendActivityEntry(kind, text string) {
-	text = strings.TrimSpace(text)
+	text = sanitizeUserVisibleLogLine(text)
 	if text == "" {
 		return
 	}
@@ -1370,6 +1376,39 @@ func isUserVisibleLogEntry(entry tuiLogEntry) bool {
 		return false
 	}
 	return true
+}
+
+func (m chatTUIModel) visibleConversationEntries() []tuiEntry {
+	if !m.showDrawer {
+		return m.entries
+	}
+	visible := make([]tuiEntry, 0, len(m.entries))
+	for _, entry := range m.entries {
+		if entry.role == "activity" {
+			continue
+		}
+		visible = append(visible, entry)
+	}
+	return visible
+}
+
+func sanitizeUserVisibleLogLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	sanitized := fields[:0]
+	for _, field := range fields {
+		if strings.HasPrefix(field, "id=") {
+			continue
+		}
+		sanitized = append(sanitized, field)
+	}
+	return strings.Join(sanitized, " ")
 }
 
 func renderApprovalInlineText(msg *tuiApprovalMsg) string {
