@@ -9,17 +9,20 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/harness"
 	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/model/openaiapi"
 	"tiny-agent-cli/internal/session"
 	"tiny-agent-cli/internal/tools"
+	"tiny-agent-cli/internal/trace"
 )
 
 var version = "dev"
@@ -42,11 +45,26 @@ type chatRuntime struct {
 	transcriptPath string
 	statePath      string
 	memoryPath     string
+	auditPath      string
+	tracePath      string
 	scopeKey       string
 	globalMemory   []string
 	projectMemory  []string
 	autoMemoryExit bool
 	dirtySession   bool
+	tracer         *trace.FileSink
+}
+
+type runtimeAgentEventSink struct {
+	runtime *chatRuntime
+}
+
+func (s runtimeAgentEventSink) RecordAgentEvent(ctx context.Context, event agent.AgentEvent) {
+	if s.runtime == nil {
+		return
+	}
+	data := cloneAnyMap(event.Data)
+	s.runtime.recordTrace(ctx, "agent", event.Type, data)
 }
 
 type memoryIntent struct {
@@ -254,21 +272,30 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		outputMode:     opts.outputMode,
 		autoMemoryExit: opts.autoMemoryExit,
 		memoryPath:     memory.Path(cfg.StateDir),
+		auditPath:      tools.AuditPath(cfg.StateDir),
 		scopeKey:       memory.ScopeKey(cfg.WorkDir),
 	}
 	r.setSessionName(sessionName)
+	r.attachAgentEventSink()
 	if mem, err := memory.Load(r.memoryPath); err == nil {
 		r.globalMemory = mem.Global
 		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
 	r.jobs = newJobManager(cfg, memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+	r.jobs.SetRoleRouter(llmBackgroundRoleRouter(cfg))
 
 	if strings.TrimSpace(opts.session) != "" {
 		if _, err := r.loadSessionState(); err != nil {
 			return nil, err
 		}
 	}
+	r.recordTrace(context.Background(), "runtime", "runtime_started", map[string]any{
+		"model":      cfg.Model,
+		"workdir":    cfg.WorkDir,
+		"session":    r.sessionName,
+		"trace_path": r.tracePath,
+	})
 
 	return r, nil
 }
@@ -284,6 +311,10 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	if len(fields) == 0 {
 		return runtimeCommandResult{handled: true, exitCode: -1}
 	}
+	r.recordTrace(context.Background(), "runtime", "command", map[string]any{
+		"name": fields[0],
+		"raw":  strings.TrimSpace(input),
+	})
 
 	switch fields[0] {
 	case "/exit", "/quit":
@@ -299,8 +330,14 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if r.jobs != nil {
 			jobSummary = r.jobs.Summary()
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\n%s",
-			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, jobSummary), exitCode: -1}
+		auditSummary := r.auditStatusLine()
+		traceSummary := r.traceStatusLine()
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\naudit=%s\ntrace=%s\n%s",
+			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, auditSummary, traceSummary, jobSummary), exitCode: -1}
+	case "/audit":
+		return runtimeCommandResult{handled: true, output: r.auditCommand(fields), exitCode: -1}
+	case "/trace":
+		return runtimeCommandResult{handled: true, output: r.traceCommand(fields), exitCode: -1}
 	case "/session":
 		if len(fields) == 1 {
 			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
@@ -336,7 +373,26 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.bg.started"), id), exitCode: -1}
+		role := backgroundRoleGeneral
+		if snap, ok := r.jobs.Snapshot(id); ok {
+			role = normalizeBackgroundRole(snap.Role)
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), role), exitCode: -1}
+	case "/bg-role":
+		if len(fields) < 3 {
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.bgrole.usage"), exitCode: -1}
+		}
+		role := strings.TrimSpace(fields[1])
+		task := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
+		id, err := r.jobs.StartWithRole(role, task)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		normalized := normalizeBackgroundRole(role)
+		if snap, ok := r.jobs.Snapshot(id); ok {
+			normalized = normalizeBackgroundRole(snap.Role)
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), normalized), exitCode: -1}
 	case "/jobs":
 		return runtimeCommandResult{handled: true, output: formatJobList(r.jobs.List()), exitCode: -1}
 	case "/job":
@@ -433,6 +489,7 @@ func (r *chatRuntime) rebuildLoop() {
 		jobs = jobToolAdapter{manager: r.jobs}
 	}
 	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs)
+	r.attachAgentEventSink()
 	r.session.SetAgent(r.loop)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
 	if r.jobs != nil {
@@ -444,6 +501,8 @@ func (r *chatRuntime) setSessionName(name string) {
 	r.sessionName = strings.TrimSpace(name)
 	r.transcriptPath = session.TranscriptPath(r.cfg.StateDir, r.sessionName)
 	r.statePath = session.SessionPath(r.cfg.StateDir, r.sessionName)
+	r.tracePath = trace.Path(r.cfg.StateDir, r.sessionName)
+	r.tracer = trace.NewFileSink(r.tracePath)
 }
 
 func (r *chatRuntime) loadSessionState() (bool, error) {
@@ -482,8 +541,10 @@ func (r *chatRuntime) switchSession(name string) (string, error) {
 		return "", err
 	}
 	if loaded {
+		r.recordTrace(context.Background(), "runtime", "session_switched", map[string]any{"session": r.sessionName, "loaded": true})
 		return fmt.Sprintf("switched to session %s", r.sessionName), nil
 	}
+	r.recordTrace(context.Background(), "runtime", "session_switched", map[string]any{"session": r.sessionName, "loaded": false})
 	return fmt.Sprintf("started session %s", r.sessionName), nil
 }
 
@@ -516,6 +577,10 @@ func (r *chatRuntime) executeTaskStreaming(ctx context.Context, task string, onT
 	}
 	r.maybeApplyReadyJobSummaries()
 	r.maybeStartAutoExplore(task)
+	r.recordTrace(ctx, "runtime", "task_start", map[string]any{
+		"task_chars": len(strings.TrimSpace(task)),
+		"streaming":  onToken != nil && r.loop.CanStream(),
+	})
 
 	_ = session.AppendTranscript(r.transcriptPath, "user", task)
 	var result agent.Result
@@ -528,12 +593,18 @@ func (r *chatRuntime) executeTaskStreaming(ctx context.Context, task string, onT
 	r.dirtySession = true
 	if err != nil {
 		_ = session.AppendTranscript(r.transcriptPath, "error", err.Error())
+		r.recordTrace(ctx, "runtime", "task_error", map[string]any{
+			"error": err.Error(),
+		})
 		return "", err
 	}
 
 	output := formatRunOutput(result.Final, r.outputMode)
 	_ = session.AppendTranscript(r.transcriptPath, "assistant", output)
 	_ = r.save()
+	r.recordTrace(ctx, "runtime", "task_finish", map[string]any{
+		"output_chars": len(strings.TrimSpace(output)),
+	})
 	return output, nil
 }
 
@@ -542,7 +613,7 @@ func (r *chatRuntime) maybeStartAutoExplore(task string) {
 		return
 	}
 	subtask := buildAutoExploreTask(task)
-	id, err := r.jobs.Start(subtask)
+	id, err := r.jobs.StartWithRole(backgroundRoleExplore, subtask)
 	if err != nil {
 		return
 	}
@@ -971,7 +1042,7 @@ func buildAutoExploreTask(task string) string {
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
-	return r.loop.NewSessionWithMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+	return r.loop.NewSessionWithPrompt(promptContextFor(r.cfg, r.loop, "chat", memory.RenderSystemMemory(r.globalMemory, r.projectMemory)))
 }
 
 func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
@@ -993,7 +1064,7 @@ func (r *chatRuntime) refreshMemoryContext() {
 		r.session = r.newSession()
 		return
 	}
-	messages[0].Content = agent.SystemPromptWithMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+	messages[0].Content = agent.BuildSystemPrompt(promptContextFor(r.cfg, r.loop, "chat", memory.RenderSystemMemory(r.globalMemory, r.projectMemory)))
 	r.session.ReplaceMessages(messages)
 }
 
@@ -1086,7 +1157,7 @@ func (r *chatRuntime) collectMemoryNotesWithModel(text string) ([]string, error)
 	ctx, cancel := context.WithTimeout(context.Background(), autoMemoryTimeout)
 	defer cancel()
 
-	client := openaiapi.NewClient(r.cfg.BaseURL, r.cfg.Model, r.cfg.APIKey)
+	client := harness.NewFactory(r.cfg).NewModelClient()
 	resp, err := client.Complete(ctx, model.Request{
 		Model: r.cfg.Model,
 		Messages: []model.Message{
@@ -1325,7 +1396,7 @@ func pingModel(args []string) int {
 		return 2
 	}
 
-	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
+	client := harness.NewFactory(cfg).NewModelClient()
 	if _, err := client.Models(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "model API error: %v\n", err)
 		return 1
@@ -1361,7 +1432,7 @@ func listModels(args []string) int {
 		return 2
 	}
 
-	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey)
+	client := harness.NewFactory(cfg).NewModelClient()
 	models, err := client.Models(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "model API error: %v\n", err)
@@ -1444,17 +1515,252 @@ func defaultChatSessionName(now time.Time) string {
 }
 
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
-	interactive := tools.IsInteractiveTerminal(os.Stdin)
-	approver := tools.NewTerminalApprover(reader, os.Stderr, cfg.ApprovalMode, interactive)
-	return buildAgentWith(cfg, approver, os.Stderr, nil), approver
+	factory := harness.NewFactory(cfg)
+	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
+	return factory.NewAgent(approver, os.Stderr, nil), approver
 }
 
-func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl) *agent.Agent {
-	client := openaiapi.NewClient(cfg.BaseURL, cfg.Model, cfg.APIKey, openaiapi.WithTimeout(cfg.ModelTimeout))
-	registry := tools.NewRegistry(cfg.WorkDir, cfg.Shell, cfg.CommandTimeout, approver, jobs)
-	a := agent.New(client, registry, cfg.ContextWindow, log)
-	a.SetStreamClient(client)
-	return a
+func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
+	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, extraAuditSinks...)
+}
+
+func promptContextFor(cfg config.Config, loop *agent.Agent, sessionMode, memoryText string) agent.PromptContext {
+	return harness.BuildPromptContext(cfg, loop, sessionMode, memoryText)
+}
+
+func (r *chatRuntime) attachAgentEventSink() {
+	if r == nil || r.loop == nil {
+		return
+	}
+	r.loop.SetEventSink(runtimeAgentEventSink{runtime: r})
+}
+
+func (r *chatRuntime) recordTrace(ctx context.Context, source, typ string, data map[string]any) {
+	if r == nil || r.tracer == nil {
+		return
+	}
+	event := trace.Event{
+		Time:    time.Now(),
+		Session: r.sessionName,
+		Scope:   r.scopeKey,
+		Source:  strings.TrimSpace(source),
+		Type:    strings.TrimSpace(typ),
+		Data:    cloneAnyMap(data),
+	}
+	_ = r.tracer.Record(ctx, event)
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (r *chatRuntime) traceCommand(fields []string) string {
+	if len(fields) == 1 {
+		return strings.Join([]string{
+			"usage: /trace stats",
+			"usage: /trace tail [n]",
+		}, "\n")
+	}
+	switch fields[1] {
+	case "stats":
+		return r.traceStatusLine()
+	case "tail":
+		limit := 20
+		if len(fields) >= 3 {
+			if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+				limit = min(v, 200)
+			}
+		}
+		return r.traceTail(limit)
+	default:
+		return strings.Join([]string{
+			"usage: /trace stats",
+			"usage: /trace tail [n]",
+		}, "\n")
+	}
+}
+
+func (r *chatRuntime) traceStatusLine() string {
+	events, err := trace.ReadTail(r.tracePath, 400)
+	if err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	if len(events) == 0 {
+		return "path=" + r.tracePath + " events=0"
+	}
+	counts := trace.CountByType(events)
+	type kv struct {
+		Key string
+		N   int
+	}
+	items := make([]kv, 0, len(counts))
+	for k, n := range counts {
+		items = append(items, kv{Key: k, N: n})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].N == items[j].N {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].N > items[j].N
+	})
+	top := make([]string, 0, min(4, len(items)))
+	for _, item := range items[:min(4, len(items))] {
+		top = append(top, item.Key+":"+strconv.Itoa(item.N))
+	}
+	return "path=" + r.tracePath + " events=" + strconv.Itoa(len(events)) + " top=" + strings.Join(top, ",")
+}
+
+func (r *chatRuntime) traceTail(limit int) string {
+	events, err := trace.ReadTail(r.tracePath, limit)
+	if err != nil {
+		return "trace read error: " + err.Error()
+	}
+	if len(events) == 0 {
+		return "trace is empty"
+	}
+	lines := make([]string, 0, len(events))
+	for _, event := range events {
+		line := event.Time.Format("15:04:05") + " " + event.Source + " " + event.Type
+		if event.Data != nil {
+			if text := compactJobText(formatCompactTraceData(event.Data), 180); strings.TrimSpace(text) != "" {
+				line += " " + text
+			}
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatCompactTraceData(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+	type kv struct {
+		Key string
+		Val string
+	}
+	items := make([]kv, 0, len(data))
+	for key, value := range data {
+		text := strings.TrimSpace(fmt.Sprintf("%v", value))
+		text = strings.ReplaceAll(text, "\n", " ")
+		text = strings.Join(strings.Fields(text), " ")
+		if len(text) > 64 {
+			text = text[:64] + "..."
+		}
+		if text == "" {
+			continue
+		}
+		items = append(items, kv{Key: key, Val: text})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, item.Key+"="+item.Val)
+	}
+	return strings.Join(parts, " ")
+}
+
+func (r *chatRuntime) auditCommand(fields []string) string {
+	if len(fields) == 1 {
+		return strings.Join([]string{
+			i18n.T("cmd.audit.usage.stats"),
+			i18n.T("cmd.audit.usage.tail"),
+			i18n.T("cmd.audit.usage.errors"),
+		}, "\n")
+	}
+	switch fields[1] {
+	case "stats":
+		return r.auditStatusLine()
+	case "tail":
+		limit := 10
+		if len(fields) >= 3 {
+			if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+				limit = min(v, 100)
+			}
+		}
+		return r.auditTail(limit)
+	case "errors":
+		limit := 20
+		if len(fields) >= 3 {
+			if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+				limit = min(v, 200)
+			}
+		}
+		return r.auditErrors(limit)
+	default:
+		return strings.Join([]string{
+			i18n.T("cmd.audit.usage.stats"),
+			i18n.T("cmd.audit.usage.tail"),
+			i18n.T("cmd.audit.usage.errors"),
+		}, "\n")
+	}
+}
+
+func (r *chatRuntime) auditStatusLine() string {
+	events, err := tools.ReadAuditTail(r.auditPath, 200)
+	if err != nil {
+		return "unavailable (" + err.Error() + ")"
+	}
+	stats := tools.ComputeAuditStats(events)
+	return tools.FormatAuditStats(stats, 3)
+}
+
+func (r *chatRuntime) auditTail(limit int) string {
+	events, err := tools.ReadAuditTail(r.auditPath, limit)
+	if err != nil {
+		return "audit read error: " + err.Error()
+	}
+	if len(events) == 0 {
+		return i18n.T("cmd.audit.empty")
+	}
+	lines := make([]string, 0, len(events))
+	for _, event := range events {
+		line := event.Time.Format("15:04:05") + " " + event.Tool + " " + event.Status
+		if strings.TrimSpace(event.Error) != "" {
+			line += " err=" + compactJobText(event.Error, 120)
+		}
+		if strings.TrimSpace(event.ArgsPreview) != "" {
+			line += " args=" + compactJobText(event.ArgsPreview, 120)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) auditErrors(limit int) string {
+	events, err := tools.ReadAuditTail(r.auditPath, max(20, limit*4))
+	if err != nil {
+		return "audit read error: " + err.Error()
+	}
+	if len(events) == 0 {
+		return i18n.T("cmd.audit.empty")
+	}
+	lines := make([]string, 0, limit)
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if strings.TrimSpace(event.Status) == "" || event.Status == "ok" {
+			continue
+		}
+		line := event.Time.Format("15:04:05") + " " + event.Tool + " " + event.Status
+		if strings.TrimSpace(event.Error) != "" {
+			line += " err=" + compactJobText(event.Error, 140)
+		}
+		lines = append(lines, line)
+		if len(lines) >= limit {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return i18n.T("cmd.audit.no_errors")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func modelContent(content any) string {

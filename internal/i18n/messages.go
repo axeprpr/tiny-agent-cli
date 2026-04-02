@@ -77,43 +77,53 @@ var messagesEN = map[string]string{
   /forget-global <q>    Remove matching global memory
   /memorize             Extract memory from conversation
   /bg <task>            Start a background job
+  /bg-role <r> <task>   Start a role-based background job
   /jobs                 List background jobs
   /job <id>             Inspect a background job
   /job-send <id> <msg>  Send follow-up to a background job
   /job-cancel <id>      Cancel a background job
   /job-apply <id>       Apply job result to chat context
+  /audit stats          Show recent tool-audit summary
+  /audit tail [n]       Show latest tool-audit events
+  /audit errors [n]     Show latest failed tool-audit events
 
 Or just type naturally -- no command needed for most tasks.`,
 
 	// Commands
-	"cmd.reset":             "context reset",
-	"cmd.approval.usage":    "usage: /approval confirm|dangerously",
-	"cmd.approval.set":      "approval mode set to %s",
-	"cmd.output.deprecated": "output mode command is deprecated in chat; terminal rendering is now the default",
-	"cmd.model.usage":       "usage: /model <name>",
-	"cmd.model.set":         "model set to %s for this session",
-	"cmd.bg.started":        "started background job %s",
-	"cmd.job.usage":         "usage: /job <id>",
-	"cmd.job.unknown":       "unknown job %q",
-	"cmd.jobsend.usage":     "usage: /job-send <id> <text>",
-	"cmd.jobsend.ok":        "queued follow-up for %s",
-	"cmd.jobcancel.usage":   "usage: /job-cancel <id>",
-	"cmd.jobcancel.ok":      "canceled %s",
-	"cmd.jobapply.usage":    "usage: /job-apply <id>",
-	"cmd.jobapply.ok":       "applied %s into current chat context",
-	"cmd.remember.usage":    "usage: /remember <text>",
-	"cmd.remember.ok":       "project memory saved",
-	"cmd.rememberg.usage":   "usage: /remember-global <text>",
-	"cmd.rememberg.ok":      "global memory saved",
-	"cmd.forget.usage":      "usage: /forget <query>",
-	"cmd.forget.ok":         "removed %d project memory note(s)",
-	"cmd.forgetg.usage":     "usage: /forget-global <query>",
-	"cmd.forgetg.ok":        "removed %d global memory note(s)",
-	"cmd.memorize.err":      "memorize error: %v",
-	"cmd.memorize.ok":       "added %d memory note(s)",
-	"cmd.session.already":   "already on session %s",
-	"cmd.session.switched":  "switched to session %s",
-	"cmd.session.started":   "started session %s",
+	"cmd.reset":              "context reset",
+	"cmd.approval.usage":     "usage: /approval confirm|dangerously",
+	"cmd.approval.set":       "approval mode set to %s",
+	"cmd.output.deprecated":  "output mode command is deprecated in chat; terminal rendering is now the default",
+	"cmd.model.usage":        "usage: /model <name>",
+	"cmd.model.set":          "model set to %s for this session",
+	"cmd.bg.started":         "started background job %s",
+	"cmd.bgrole.usage":       "usage: /bg-role <general|explore|plan|implement|verify> <task>",
+	"cmd.job.usage":          "usage: /job <id>",
+	"cmd.job.unknown":        "unknown job %q",
+	"cmd.jobsend.usage":      "usage: /job-send <id> <text>",
+	"cmd.jobsend.ok":         "queued follow-up for %s",
+	"cmd.jobcancel.usage":    "usage: /job-cancel <id>",
+	"cmd.jobcancel.ok":       "canceled %s",
+	"cmd.jobapply.usage":     "usage: /job-apply <id>",
+	"cmd.jobapply.ok":        "applied %s into current chat context",
+	"cmd.audit.usage.stats":  "usage: /audit stats",
+	"cmd.audit.usage.tail":   "usage: /audit tail [n]",
+	"cmd.audit.usage.errors": "usage: /audit errors [n]",
+	"cmd.audit.empty":        "no audit events yet",
+	"cmd.audit.no_errors":    "no failed audit events in the recent window",
+	"cmd.remember.usage":     "usage: /remember <text>",
+	"cmd.remember.ok":        "project memory saved",
+	"cmd.rememberg.usage":    "usage: /remember-global <text>",
+	"cmd.rememberg.ok":       "global memory saved",
+	"cmd.forget.usage":       "usage: /forget <query>",
+	"cmd.forget.ok":          "removed %d project memory note(s)",
+	"cmd.forgetg.usage":      "usage: /forget-global <query>",
+	"cmd.forgetg.ok":         "removed %d global memory note(s)",
+	"cmd.memorize.err":       "memorize error: %v",
+	"cmd.memorize.ok":        "added %d memory note(s)",
+	"cmd.session.already":    "already on session %s",
+	"cmd.session.switched":   "switched to session %s",
+	"cmd.session.started":    "started session %s",
 
 	// Memory responses
 	"mem.reject":               "This is not suitable for long-term memory; state a stable preference or project fact directly.",

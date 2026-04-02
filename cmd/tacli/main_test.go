@@ -315,6 +315,59 @@ func TestOutputCommandDeprecated(t *testing.T) {
 	}
 }
 
+func TestAuditCommandStatsAndTail(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.auditPath = tools.AuditPath(r.cfg.StateDir)
+	sink := tools.NewFileAuditSink(r.auditPath)
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:   time.Now().Add(-1 * time.Second),
+		Tool:   "read_file",
+		Status: "ok",
+	})
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:   time.Now(),
+		Tool:   "run_command",
+		Status: "error",
+		Error:  "command failed",
+	})
+
+	stats := r.executeCommand("/audit stats")
+	if !stats.handled {
+		t.Fatalf("expected /audit stats handled")
+	}
+	if !strings.Contains(stats.output, "audit=") {
+		t.Fatalf("unexpected /audit stats output: %q", stats.output)
+	}
+
+	tail := r.executeCommand("/audit tail 1")
+	if !tail.handled {
+		t.Fatalf("expected /audit tail handled")
+	}
+	if !strings.Contains(tail.output, "run_command") {
+		t.Fatalf("unexpected /audit tail output: %q", tail.output)
+	}
+
+	errors := r.executeCommand("/audit errors 1")
+	if !errors.handled {
+		t.Fatalf("expected /audit errors handled")
+	}
+	if !strings.Contains(errors.output, "run_command error") {
+		t.Fatalf("unexpected /audit errors output: %q", errors.output)
+	}
+}
+
+func TestBgRoleUsage(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
+	result := r.executeCommand("/bg-role")
+	if !result.handled {
+		t.Fatalf("expected /bg-role handled")
+	}
+	if !strings.Contains(result.output, "/bg-role") {
+		t.Fatalf("unexpected usage output: %q", result.output)
+	}
+}
+
 func TestParseNaturalLanguageMemoryIntentRemember(t *testing.T) {
 	intent, ok := parseNaturalLanguageMemoryIntent("记住以后默认中文简洁回答")
 	if !ok {

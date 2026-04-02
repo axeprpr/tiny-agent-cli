@@ -65,3 +65,45 @@ func TestCollectReadyForApply(t *testing.T) {
 		t.Fatalf("expected no remaining jobs, got %#v", next)
 	}
 }
+
+func TestValidateBackgroundRole(t *testing.T) {
+	for _, role := range []string{"", "general", "explore", "plan", "implement", "verify"} {
+		if err := validateBackgroundRole(role); err != nil {
+			t.Fatalf("expected role %q to be valid: %v", role, err)
+		}
+	}
+	if err := validateBackgroundRole("weird"); err == nil {
+		t.Fatalf("expected invalid role error")
+	}
+}
+
+func TestFormatJobListIncludesRole(t *testing.T) {
+	text := formatJobList([]jobSnapshot{{
+		ID:        "job-007",
+		Status:    jobReady,
+		Role:      backgroundRoleVerify,
+		Model:     "test-model",
+		TaskCount: 1,
+	}})
+	if !strings.Contains(text, "role=verify") {
+		t.Fatalf("expected role in list: %q", text)
+	}
+}
+
+func TestRouteBackgroundRole(t *testing.T) {
+	tests := []struct {
+		task string
+		want string
+	}{
+		{task: "Run build and tests, then provide a verdict", want: backgroundRoleVerify},
+		{task: "Give me a concrete plan and step breakdown", want: backgroundRolePlan},
+		{task: "Implement a patch for auth token refresh", want: backgroundRoleImplement},
+		{task: "Explore this repo in read-only mode and find risks", want: backgroundRoleExplore},
+		{task: "continue working", want: backgroundRoleGeneral},
+	}
+	for _, tt := range tests {
+		if got := routeBackgroundRole(tt.task); got != tt.want {
+			t.Fatalf("task %q: got %q want %q", tt.task, got, tt.want)
+		}
+	}
+}

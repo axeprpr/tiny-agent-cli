@@ -22,6 +22,11 @@ const (
 	jobReady                   jobStatus = "ready"
 	jobFailed                  jobStatus = "failed"
 	jobCanceled                jobStatus = "canceled"
+	backgroundRoleGeneral                = "general"
+	backgroundRoleExplore                = "explore"
+	backgroundRolePlan                   = "plan"
+	backgroundRoleImplement              = "implement"
+	backgroundRoleVerify                 = "verify"
 	maxActiveBackgroundJobs              = 2
 	minBackgroundTaskChars               = 24
 	minBackgroundTaskWordCount           = 4
@@ -30,6 +35,7 @@ const (
 type jobSnapshot struct {
 	ID         string
 	Status     jobStatus
+	Role       string
 	Model      string
 	TaskCount  int
 	Queued     int
@@ -49,6 +55,7 @@ func (s jobSnapshot) toToolSnapshot() tools.BackgroundJobSnapshot {
 	return tools.BackgroundJobSnapshot{
 		ID:         s.ID,
 		Status:     string(s.Status),
+		Role:       s.Role,
 		Model:      s.Model,
 		TaskCount:  s.TaskCount,
 		Queued:     s.Queued,
@@ -61,6 +68,7 @@ func (s jobSnapshot) toToolSnapshot() tools.BackgroundJobSnapshot {
 
 type backgroundJob struct {
 	id      string
+	role    string
 	model   string
 	session *agent.Session
 	cancel  context.CancelFunc
@@ -95,6 +103,7 @@ func (j *backgroundJob) snapshot() jobSnapshot {
 	return jobSnapshot{
 		ID:         j.id,
 		Status:     j.status,
+		Role:       j.role,
 		Model:      j.model,
 		TaskCount:  j.taskCount,
 		Queued:     j.queued,
@@ -115,6 +124,7 @@ type jobManager struct {
 	cfg      config.Config
 	memory   string
 	notifier func(string)
+	router   backgroundRoleRouter
 
 	mu     sync.RWMutex
 	nextID int
@@ -125,6 +135,7 @@ func newJobManager(cfg config.Config, memoryText string) *jobManager {
 	return &jobManager{
 		cfg:    cfg,
 		memory: memoryText,
+		router: keywordBackgroundRoleRouter(),
 		jobs:   make(map[string]*backgroundJob),
 	}
 }
@@ -147,13 +158,53 @@ func (m *jobManager) UpdateMemory(memoryText string) {
 	m.memory = memoryText
 }
 
+func (m *jobManager) SetRoleRouter(router backgroundRoleRouter) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if router == nil {
+		m.router = keywordBackgroundRoleRouter()
+		return
+	}
+	m.router = router
+}
+
 func (m *jobManager) Start(task string) (string, error) {
+	role := routeBackgroundRole(task)
+	m.mu.RLock()
+	router := m.router
+	cfg := m.cfg
+	m.mu.RUnlock()
+
+	if router != nil {
+		timeout := roleRoutingTimeout(cfg.ModelTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		routed, err := router(ctx, task)
+		if err == nil {
+			routed = normalizeBackgroundRole(routed)
+			if validateBackgroundRole(routed) == nil {
+				role = routed
+			}
+		}
+	}
+
+	return m.StartWithRole(role, task)
+}
+
+func (m *jobManager) StartWithRole(role, task string) (string, error) {
+	if strings.TrimSpace(role) == "" {
+		role = routeBackgroundRole(task)
+	}
+	role = normalizeBackgroundRole(role)
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return "", fmt.Errorf("usage: /bg <task>")
 	}
 	if m.cfg.ApprovalMode != tools.ApprovalDangerously {
 		return "", fmt.Errorf("background jobs require dangerously mode so they can run without blocking on interactive approval")
+	}
+	if err := validateBackgroundRole(role); err != nil {
+		return "", err
 	}
 	if err := validateBackgroundTask(task); err != nil {
 		return "", err
@@ -174,8 +225,9 @@ func (m *jobManager) Start(task string) (string, error) {
 	loop := buildAgentWith(bgCfg, bgApprover, logWriter, nil)
 	job := &backgroundJob{
 		id:        id,
+		role:      role,
 		model:     bgCfg.Model,
-		session:   loop.NewSessionWithMemory(memoryText),
+		session:   loop.NewSessionWithPrompt(promptContextFor(bgCfg, loop, "background:"+role, memoryText)),
 		status:    jobQueued,
 		prompts:   make(chan string, 32),
 		createdAt: time.Now(),
@@ -359,7 +411,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 			job.updatedAt = now
 			job.mu.Unlock()
 
-			m.notify(fmt.Sprintf("%s running: %s", job.id, compactJobText(task, 80)))
+			m.notify(fmt.Sprintf("%s (%s) running: %s", job.id, job.role, compactJobText(task, 80)))
 
 			result, err := job.session.RunTask(ctx, task)
 
@@ -378,7 +430,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 				job.lastError = err.Error()
 				job.finishedAt = job.updatedAt
 				job.mu.Unlock()
-				m.notify(fmt.Sprintf("%s failed: %s", job.id, compactJobText(err.Error(), 120)))
+				m.notify(fmt.Sprintf("%s (%s) failed: %s", job.id, job.role, compactJobText(err.Error(), 120)))
 				continue
 			}
 
@@ -393,7 +445,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 			}
 			job.mu.Unlock()
 
-			m.notify(fmt.Sprintf("%s ready: %s", job.id, compactJobText(job.snapshot().LastOutput, 120)))
+			m.notify(fmt.Sprintf("%s (%s) ready: %s", job.id, job.role, compactJobText(job.snapshot().LastOutput, 120)))
 		}
 	}
 }
@@ -460,6 +512,7 @@ func formatJobList(snaps []jobSnapshot) string {
 	lines := make([]string, 0, len(snaps))
 	for _, snap := range snaps {
 		line := fmt.Sprintf("%s  %s  tasks=%d", snap.ID, snap.Status, snap.TaskCount)
+		line += "  role=" + normalizeBackgroundRole(snap.Role)
 		if snap.Queued > 0 {
 			line += fmt.Sprintf("  queued=%d", snap.Queued)
 		}
@@ -483,6 +536,7 @@ func formatJobSnapshot(snap jobSnapshot) string {
 	lines := []string{
 		"id=" + snap.ID,
 		"status=" + string(snap.Status),
+		"role=" + normalizeBackgroundRole(snap.Role),
 		"model=" + snap.Model,
 		fmt.Sprintf("tasks=%d", snap.TaskCount),
 		fmt.Sprintf("queued=%d", snap.Queued),
@@ -517,6 +571,7 @@ func summarizeJobForSession(snap jobSnapshot) string {
 	lines := []string{
 		fmt.Sprintf("[background job %s]", snap.ID),
 		"status: " + string(snap.Status),
+		"role: " + normalizeBackgroundRole(snap.Role),
 	}
 	if strings.TrimSpace(snap.LastPrompt) != "" {
 		lines = append(lines, "last prompt: "+compactJobText(snap.LastPrompt, 240))
@@ -543,6 +598,10 @@ type jobToolAdapter struct {
 
 func (a jobToolAdapter) Start(task string) (string, error) {
 	return a.manager.Start(task)
+}
+
+func (a jobToolAdapter) StartWithRole(role, task string) (string, error) {
+	return a.manager.StartWithRole(role, task)
 }
 
 func (a jobToolAdapter) Send(id, task string) error {
@@ -699,4 +758,56 @@ func validateBackgroundTask(task string) error {
 		}
 	}
 	return nil
+}
+
+func normalizeBackgroundRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return backgroundRoleGeneral
+	}
+	return role
+}
+
+func validateBackgroundRole(role string) error {
+	switch normalizeBackgroundRole(role) {
+	case backgroundRoleGeneral, backgroundRoleExplore, backgroundRolePlan, backgroundRoleImplement, backgroundRoleVerify:
+		return nil
+	default:
+		return fmt.Errorf("invalid background role %q (expected general|explore|plan|implement|verify)", strings.TrimSpace(role))
+	}
+}
+
+func routeBackgroundRole(task string) string {
+	lower := strings.ToLower(strings.TrimSpace(task))
+	if lower == "" {
+		return backgroundRoleGeneral
+	}
+
+	if hasAny(lower,
+		"verify", "verification", "validate", "validation", "regression", "prove", "evidence",
+		"test", "tests", "go test", "type-check", "typecheck", "build",
+		"验证", "校验", "验收", "回归", "证据", "测试", "构建", "编译",
+	) {
+		return backgroundRoleVerify
+	}
+	if hasAny(lower,
+		"plan", "roadmap", "breakdown", "steps", "strategy", "design",
+		"计划", "路线图", "拆解", "步骤", "方案", "设计",
+	) {
+		return backgroundRolePlan
+	}
+	if hasAny(lower,
+		"implement", "implementation", "fix", "patch", "refactor", "rewrite", "add feature", "code",
+		"实现", "修复", "补丁", "重构", "改代码", "开发",
+	) {
+		return backgroundRoleImplement
+	}
+	if hasAny(lower,
+		"explore", "inspect", "analyze", "analysis", "review", "investigate", "map", "understand",
+		"read-only", "read only", "risk", "architecture", "flow", "dependency",
+		"探索", "检查", "分析", "审查", "排查", "梳理", "了解", "只读", "风险", "架构", "流程", "依赖",
+	) {
+		return backgroundRoleExplore
+	}
+	return backgroundRoleGeneral
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,55 +23,6 @@ const (
 
 const syntheticSummaryPrefix = "[compacted summary]"
 
-const systemPrompt = `You are a small terminal agent.
-
-Constraints:
-- You are running one task only.
-- Use a private PDCA loop for each task: Plan, Do, Check, Act.
-- Use a private ReAct loop: observe the task, choose the next action, use a tool if needed, check the result.
-- Prefer using tools instead of guessing.
-- The terminal prints your assistant message directly to the user.
-- Keep the final answer concise, actionable, and terminal-friendly.
-- Keep planning private.
-- Do not reveal chain-of-thought, hidden reasoning, thinking process, or self-talk.
-- Your visible reply must contain only tool calls or the user-facing answer.
-- Never emit <think>, </think>, <thinking>, analysis tags, or hidden-reasoning markers.
-- Do not access files outside the workspace.
-- Avoid dangerous shell commands.
-
-Behavior:
-- Start with a short internal plan before acting, but keep it silent.
-- Internally choose the working mode that fits the task:
-  - plan: break down ambiguous or multi-step work before acting
-  - explore: inspect files, commands, or evidence before editing
-  - build: make targeted changes and verify them
-- Choose the smallest useful next step, then verify the result before continuing.
-- Use plain text, not Markdown.
-- You may use short paragraphs, blank lines, bullets like "- " or numbered lists like "1. ".
-- Do not use headings with "#", bold markers like "**", Markdown tables, block quotes, or fenced code blocks.
-- When listing results, findings, checks, or next steps, put each item on its own line in plain text. Do not pack multiple items into one paragraph.
-- Do not narrate intent with phrases like "let me", "I will", "I am going to", or "first I will".
-- Do not describe the user or their request in the third person.
-- Do not say that you will remember, confirm, summarize, or prepare an answer.
-- Do not repeat or summarize the user's request unless it is necessary for the final answer.
-- For simple requests, answer directly in 1 to 3 short lines.
-- If no tool is needed, reply immediately with the answer and no preamble.
-- Inspect the workspace before editing when the task depends on local files.
-- Prefer edit_file for targeted changes when you can identify the exact block to replace.
-- Use write_file when creating a new file or replacing the entire file is clearly simpler and safe.
-- When a tool is needed, call it instead of merely describing it.
-- Use web_search for broad discovery and fetch_url for direct page inspection.
-- For multi-step work, keep a short todo list with update_todo and refresh it when progress changes.
-- Use show_todo when you need to check the current plan instead of guessing.
-- Keep work in the main conversation by default.
-- Only start a background job when the subtask is clearly long-running, noisy, or independently useful while the user keeps chatting.
-- Do not start a background job for tiny commands, single file reads, or vague subtasks.
-- After starting a background job, use inspect_background_job or list_background_jobs to collect its result instead of guessing.
-- Prefer plain text over Markdown tables unless the user explicitly asks for tables.
-- When writing files, explain what you changed in the final answer.
-- Return only the final answer to the user, not your reasoning.
-- Stop as soon as the task is complete.`
-
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
 }
@@ -84,12 +36,23 @@ type StreamClient interface {
 	CompleteStream(ctx context.Context, req model.Request) (<-chan model.StreamChunk, <-chan error)
 }
 
+type EventSink interface {
+	RecordAgentEvent(ctx context.Context, event AgentEvent)
+}
+
+type AgentEvent struct {
+	Time time.Time
+	Type string
+	Data map[string]any
+}
+
 type Agent struct {
 	client        chatClient
 	streamClient  StreamClient
 	registry      *tools.Registry
 	contextWindow int
 	log           io.Writer
+	eventSink     EventSink
 }
 
 type Session struct {
@@ -117,29 +80,50 @@ func (a *Agent) SetStreamClient(sc StreamClient) {
 	a.streamClient = sc
 }
 
+func (a *Agent) SetEventSink(sink EventSink) {
+	a.eventSink = sink
+}
+
 func (a *Agent) CanStream() bool {
 	return a.streamClient != nil
 }
 
 func (a *Agent) NewSession() *Session {
-	return a.NewSessionWithMemory("")
+	return a.NewSessionWithPrompt(PromptContext{})
 }
 
 func (a *Agent) NewSessionWithMemory(memoryText string) *Session {
+	return a.NewSessionWithPrompt(PromptContext{
+		MemoryText: memoryText,
+		ToolNames:  a.ToolNames(),
+	})
+}
+
+func (a *Agent) NewSessionWithPrompt(prompt PromptContext) *Session {
+	if len(prompt.ToolNames) == 0 {
+		prompt.ToolNames = a.ToolNames()
+	}
 	return &Session{
 		agent: a,
 		messages: []model.Message{
-			{Role: "system", Content: SystemPromptWithMemory(memoryText)},
+			{Role: "system", Content: BuildSystemPrompt(prompt)},
 		},
 	}
 }
 
-func SystemPromptWithMemory(memoryText string) string {
-	memoryText = strings.TrimSpace(memoryText)
-	if memoryText == "" {
-		return systemPrompt
+func (a *Agent) ToolNames() []string {
+	if a == nil || a.registry == nil {
+		return nil
 	}
-	return systemPrompt + "\n\n" + memoryText
+	defs := a.registry.Definitions()
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if strings.TrimSpace(def.Function.Name) != "" {
+			names = append(names, def.Function.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *Session) Messages() []model.Message {
@@ -177,7 +161,9 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		Content: task,
 	})
 
+	turn := 0
 	for {
+		turn++
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
@@ -185,12 +171,20 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 
 		req := s.buildRequest()
+		s.agent.logModelRequest(turn, req)
+		s.agent.emitEvent(ctx, "model_request", map[string]any{
+			"turn":         turn,
+			"messages":     len(req.Messages),
+			"tools":        len(req.Tools),
+			"approx_chars": conversationSize(req.Messages),
+		})
 		resp, err := s.agent.client.Complete(ctx, req)
 		if err != nil {
 			if isContextLengthError(err) {
 				if s.compactForRetry() {
 					s.agent.logf("context too long, retrying with shorter history\n")
 					req = s.buildRequest()
+					s.agent.logModelRequest(turn, req)
 					resp, err = s.agent.client.Complete(ctx, req)
 				}
 			}
@@ -203,6 +197,13 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 
 		msg := resp.Choices[0].Message
+		s.agent.logModelResponse(turn, msg)
+		s.agent.emitEvent(ctx, modelResponseEventType(msg), map[string]any{
+			"turn":       turn,
+			"chars":      len(strings.TrimSpace(model.ContentString(msg.Content))),
+			"tool_calls": len(msg.ToolCalls),
+			"tool_names": toolCallNames(msg.ToolCalls, 8),
+		})
 		if len(msg.ToolCalls) == 0 {
 			final := finalResponseText(msg)
 			s.messages = append(s.messages, model.Message{
@@ -222,12 +223,31 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 
 		for i, call := range msg.ToolCalls {
 			args := json.RawMessage(call.Function.Arguments)
-			s.agent.logToolStart(i+1, len(msg.ToolCalls), call.Function.Name, args)
+			s.agent.logToolStart(i+1, len(msg.ToolCalls), call.Function.Name, call.ID, args)
+			s.agent.emitEvent(ctx, "tool_start", map[string]any{
+				"turn":    turn,
+				"index":   i + 1,
+				"total":   len(msg.ToolCalls),
+				"name":    call.Function.Name,
+				"call_id": call.ID,
+				"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
+			})
 
 			started := time.Now()
 			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
 			output = truncateToolMessage(output, maxToolMessageChars)
 			s.agent.logToolFinish(time.Since(started), output, err)
+			s.agent.emitEvent(ctx, "tool_finish", map[string]any{
+				"turn":        turn,
+				"index":       i + 1,
+				"total":       len(msg.ToolCalls),
+				"name":        call.Function.Name,
+				"call_id":     call.ID,
+				"duration_ms": time.Since(started).Milliseconds(),
+				"status":      toolEventStatus(err),
+				"summary":     firstOutputSummary(output),
+				"error":       toolEventError(err),
+			})
 			if err != nil {
 				output = "tool error: " + err.Error()
 			}
@@ -252,7 +272,9 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		Content: task,
 	})
 
+	turn := 0
 	for {
+		turn++
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
@@ -260,6 +282,13 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		}
 
 		req := s.buildRequest()
+		s.agent.logModelRequest(turn, req)
+		s.agent.emitEvent(ctx, "model_request", map[string]any{
+			"turn":         turn,
+			"messages":     len(req.Messages),
+			"tools":        len(req.Tools),
+			"approx_chars": conversationSize(req.Messages),
+		})
 
 		chunks, errc := s.agent.streamClient.CompleteStream(ctx, req)
 
@@ -332,6 +361,13 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			Content:   contentBuf.String(),
 			ToolCalls: toolCalls,
 		}
+		s.agent.logModelResponse(turn, msg)
+		s.agent.emitEvent(ctx, modelResponseEventType(msg), map[string]any{
+			"turn":       turn,
+			"chars":      len(strings.TrimSpace(model.ContentString(msg.Content))),
+			"tool_calls": len(msg.ToolCalls),
+			"tool_names": toolCallNames(msg.ToolCalls, 8),
+		})
 
 		if len(toolCalls) == 0 {
 			final := finalResponseText(msg)
@@ -347,11 +383,30 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 
 		for i, call := range toolCalls {
 			args := json.RawMessage(call.Function.Arguments)
-			s.agent.logToolStart(i+1, len(toolCalls), call.Function.Name, args)
+			s.agent.logToolStart(i+1, len(toolCalls), call.Function.Name, call.ID, args)
+			s.agent.emitEvent(ctx, "tool_start", map[string]any{
+				"turn":    turn,
+				"index":   i + 1,
+				"total":   len(toolCalls),
+				"name":    call.Function.Name,
+				"call_id": call.ID,
+				"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
+			})
 			started := time.Now()
 			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
 			output = truncateToolMessage(output, maxToolMessageChars)
 			s.agent.logToolFinish(time.Since(started), output, err)
+			s.agent.emitEvent(ctx, "tool_finish", map[string]any{
+				"turn":        turn,
+				"index":       i + 1,
+				"total":       len(toolCalls),
+				"name":        call.Function.Name,
+				"call_id":     call.ID,
+				"duration_ms": time.Since(started).Milliseconds(),
+				"status":      toolEventStatus(err),
+				"summary":     firstOutputSummary(output),
+				"error":       toolEventError(err),
+			})
 			if err != nil {
 				output = "tool error: " + err.Error()
 			}
@@ -788,13 +843,58 @@ func (a *Agent) logf(format string, args ...any) {
 	fmt.Fprintf(a.log, format, args...)
 }
 
-func (a *Agent) logToolStart(index, total int, name string, raw json.RawMessage) {
-	preview := strings.TrimSpace(a.registry.Preview(name, raw))
-	if preview == "" {
-		a.logf("  [%d/%d] %s\n", index, total, name)
+func (a *Agent) logModelRequest(turn int, req model.Request) {
+	a.logf(
+		"requesting model turn=%d messages=%d tools=%d approx_chars=%d\n",
+		turn,
+		len(req.Messages),
+		len(req.Tools),
+		conversationSize(req.Messages),
+	)
+}
+
+func (a *Agent) logModelResponse(turn int, msg model.Message) {
+	contentChars := len(strings.TrimSpace(model.ContentString(msg.Content)))
+	if len(msg.ToolCalls) == 0 {
+		a.logf("model response turn=%d final chars=%d\n", turn, contentChars)
 		return
 	}
-	a.logf("  [%d/%d] %s %s\n", index, total, name, preview)
+	names := make([]string, 0, len(msg.ToolCalls))
+	for _, call := range msg.ToolCalls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+		if len(names) >= 4 {
+			break
+		}
+	}
+	suffix := ""
+	if len(msg.ToolCalls) > len(names) {
+		suffix = fmt.Sprintf(" +%d more", len(msg.ToolCalls)-len(names))
+	}
+	a.logf(
+		"model response turn=%d tool_calls=%d names=%s%s chars=%d\n",
+		turn,
+		len(msg.ToolCalls),
+		strings.Join(names, ","),
+		suffix,
+		contentChars,
+	)
+}
+
+func (a *Agent) logToolStart(index, total int, name, callID string, raw json.RawMessage) {
+	callID = strings.TrimSpace(callID)
+	idPart := ""
+	if callID != "" {
+		idPart = " id=" + callID
+	}
+	preview := strings.TrimSpace(a.registry.Preview(name, raw))
+	if preview == "" {
+		a.logf("  [%d/%d] %s%s\n", index, total, name, idPart)
+		return
+	}
+	a.logf("  [%d/%d] %s%s %s\n", index, total, name, idPart, preview)
 }
 
 func (a *Agent) logToolFinish(elapsed time.Duration, output string, err error) {
@@ -859,6 +959,67 @@ func streamToolCallKey(choiceIndex int, tc model.ToolCall, fallback int) string 
 		return fmt.Sprintf("%d:id:%s", choiceIndex, tc.ID)
 	}
 	return fmt.Sprintf("%d:fallback:%d", choiceIndex, fallback)
+}
+
+func (a *Agent) emitEvent(ctx context.Context, typ string, data map[string]any) {
+	if a == nil || a.eventSink == nil || strings.TrimSpace(typ) == "" {
+		return
+	}
+	a.eventSink.RecordAgentEvent(ctx, AgentEvent{
+		Time: time.Now(),
+		Type: typ,
+		Data: data,
+	})
+}
+
+func modelResponseEventType(msg model.Message) string {
+	if len(msg.ToolCalls) == 0 {
+		return "model_response_final"
+	}
+	return "model_response_tool_calls"
+}
+
+func toolCallNames(calls []model.ToolCall, limit int) []string {
+	if len(calls) == 0 {
+		return nil
+	}
+	if limit <= 0 {
+		limit = len(calls)
+	}
+	names := make([]string, 0, min(limit, len(calls)))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		if len(names) >= limit {
+			break
+		}
+	}
+	return names
+}
+
+func toolEventStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
+}
+
+func toolEventError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func firstOutputSummary(output string) string {
+	lines := summarizeOutput(output)
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
 }
 
 func FormatTerminalOutput(text string) string {

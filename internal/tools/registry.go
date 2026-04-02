@@ -17,24 +17,29 @@ type Tool interface {
 }
 
 type Registry struct {
-	tools map[string]Tool
-	todo  *todoStore
+	tools      map[string]Tool
+	todo       *todoStore
+	hooks      []ToolHook
+	permission ToolPermissionDecider
+	audit      ToolAuditSink
 }
 
 func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver Approver, jobs ...JobControl) *Registry {
 	r := &Registry{tools: make(map[string]Tool)}
 	todos := newTodoStore()
 	r.todo = todos
+	r.permission = newApprovalPermissionDecider(workDir, approver)
+	r.hooks = append(r.hooks, NewDefaultHooks()...)
 
 	toolset := []Tool{
 		newUpdateTodoTool(todos),
 		newShowTodoTool(todos),
 		newListFilesTool(workDir),
 		newReadFileTool(workDir),
-		newEditFileTool(workDir, approver),
-		newWriteFileTool(workDir, approver),
+		newEditFileTool(workDir, nil),
+		newWriteFileTool(workDir, nil),
 		newGrepTool(workDir),
-		newRunCommandTool(workDir, shell, commandTimeout, approver),
+		newRunCommandTool(workDir, shell, commandTimeout, nil),
 		newFetchURLTool(),
 		newWebSearchTool(),
 	}
@@ -87,7 +92,81 @@ func (r *Registry) Call(ctx context.Context, name string, raw json.RawMessage) (
 	if !ok {
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
-	return tool.Call(ctx, raw)
+	inv := ToolInvocation{Name: name, Raw: raw}
+	if err := validateToolInput(raw, tool.Definition().Function.Parameters); err != nil {
+		r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "validation_error")
+		return "", err
+	}
+	for _, hook := range r.hooks {
+		if hook == nil {
+			continue
+		}
+		if err := hook.BeforeTool(ctx, inv); err != nil {
+			r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "pre_hook_error")
+			return "", err
+		}
+	}
+	if r.permission != nil {
+		if err := r.permission.Decide(ctx, inv); err != nil {
+			r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "permission_denied")
+			return "", err
+		}
+	}
+
+	started := time.Now()
+	output, err := tool.Call(ctx, raw)
+	out := ToolOutcome{
+		Output:   output,
+		Err:      err,
+		Duration: time.Since(started),
+	}
+	if err != nil {
+		for _, hook := range r.hooks {
+			if hook == nil {
+				continue
+			}
+			hook.OnToolError(ctx, inv, out)
+		}
+		r.recordAudit(ctx, inv, out, "error")
+		return output, err
+	}
+	for _, hook := range r.hooks {
+		if hook == nil {
+			continue
+		}
+		hook.AfterTool(ctx, inv, out)
+	}
+	r.recordAudit(ctx, inv, out, "ok")
+	return output, nil
+}
+
+func (r *Registry) AddHook(hook ToolHook) {
+	if hook == nil {
+		return
+	}
+	r.hooks = append(r.hooks, hook)
+}
+
+func (r *Registry) SetAuditSink(audit ToolAuditSink) {
+	r.audit = audit
+}
+
+func (r *Registry) recordAudit(ctx context.Context, inv ToolInvocation, out ToolOutcome, status string) {
+	if r == nil || r.audit == nil {
+		return
+	}
+	event := ToolAuditEvent{
+		Time:         time.Now(),
+		Tool:         inv.Name,
+		Status:       status,
+		DurationMs:   out.Duration.Milliseconds(),
+		ArgsPreview:  compactPreviewString(json.RawMessage(inv.Raw), 140),
+		OutputSample: compactAuditSample(out.Output, 200),
+	}
+	if out.Err != nil {
+		event.Error = out.Err.Error()
+	}
+	r.audit.RecordToolEvent(ctx, event)
 }
 
 func (r *Registry) Preview(name string, raw json.RawMessage) string {

@@ -72,43 +72,53 @@ var messagesCN = map[string]string{
   /forget-global <q>    删除匹配的全局记忆
   /memorize             从对话中提取记忆
   /bg <task>            启动后台任务
+  /bg-role <r> <task>   启动角色化后台任务
   /jobs                 列出后台任务
   /job <id>             查看后台任务详情
   /job-send <id> <msg>  向后台任务追加指令
   /job-cancel <id>      取消后台任务
   /job-apply <id>       将后台结果注入对话
+  /audit stats          显示工具审计摘要
+  /audit tail [n]       显示最近工具审计记录
+  /audit errors [n]     显示最近失败的审计记录
 
 直接输入自然语言即可，大多数情况不需要命令。`,
 
 	// Commands
-	"cmd.reset":             "上下文已重置",
-	"cmd.approval.usage":    "用法：/approval confirm|dangerously",
-	"cmd.approval.set":      "审批模式已设为 %s",
-	"cmd.output.deprecated": "output 命令已弃用；chat 默认使用终端渲染",
-	"cmd.model.usage":       "用法：/model <名称>",
-	"cmd.model.set":         "模型已切换为 %s",
-	"cmd.bg.started":        "后台任务已启动 %s",
-	"cmd.job.usage":         "用法：/job <id>",
-	"cmd.job.unknown":       "未知任务 %q",
-	"cmd.jobsend.usage":     "用法：/job-send <id> <内容>",
-	"cmd.jobsend.ok":        "已追加指令到 %s",
-	"cmd.jobcancel.usage":   "用法：/job-cancel <id>",
-	"cmd.jobcancel.ok":      "已取消 %s",
-	"cmd.jobapply.usage":    "用法：/job-apply <id>",
-	"cmd.jobapply.ok":       "已将 %s 的结果注入对话上下文",
-	"cmd.remember.usage":    "用法：/remember <内容>",
-	"cmd.remember.ok":       "项目记忆已保存",
-	"cmd.rememberg.usage":   "用法：/remember-global <内容>",
-	"cmd.rememberg.ok":      "全局记忆已保存",
-	"cmd.forget.usage":      "用法：/forget <关键词>",
-	"cmd.forget.ok":         "已删除 %d 条项目记忆",
-	"cmd.forgetg.usage":     "用法：/forget-global <关键词>",
-	"cmd.forgetg.ok":        "已删除 %d 条全局记忆",
-	"cmd.memorize.err":      "记忆提取出错：%v",
-	"cmd.memorize.ok":       "已添加 %d 条记忆",
-	"cmd.session.already":   "当前已在会话 %s",
-	"cmd.session.switched":  "已切换到会话 %s",
-	"cmd.session.started":   "已新建会话 %s",
+	"cmd.reset":              "上下文已重置",
+	"cmd.approval.usage":     "用法：/approval confirm|dangerously",
+	"cmd.approval.set":       "审批模式已设为 %s",
+	"cmd.output.deprecated":  "output 命令已弃用；chat 默认使用终端渲染",
+	"cmd.model.usage":        "用法：/model <名称>",
+	"cmd.model.set":          "模型已切换为 %s",
+	"cmd.bg.started":         "后台任务已启动 %s",
+	"cmd.bgrole.usage":       "用法：/bg-role <general|explore|plan|implement|verify> <任务>",
+	"cmd.job.usage":          "用法：/job <id>",
+	"cmd.job.unknown":        "未知任务 %q",
+	"cmd.jobsend.usage":      "用法：/job-send <id> <内容>",
+	"cmd.jobsend.ok":         "已追加指令到 %s",
+	"cmd.jobcancel.usage":    "用法：/job-cancel <id>",
+	"cmd.jobcancel.ok":       "已取消 %s",
+	"cmd.jobapply.usage":     "用法：/job-apply <id>",
+	"cmd.jobapply.ok":        "已将 %s 的结果注入对话上下文",
+	"cmd.audit.usage.stats":  "用法：/audit stats",
+	"cmd.audit.usage.tail":   "用法：/audit tail [n]",
+	"cmd.audit.usage.errors": "用法：/audit errors [n]",
+	"cmd.audit.empty":        "还没有审计记录",
+	"cmd.audit.no_errors":    "最近窗口内没有失败审计记录",
+	"cmd.remember.usage":     "用法：/remember <内容>",
+	"cmd.remember.ok":        "项目记忆已保存",
+	"cmd.rememberg.usage":    "用法：/remember-global <内容>",
+	"cmd.rememberg.ok":       "全局记忆已保存",
+	"cmd.forget.usage":       "用法：/forget <关键词>",
+	"cmd.forget.ok":          "已删除 %d 条项目记忆",
+	"cmd.forgetg.usage":      "用法：/forget-global <关键词>",
+	"cmd.forgetg.ok":         "已删除 %d 条全局记忆",
+	"cmd.memorize.err":       "记忆提取出错：%v",
+	"cmd.memorize.ok":        "已添加 %d 条记忆",
+	"cmd.session.already":    "当前已在会话 %s",
+	"cmd.session.switched":   "已切换到会话 %s",
+	"cmd.session.started":    "已新建会话 %s",
 
 	// Memory responses
 	"mem.reject":               "这条内容不适合记成长期记忆；如果你希望记住稳定偏好或项目事实，请直接说明。",

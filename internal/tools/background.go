@@ -11,6 +11,7 @@ import (
 
 type JobControl interface {
 	Start(task string) (string, error)
+	StartWithRole(role, task string) (string, error)
 	Send(id, task string) error
 	Cancel(id string) error
 	List() []BackgroundJobSnapshot
@@ -20,6 +21,7 @@ type JobControl interface {
 type BackgroundJobSnapshot struct {
 	ID         string
 	Status     string
+	Role       string
 	Model      string
 	TaskCount  int
 	Queued     int
@@ -71,6 +73,10 @@ func (t *startBackgroundJobTool) Definition() model.Tool {
 				"type":     "object",
 				"required": []string{"task"},
 				"properties": map[string]any{
+					"role": map[string]any{
+						"type":        "string",
+						"description": "Optional role: general|explore|plan|implement|verify",
+					},
 					"task": map[string]any{
 						"type":        "string",
 						"description": "Subtask instructions for the background agent",
@@ -83,12 +89,13 @@ func (t *startBackgroundJobTool) Definition() model.Tool {
 
 func (t *startBackgroundJobTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
+		Role string `json:"role"`
 		Task string `json:"task"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
 	}
-	id, err := t.jobs.Start(args.Task)
+	id, err := t.jobs.StartWithRole(args.Role, args.Task)
 	if err != nil {
 		return "", err
 	}
@@ -117,6 +124,9 @@ func (t *listBackgroundJobsTool) Call(_ context.Context, _ json.RawMessage) (str
 	lines := make([]string, 0, len(snaps))
 	for _, snap := range snaps {
 		line := fmt.Sprintf("%s status=%s tasks=%d", snap.ID, snap.Status, snap.TaskCount)
+		if strings.TrimSpace(snap.Role) != "" {
+			line += " role=" + snap.Role
+		}
 		if snap.Queued > 0 {
 			line += fmt.Sprintf(" queued=%d", snap.Queued)
 		}
@@ -164,6 +174,7 @@ func (t *inspectBackgroundJobTool) Call(_ context.Context, raw json.RawMessage) 
 	lines := []string{
 		"id=" + snap.ID,
 		"status=" + snap.Status,
+		"role=" + snap.Role,
 		fmt.Sprintf("tasks=%d", snap.TaskCount),
 		fmt.Sprintf("queued=%d", snap.Queued),
 	}

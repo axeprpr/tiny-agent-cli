@@ -64,6 +64,10 @@ type tuiLogWriter struct {
 	events chan tea.Msg
 }
 
+type tuiAuditSink struct {
+	events chan tea.Msg
+}
+
 func (w *tuiLogWriter) Write(p []byte) (int, error) {
 	text := strings.TrimSpace(string(p))
 	if text == "" {
@@ -76,6 +80,17 @@ func (w *tuiLogWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+func (s *tuiAuditSink) RecordToolEvent(_ context.Context, event tools.ToolAuditEvent) {
+	if s == nil || s.events == nil {
+		return
+	}
+	line := strings.TrimSpace(event.Tool + " " + event.Status)
+	if strings.TrimSpace(event.Error) != "" {
+		line += " err=" + compactJobText(event.Error, 140)
+	}
+	s.events <- tuiLogMsg{kind: "audit", text: line}
 }
 
 type tuiApprover struct {
@@ -362,7 +377,7 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		chatViewport: chatVP,
 		logViewport:  logVP,
 		help:         help.New(),
-		showDrawer:   false,
+		showDrawer:   true,
 		logFilter:    "all",
 		keys: chatKeyMap{
 			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
@@ -405,7 +420,8 @@ func runChatTUI(runtime *chatRuntime) int {
 	if runtime.jobs != nil {
 		jobs = jobToolAdapter{manager: runtime.jobs}
 	}
-	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs)
+	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs, &tuiAuditSink{events: events})
+	runtime.attachAgentEventSink()
 	runtime.session.SetAgent(runtime.loop)
 	if runtime.jobs != nil {
 		runtime.jobs.SetNotifier(func(text string) {
@@ -890,6 +906,9 @@ func (m *chatTUIModel) renderLogs() string {
 		switch entry.kind {
 		case "tools":
 			prefix = "tool"
+		case "audit":
+			prefix = "audit"
+			style = chipMutedStyle
 		case "approval":
 			prefix = "ask"
 			style = systemLabelStyle
@@ -1015,7 +1034,7 @@ func classifyLogKind(line string) string {
 		return "error"
 	case strings.Contains(lower, "run_command") || strings.Contains(lower, "read_file") || strings.Contains(lower, "write_file") || strings.Contains(lower, "grep") || strings.Contains(lower, "web_search") || strings.Contains(lower, "fetch_url") || strings.Contains(lower, "list_files"):
 		return "tools"
-	case strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing "):
+	case strings.Contains(lower, "requesting model") || strings.Contains(lower, "model response") || strings.Contains(lower, "executing "):
 		return "steps"
 	default:
 		return "steps"
@@ -1029,6 +1048,8 @@ func nextLogFilter(current string) string {
 	case "steps":
 		return "tools"
 	case "tools":
+		return "audit"
+	case "audit":
 		return "error"
 	case "error":
 		return "approval"
@@ -1248,6 +1269,8 @@ func (m *chatTUIModel) appendActivityEntry(kind, text string) {
 			return
 		}
 		m.entries = append(m.entries, tuiEntry{role: "activity", text: "tool\n" + normalizeActivityContinuation(text)})
+	case kind == "audit":
+		m.entries = append(m.entries, tuiEntry{role: "activity", text: "[audit] " + strings.TrimSpace(text)})
 	default:
 		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(kind, text)})
 	}
@@ -1258,7 +1281,9 @@ func shouldSkipInlineActivity(kind, text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
-	return strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing ")
+	return strings.Contains(lower, "requesting model") ||
+		strings.Contains(lower, "model response") ||
+		strings.Contains(lower, "executing ")
 }
 
 func isToolStartLine(kind, text string) bool {
@@ -1302,6 +1327,8 @@ func formatInlineLogEntry(kind, text string) string {
 		label = "error"
 	case "approval":
 		label = "approval"
+	case "audit":
+		label = "audit"
 	}
 	return "[" + label + "] " + strings.TrimSpace(text)
 }
@@ -1318,7 +1345,9 @@ func nextStepStatus(current, kind, text string) string {
 		return text
 	}
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "requesting model") || strings.Contains(lower, "executing ") {
+	if strings.Contains(lower, "requesting model") ||
+		strings.Contains(lower, "model response") ||
+		strings.Contains(lower, "executing ") {
 		return text
 	}
 	return current
@@ -1387,3 +1416,4 @@ func approvalResponseText(answer string) string {
 
 var _ io.Writer = (*tuiLogWriter)(nil)
 var _ tools.Approver = (*tuiApprover)(nil)
+var _ tools.ToolAuditSink = (*tuiAuditSink)(nil)

@@ -194,3 +194,14 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
 	}
 }
+
+func TestNextLogFilterIncludesAudit(t *testing.T) {
+	seq := []string{"all", "steps", "tools", "audit", "error", "approval", "all"}
+	cur := seq[0]
+	for i := 1; i < len(seq); i++ {
+		cur = nextLogFilter(cur)
+		if cur != seq[i] {
+			t.Fatalf("unexpected filter at step %d: got %q want %q", i, cur, seq[i])
+		}
+	}
+}
