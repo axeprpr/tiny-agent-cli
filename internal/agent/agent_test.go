@@ -486,6 +486,18 @@ func TestHasConsecutiveToolErrors(t *testing.T) {
 	}
 }
 
+func TestHasConsecutiveToolErrorsStopsAtNewUserMessage(t *testing.T) {
+	msgs := []model.Message{
+		{Role: "tool", Content: "tool error: failed one"},
+		{Role: "tool", Content: "tool error: failed two"},
+		{Role: "tool", Content: "tool error: failed three"},
+		{Role: "user", Content: "try again with a different approach"},
+	}
+	if hasConsecutiveToolErrors(msgs, 3) {
+		t.Fatalf("expected new user message to reset recoverable tool error stop")
+	}
+}
+
 func TestHasRepeatedToolLoop(t *testing.T) {
 	call := model.ToolCall{
 		ID:   "1",
@@ -561,5 +573,63 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected todo reminder in request 4 messages: %#v", fourth.Messages)
+	}
+}
+
+func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					{
+						ID:   "call-1",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "missing_tool_a",
+							Arguments: `{}`,
+						},
+					},
+					{
+						ID:   "call-2",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "missing_tool_b",
+							Arguments: `{}`,
+						},
+					},
+					{
+						ID:   "call-3",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "missing_tool_c",
+							Arguments: `{}`,
+						},
+					},
+				},
+			}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "recovered"}}}},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+
+	first, err := session.RunTask(context.Background(), "try the broken tools")
+	if err != nil {
+		t.Fatalf("first run task: %v", err)
+	}
+	if !strings.Contains(first.Final, "repeated tool failures") {
+		t.Fatalf("expected recoverable tool failure stop, got %q", first.Final)
+	}
+
+	second, err := session.RunTask(context.Background(), "continue without those tools")
+	if err != nil {
+		t.Fatalf("second run task: %v", err)
+	}
+	if second.Final != "recovered" {
+		t.Fatalf("expected recovery response, got %q", second.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected second request after recovery, got %d", len(client.requests))
 	}
 }

@@ -141,6 +141,28 @@ func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
 	}
 }
 
+func TestRenderLogsSkipsHiddenInternalStepLines(t *testing.T) {
+	m := chatTUIModel{
+		logViewport: viewport.New(80, 10),
+		logs: []tuiLogEntry{
+			{kind: "steps", text: "requesting model turn=1 messages=2 tools=15 approx_chars=2030"},
+			{kind: "steps", text: "executing 1 tool(s)"},
+		},
+		logFilter: "all",
+	}
+
+	got := m.renderLogs()
+	if strings.Contains(got, "requesting model") {
+		t.Fatalf("expected hidden step line to be omitted, got %q", got)
+	}
+	if !strings.Contains(got, "executing 1 tool(s)") {
+		t.Fatalf("expected visible step line to remain, got %q", got)
+	}
+	if count := m.filteredLogCount(); count != 1 {
+		t.Fatalf("expected hidden log lines to be excluded from count, got %d", count)
+	}
+}
+
 func TestComposerHintHiddenByDefault(t *testing.T) {
 	m := chatTUIModel{}
 	if got := m.composerHint(); got != "" {

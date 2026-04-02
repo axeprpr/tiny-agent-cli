@@ -531,7 +531,10 @@ func hasConsecutiveToolErrors(messages []model.Message, threshold int) bool {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role != "tool" {
-			continue
+			if count > 0 {
+				break
+			}
+			return false
 		}
 		text := strings.ToLower(strings.TrimSpace(model.ContentString(msg.Content)))
 		if strings.HasPrefix(text, "tool error:") {

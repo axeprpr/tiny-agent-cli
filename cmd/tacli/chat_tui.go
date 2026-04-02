@@ -75,7 +75,7 @@ func (w *tuiLogWriter) Write(p []byte) (int, error) {
 	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && !isHiddenActivityLogLine(line) {
 			w.events <- tuiLogMsg{kind: classifyLogKind(line), text: line}
 		}
 	}
@@ -888,6 +888,9 @@ func (m *chatTUIModel) renderLogs() string {
 	width := max(16, m.logViewport.Width-2)
 	filtered := make([]tuiLogEntry, 0, len(m.logs))
 	for _, entry := range m.logs {
+		if !isUserVisibleLogEntry(entry) {
+			continue
+		}
 		if m.logFilter == "all" || m.logFilter == entry.kind {
 			filtered = append(filtered, entry)
 		}
@@ -1214,12 +1217,12 @@ func todoLine(item tools.TodoItem) string {
 }
 
 func (m chatTUIModel) filteredLogCount() int {
-	if m.logFilter == "all" {
-		return len(m.logs)
-	}
 	count := 0
 	for _, entry := range m.logs {
-		if entry.kind == m.logFilter {
+		if !isUserVisibleLogEntry(entry) {
+			continue
+		}
+		if m.logFilter == "all" || entry.kind == m.logFilter {
 			count++
 		}
 	}
@@ -1280,10 +1283,10 @@ func shouldSkipInlineActivity(kind, text string) bool {
 	if kind != "steps" {
 		return false
 	}
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "requesting model") ||
-		strings.Contains(lower, "model response") ||
-		strings.Contains(lower, "executing ")
+	if isHiddenActivityLogLine(text) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(text), "executing ")
 }
 
 func isToolStartLine(kind, text string) bool {
@@ -1344,13 +1347,29 @@ func nextStepStatus(current, kind, text string) string {
 	if kind == "tools" || isToolResultLine(text) {
 		return text
 	}
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "requesting model") ||
-		strings.Contains(lower, "model response") ||
-		strings.Contains(lower, "executing ") {
+	if isHiddenActivityLogLine(text) {
+		return current
+	}
+	if strings.Contains(strings.ToLower(text), "executing ") {
 		return text
 	}
 	return current
+}
+
+func isHiddenActivityLogLine(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(lower, "requesting model") ||
+		strings.Contains(lower, "model response")
+}
+
+func isUserVisibleLogEntry(entry tuiLogEntry) bool {
+	if strings.TrimSpace(entry.text) == "" {
+		return false
+	}
+	if entry.kind == "steps" && isHiddenActivityLogLine(entry.text) {
+		return false
+	}
+	return true
 }
 
 func renderApprovalInlineText(msg *tuiApprovalMsg) string {
