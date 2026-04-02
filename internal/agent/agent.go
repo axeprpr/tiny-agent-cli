@@ -178,16 +178,25 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			"tools":        len(req.Tools),
 			"approx_chars": conversationSize(req.Messages),
 		})
-		resp, err := s.agent.client.Complete(ctx, req)
-		if err != nil {
-			if isContextLengthError(err) {
-				if s.compactForRetry() {
-					s.agent.logf("context too long, retrying with shorter history\n")
-					req = s.buildRequest()
-					s.agent.logModelRequest(turn, req)
-					resp, err = s.agent.client.Complete(ctx, req)
-				}
+		const maxContextRetries = 2
+		var (
+			resp model.Response
+			err  error
+		)
+		for retry := 0; retry <= maxContextRetries; retry++ {
+			resp, err = s.agent.client.Complete(ctx, req)
+			if err == nil {
+				break
 			}
+			if !isContextLengthError(err) || retry == maxContextRetries {
+				break
+			}
+			if !s.compactForRetry() {
+				break
+			}
+			s.agent.logf("context too long, retrying with shorter history\n")
+			req = s.buildRequest()
+			s.agent.logModelRequest(turn, req)
 		}
 		if err != nil {
 			return Result{}, err

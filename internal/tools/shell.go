@@ -94,8 +94,8 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 
 	data, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(data))
-	if len(text) > 8192 {
-		text = text[:8192] + "\n...[truncated]"
+	if len(text) > 32768 {
+		text = text[:32768] + "\n...[truncated]"
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {

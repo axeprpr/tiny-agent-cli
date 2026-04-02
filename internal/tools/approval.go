@@ -181,7 +181,7 @@ func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string)
 
 func WriteApprovalKey(path, content string) string {
 	h := sha256.Sum256([]byte(content))
-	return path + "\x00" + fmt.Sprintf("%x", h[:16])
+	return path + "\x00" + fmt.Sprintf("%x", h[:])
 }
 
 func normalizeApprovalMode(mode string) string {

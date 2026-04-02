@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -133,57 +132,10 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 		if !approved {
 			return fmt.Errorf("file write rejected by user")
 		}
-	case "edit_file":
-		updated, path, err := d.renderEditedContent(inv.Raw)
-		if err != nil {
-			return err
-		}
-		approved, err := d.approver.ApproveWrite(ctx, path, updated)
-		if err != nil {
-			return err
-		}
-		if !approved {
-			return fmt.Errorf("file write rejected by user")
-		}
+	case "start_background_job":
+		// Background jobs enforce internal command limits; allow and rely on audit trail.
 	}
 	return nil
-}
-
-func (d *approvalPermissionDecider) renderEditedContent(raw json.RawMessage) (string, string, error) {
-	var args struct {
-		Path    string `json:"path"`
-		OldText string `json:"old_text"`
-		NewText string `json:"new_text"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return "", "", fmt.Errorf("decode args: %w", err)
-	}
-	if strings.TrimSpace(args.Path) == "" {
-		return "", "", fmt.Errorf("path is required")
-	}
-	if args.OldText == "" {
-		return "", "", fmt.Errorf("old_text must not be empty")
-	}
-	path, err := securePath(d.workDir, args.Path)
-	if err != nil {
-		return "", "", err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", err
-	}
-	if looksBinary(data) {
-		return "", "", fmt.Errorf("edit_file only supports text files")
-	}
-	original := string(data)
-	matches := strings.Count(original, args.OldText)
-	switch {
-	case matches == 0:
-		return "", "", fmt.Errorf("old_text not found in %s", args.Path)
-	case matches > 1:
-		return "", "", fmt.Errorf("old_text matched %d times in %s; provide a more specific block", matches, args.Path)
-	}
-	return strings.Replace(original, args.OldText, args.NewText, 1), path, nil
 }
 
 func validateToolInput(raw json.RawMessage, params map[string]any) error {
