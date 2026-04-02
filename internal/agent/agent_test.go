@@ -367,6 +367,62 @@ func TestRunTaskStreamingSeparatesMultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestRunTaskStreamingFiltersThinkingTagsInTokens(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "ok"},
+					},
+				},
+			},
+		},
+	}
+	registry := tools.NewRegistry(".", "bash", time.Second, nil)
+	agent := New(client, registry, 32768, nil)
+	streamClient := &scriptedStreamClient{
+		sequences: [][]model.StreamChunk{
+			{
+				{
+					Choices: []model.StreamChoice{
+						{
+							Index: 0,
+							Delta: model.StreamDelta{
+								Role:    "assistant",
+								Content: "Visible <thi",
+							},
+						},
+					},
+				},
+				{
+					Choices: []model.StreamChoice{
+						{
+							Index: 0,
+							Delta: model.StreamDelta{
+								Content: "nk>hidden</thinking </thinking> done",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	agent.SetStreamClient(streamClient)
+
+	session := agent.NewSession()
+	var streamed strings.Builder
+	_, err := session.RunTaskStreaming(context.Background(), "run", func(token string) {
+		streamed.WriteString(token)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := streamed.String(); got != "Visible  done" {
+		t.Fatalf("unexpected streamed content: %q", got)
+	}
+}
+
 func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{

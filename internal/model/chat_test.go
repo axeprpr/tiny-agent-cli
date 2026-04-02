@@ -13,3 +13,32 @@ func TestContentStringFromArray(t *testing.T) {
 		t.Fatalf("unexpected content string: %q", got)
 	}
 }
+
+func TestStripThinkingTagsRemovesBlockAndMixedClosers(t *testing.T) {
+	input := "start<think>private</thinking> end"
+	got := StripThinkingTags(input)
+	if got != "start end" {
+		t.Fatalf("unexpected stripped text: %q", got)
+	}
+}
+
+func TestThinkingTagFilterHandlesSplitStreamingTags(t *testing.T) {
+	var filter ThinkingTagFilter
+	var out string
+	out += filter.Strip("hello <thi")
+	out += filter.Strip("nk>hidden")
+	out += filter.Strip(" stuff</think> world")
+	out += filter.Flush()
+
+	if out != "hello  world" {
+		t.Fatalf("unexpected streamed output: %q", out)
+	}
+}
+
+func TestStripThinkingTagsDropsMalformedCloseTagVariant(t *testing.T) {
+	input := "A<think>secret</thinking </thinking> B"
+	got := StripThinkingTags(input)
+	if got != "A B" {
+		t.Fatalf("unexpected malformed close handling: %q", got)
+	}
+}

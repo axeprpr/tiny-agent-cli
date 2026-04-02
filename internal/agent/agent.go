@@ -287,6 +287,17 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 	})
 
 	turn := 0
+	var streamFilter model.ThinkingTagFilter
+	emitToken := onToken
+	if onToken != nil {
+		emitToken = func(token string) {
+			visible := streamFilter.Strip(token)
+			if visible != "" {
+				onToken(visible)
+			}
+		}
+	}
+
 	for {
 		turn++
 		s.maybeInjectTodoReminder()
@@ -320,8 +331,8 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 				}
 				if d.Content != "" {
 					contentBuf.WriteString(d.Content)
-					if onToken != nil {
-						onToken(d.Content)
+					if emitToken != nil {
+						emitToken(d.Content)
 					}
 				}
 				for _, tc := range d.ToolCalls {
@@ -348,6 +359,11 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 						}
 					}
 				}
+			}
+		}
+		if emitToken != nil {
+			if tail := streamFilter.Flush(); tail != "" {
+				onToken(tail)
 			}
 		}
 		if err := <-errc; err != nil {

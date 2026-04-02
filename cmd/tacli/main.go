@@ -1779,6 +1779,7 @@ func lastNonEmptyLine(text string) string {
 }
 
 func formatRunOutput(text, mode string) string {
+	text = model.StripThinkingTags(text)
 	switch mode {
 	case "terminal":
 		return agent.FormatTerminalOutput(text)
