@@ -11,3 +11,4 @@ coverage/
 *.out
 *.test
 .vercel
+cmd/tacli/.tacli/tasks-v2.json
