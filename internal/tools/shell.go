@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"tiny-agent-cli/internal/model"
 )
@@ -18,6 +21,8 @@ type runCommandTool struct {
 	commandTimeout time.Duration
 	approver       Approver
 }
+
+const defaultCommandTimeout = 30 * time.Second
 
 func newRunCommandTool(workDir, shell string, commandTimeout time.Duration, approver Approver) Tool {
 	return &runCommandTool{
@@ -81,6 +86,9 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	}
 
 	timeout := t.commandTimeout
+	if timeout <= 0 {
+		timeout = defaultCommandTimeout
+	}
 	if args.TimeoutSeconds > 0 {
 		timeout = time.Duration(args.TimeoutSeconds) * time.Second
 	}
@@ -91,6 +99,7 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	name, shellArgs := shellInvocation(t.shell, command)
 	cmd := exec.CommandContext(runCtx, name, shellArgs...)
 	cmd.Dir = t.workDir
+	configureCommandCancellation(cmd)
 
 	data, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(data))
@@ -121,9 +130,8 @@ func shellInvocation(shell, command string) (string, []string) {
 }
 
 func validateCommand(command string) error {
-	lower := strings.ToLower(command)
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
 	blocked := []string{
-		"rm -rf /",
 		"shutdown",
 		"reboot",
 		"poweroff",
@@ -136,9 +144,183 @@ func validateCommand(command string) error {
 	}
 
 	for _, token := range blocked {
-		if strings.Contains(lower, token) {
+		if strings.Contains(normalized, token) {
 			return fmt.Errorf("blocked command pattern: %s", token)
 		}
 	}
+
+	commands := splitShellCommands(command)
+	for _, part := range commands {
+		if isDangerousRMInvocation(part) {
+			return fmt.Errorf("blocked command pattern: rm -rf /")
+		}
+	}
 	return nil
+}
+
+func splitShellCommands(command string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune
+	escape := false
+
+	flush := func() {
+		part := strings.TrimSpace(b.String())
+		if part != "" {
+			out = append(out, part)
+		}
+		b.Reset()
+	}
+
+	for _, r := range command {
+		if escape {
+			b.WriteRune(r)
+			escape = false
+			continue
+		}
+		if quote != 0 {
+			if r == '\\' && quote == '"' {
+				escape = true
+				b.WriteRune(r)
+				continue
+			}
+			if r == quote {
+				quote = 0
+			}
+			b.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			b.WriteRune(r)
+		case ';', '\n':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+func isDangerousRMInvocation(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+
+	cmdIndex := 0
+	for cmdIndex < len(fields) && isEnvAssignment(fields[cmdIndex]) {
+		cmdIndex++
+	}
+	if cmdIndex >= len(fields) {
+		return false
+	}
+	if trimShellPunctuation(fields[cmdIndex]) != "rm" {
+		return false
+	}
+
+	recursive := false
+	force := false
+	afterTerminator := false
+	for _, rawArg := range fields[cmdIndex+1:] {
+		arg := trimShellPunctuation(rawArg)
+		if arg == "" {
+			continue
+		}
+		if !afterTerminator && arg == "--" {
+			afterTerminator = true
+			continue
+		}
+		if !afterTerminator && strings.HasPrefix(arg, "-") {
+			switch arg {
+			case "-r", "-R", "--recursive":
+				recursive = true
+			case "-f", "--force":
+				force = true
+			default:
+				if strings.HasPrefix(arg, "--") {
+					continue
+				}
+				for _, ch := range arg[1:] {
+					switch ch {
+					case 'r', 'R':
+						recursive = true
+					case 'f':
+						force = true
+					}
+				}
+			}
+			continue
+		}
+		if recursive && force && isDangerousRMTarget(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimShellPunctuation(token string) string {
+	return strings.Trim(token, " \t\r\n;&|")
+}
+
+func isEnvAssignment(token string) bool {
+	if token == "" {
+		return false
+	}
+	parts := strings.SplitN(token, "=", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	key := parts[0]
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if i == 0 {
+			if !unicode.IsLetter(r) && r != '_' {
+				return false
+			}
+			continue
+		}
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+var shellVarPattern = regexp.MustCompile(`\$(\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+
+func isDangerousRMTarget(arg string) bool {
+	candidate := strings.TrimSpace(arg)
+	candidate = strings.Trim(candidate, `"'`)
+	if candidate == "" {
+		return false
+	}
+	if strings.HasPrefix(candidate, "-") {
+		return false
+	}
+
+	collapsed := shellVarPattern.ReplaceAllString(candidate, "")
+	collapsed = strings.TrimSpace(collapsed)
+	if collapsed == "" {
+		return false
+	}
+
+	if strings.HasPrefix(collapsed, "/") {
+		cleaned := path.Clean(collapsed)
+		if cleaned == "/" {
+			return true
+		}
+		rest := strings.TrimLeft(collapsed, "/")
+		if rest == "" {
+			return true
+		}
+		if strings.Trim(rest, "*?.") == "" {
+			return true
+		}
+	}
+	return false
 }

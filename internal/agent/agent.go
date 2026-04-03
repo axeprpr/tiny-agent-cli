@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/tools"
@@ -177,10 +179,10 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		req := s.buildRequest()
 		s.agent.logModelRequest(turn, req)
 		s.agent.emitEvent(ctx, "model_request", map[string]any{
-			"turn":         turn,
-			"messages":     len(req.Messages),
-			"tools":        len(req.Tools),
-			"approx_chars": conversationSize(req.Messages),
+			"turn":          turn,
+			"messages":      len(req.Messages),
+			"tools":         len(req.Tools),
+			"approx_tokens": conversationSize(req.Messages),
 		})
 		const maxContextRetries = 2
 		var (
@@ -310,10 +312,10 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		req := s.buildRequest()
 		s.agent.logModelRequest(turn, req)
 		s.agent.emitEvent(ctx, "model_request", map[string]any{
-			"turn":         turn,
-			"messages":     len(req.Messages),
-			"tools":        len(req.Tools),
-			"approx_chars": conversationSize(req.Messages),
+			"turn":          turn,
+			"messages":      len(req.Messages),
+			"tools":         len(req.Tools),
+			"approx_tokens": conversationSize(req.Messages),
 		})
 
 		chunks, errc := s.agent.streamClient.CompleteStream(ctx, req)
@@ -627,17 +629,17 @@ func (s *Session) compactForRetry() bool {
 
 func contextSoftLimitChars(window int) int {
 	window = normalizeContextWindow(window)
-	return max(12000, window*4*85/100)
+	return max(1024, window*85/100)
 }
 
 func contextTargetChars(window int) int {
 	window = normalizeContextWindow(window)
-	return max(9000, window*4*65/100)
+	return max(768, window*65/100)
 }
 
 func contextRetryChars(window int) int {
 	window = normalizeContextWindow(window)
-	return max(6000, window*4/2)
+	return max(512, window/2)
 }
 
 func normalizeContextWindow(window int) int {
@@ -967,11 +969,50 @@ func conversationSize(messages []model.Message) int {
 }
 
 func messageSize(msg model.Message) int {
-	size := len(model.ContentString(msg.Content)) + len(msg.Role) + len(msg.ToolCallID)
+	size := 4 + approxTokenCount(model.ContentString(msg.Content)) + approxTokenCount(msg.Role) + approxTokenCount(msg.ToolCallID)
 	for _, call := range msg.ToolCalls {
-		size += len(call.ID) + len(call.Type) + len(call.Function.Name) + len(call.Function.Arguments)
+		size += 2 + approxTokenCount(call.ID) + approxTokenCount(call.Type) + approxTokenCount(call.Function.Name) + approxTokenCount(call.Function.Arguments)
 	}
 	return size
+}
+
+func approxTokenCount(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+
+	asciiBytes := 0
+	tokens := 0
+	for _, r := range text {
+		switch {
+		case r <= unicode.MaxASCII:
+			if !unicode.IsSpace(r) {
+				asciiBytes++
+			}
+		case isCJKRune(r):
+			tokens += 2
+		default:
+			tokens++
+		}
+	}
+	if asciiBytes > 0 {
+		tokens += (asciiBytes + 3) / 4
+	}
+	if tokens == 0 {
+		return 1
+	}
+	return tokens
+}
+
+func isCJKRune(r rune) bool {
+	if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
+		return true
+	}
+	if (r >= 0x3000 && r <= 0x303F) || (r >= 0xFF00 && r <= 0xFFEF) {
+		return true
+	}
+	return utf8.RuneLen(r) >= 3
 }
 
 func isContextLengthError(err error) bool {
@@ -993,7 +1034,7 @@ func (a *Agent) logf(format string, args ...any) {
 
 func (a *Agent) logModelRequest(turn int, req model.Request) {
 	a.logf(
-		"requesting model turn=%d messages=%d tools=%d approx_chars=%d\n",
+		"requesting model turn=%d messages=%d tools=%d approx_tokens=%d\n",
 		turn,
 		len(req.Messages),
 		len(req.Tools),

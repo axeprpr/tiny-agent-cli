@@ -74,7 +74,7 @@ func TestCompactConversationAddsSyntheticSummaryForOlderTurns(t *testing.T) {
 		{Role: "assistant", Content: "recent answer"},
 	}
 
-	got := compactConversation(messages, 600)
+	got := compactConversation(messages, 220)
 	if len(got) < 4 {
 		t.Fatalf("expected summarized history plus recent messages, got %#v", got)
 	}
@@ -588,6 +588,7 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
 func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{
@@ -643,5 +644,23 @@ func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	}
 	if len(client.requests) != 2 {
 		t.Fatalf("expected second request after recovery, got %d", len(client.requests))
+=======
+func TestApproxTokenCountTreatsCJKAsHeavier(t *testing.T) {
+	ascii := approxTokenCount("hello world")
+	cjk := approxTokenCount("你好世界")
+	if cjk <= ascii {
+		t.Fatalf("expected CJK to cost more tokens: ascii=%d cjk=%d", ascii, cjk)
+	}
+}
+
+func TestConversationSizeUsesTokenApproximation(t *testing.T) {
+	ascii := conversationSize([]model.Message{{Role: "user", Content: strings.Repeat("a", 40)}})
+	cjk := conversationSize([]model.Message{{Role: "user", Content: "你你你你你你你你你你"}})
+	if cjk <= 0 || ascii <= 0 {
+		t.Fatalf("unexpected sizes: ascii=%d cjk=%d", ascii, cjk)
+	}
+	if cjk <= ascii/2 {
+		t.Fatalf("expected CJK size not to be heavily undercounted: ascii=%d cjk=%d", ascii, cjk)
+>>>>>>> 30aa4ed (feat: P2/P3 fixes - shell timeout, context tokens, web search fallback, validateCommand)
 	}
 }

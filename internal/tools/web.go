@@ -84,12 +84,14 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 }
 
 type webSearchTool struct {
-	client *http.Client
+	client          *http.Client
+	searchEndpoints func(query string) []string
 }
 
 func newWebSearchTool() Tool {
 	return &webSearchTool{
-		client: &http.Client{Timeout: 20 * time.Second},
+		client:          &http.Client{Timeout: 20 * time.Second},
+		searchEndpoints: defaultSearchEndpoints,
 	}
 }
 
@@ -128,25 +130,41 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		return "", fmt.Errorf("query is required")
 	}
 
-	endpoint := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return "", err
+	endpoints := defaultSearchEndpoints(query)
+	if t.searchEndpoints != nil {
+		endpoints = t.searchEndpoints(query)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
+	results := []ddgResult{}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
 
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return "", err
+		resp, err := t.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		results = parseDDGResults(string(body))
+		if len(results) > 0 {
+			break
+		}
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-	if err != nil {
-		return "", err
+	if len(results) == 0 && lastErr != nil {
+		return "", lastErr
 	}
 
-	results := parseDDGResults(string(body))
 	var lines []string
 	lines = append(lines, "query: "+query)
 
@@ -183,8 +201,16 @@ var (
 )
 
 func parseDDGResults(html string) []ddgResult {
-	blocks := ddgResultBlockPattern.FindAllStringSubmatch(html, 16)
-	snippets := ddgSnippetPattern.FindAllStringSubmatch(html, 16)
+	results := parseDDGPrimaryResults(html)
+	if len(results) > 0 {
+		return results
+	}
+	return parseDDGFallbackResults(html)
+}
+
+func parseDDGPrimaryResults(html string) []ddgResult {
+	blocks := ddgResultBlockPattern.FindAllStringSubmatch(html, 24)
+	snippets := ddgSnippetPattern.FindAllStringSubmatch(html, 24)
 
 	var results []ddgResult
 	for i, block := range blocks {
@@ -218,6 +244,71 @@ func parseDDGResults(html string) []ddgResult {
 		})
 	}
 	return results
+}
+
+var ddgFallbackAnchorPattern = regexp.MustCompile(`(?si)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+
+func parseDDGFallbackResults(html string) []ddgResult {
+	anchors := ddgFallbackAnchorPattern.FindAllStringSubmatch(html, 64)
+	if len(anchors) == 0 {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	var out []ddgResult
+	for _, m := range anchors {
+		if len(out) >= 8 {
+			break
+		}
+		rawURL := strings.TrimSpace(m[1])
+		if rawURL == "" || strings.HasPrefix(rawURL, "#") || strings.HasPrefix(strings.ToLower(rawURL), "javascript:") {
+			continue
+		}
+		targetURL := normalizeDDGURL(rawURL)
+		if targetURL == "" || seen[targetURL] {
+			continue
+		}
+		title := strings.TrimSpace(stripTags(m[2]))
+		if title == "" || len(title) < 3 {
+			continue
+		}
+		seen[targetURL] = true
+		out = append(out, ddgResult{
+			title: title,
+			url:   targetURL,
+		})
+	}
+	return out
+}
+
+func normalizeDDGURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "/l/?") || strings.Contains(raw, "uddg=") {
+		if m := ddgURLPattern.FindStringSubmatch(raw); len(m) > 1 {
+			if decoded, err := url.QueryUnescape(m[1]); err == nil {
+				raw = decoded
+			}
+		}
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	lower := strings.ToLower(raw)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return ""
+	}
+	return raw
+}
+
+func defaultSearchEndpoints(query string) []string {
+	escaped := url.QueryEscape(query)
+	return []string{
+		"https://html.duckduckgo.com/html/?q=" + escaped,
+		"https://lite.duckduckgo.com/lite/?q=" + escaped,
+	}
 }
 
 func stripTags(s string) string {
