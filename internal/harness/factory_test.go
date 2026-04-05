@@ -35,8 +35,10 @@ func TestBuildPromptContextUsesSortedToolNamesAndRole(t *testing.T) {
 	expectedToolNames := []string{
 		"edit_file",
 		"fetch_url",
+		"glob_search",
 		"grep",
 		"list_files",
+		"list_mcp_servers",
 		"read_file",
 		"run_command",
 		"show_todo",

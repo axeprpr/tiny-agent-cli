@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"tiny-agent-cli/internal/model/openaiapi"
 	"tiny-agent-cli/internal/plugins"
 	"tiny-agent-cli/internal/session"
+	"tiny-agent-cli/internal/transport"
 	"tiny-agent-cli/internal/tools"
 	"tiny-agent-cli/internal/trace"
 )
@@ -192,15 +194,63 @@ func runTask(args []string) int {
 		return 2
 	}
 
-	loop, _ := buildAgent(cfg, reader)
-	result, err := loop.Run(context.Background(), task)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
-		return 1
+	factory := harness.NewFactory(cfg)
+	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
+	logWriter := io.Writer(os.Stderr)
+	if transport.IsStructuredMode(opts.outputMode) {
+		logWriter = io.Discard
 	}
+	loop := factory.NewAgent(approver, logWriter, nil, nil)
 
-	fmt.Println(formatRunOutput(result.Final, opts.outputMode))
-	return 0
+	switch transport.NormalizeOutputMode(opts.outputMode) {
+	case transport.OutputJSON:
+		result, err := loop.Run(context.Background(), task)
+		payloadMap := map[string]any{
+			"type":  "result",
+			"final": formatRunOutput(result.Final, transport.OutputRaw),
+			"steps": result.Steps,
+		}
+		if err != nil {
+			payloadMap["type"] = "error"
+			payloadMap["error"] = err.Error()
+		}
+		payload, marshalErr := json.Marshal(payloadMap)
+		if marshalErr != nil {
+			fmt.Fprintf(os.Stderr, "json output error: %v\n", marshalErr)
+			return 1
+		}
+		fmt.Println(string(payload))
+		if err != nil {
+			return 1
+		}
+		return 0
+	case transport.OutputJSONL, transport.OutputStructured:
+		writer := transport.NewStructuredWriter(os.Stdout)
+		loop.SetEventSink(transport.AgentEventSink{Writer: writer})
+		_ = writer.Emit("run_start", map[string]any{
+			"task":     task,
+			"model":    cfg.Model,
+			"workdir":  cfg.WorkDir,
+			"approval": cfg.ApprovalMode,
+		})
+		result, err := loop.NewSession().RunTaskStreaming(context.Background(), task, func(token string) {
+			_ = writer.EmitToken(token)
+		})
+		if err != nil {
+			_ = writer.EmitError(err)
+			return 1
+		}
+		_ = writer.EmitResult(formatRunOutput(result.Final, transport.OutputRaw), result.Steps)
+		return 0
+	default:
+		result, err := loop.Run(context.Background(), task)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
+			return 1
+		}
+		fmt.Println(formatRunOutput(result.Final, opts.outputMode))
+		return 0
+	}
 }
 
 func runChat(args []string) int {
@@ -1833,9 +1883,11 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	switch name {
 	case "run":
 		fs.BoolVar(&dangerously, "dangerously", false, "skip command and file-write approval for this run")
+		fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode (raw|json|jsonl|structured)")
 	case "chat":
 		fs.BoolVar(&dangerously, "dangerously", false, "start chat in dangerously mode")
 		fs.StringVar(&opts.session, "session", "", "chat session name to resume or create")
+		fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode (terminal|raw)")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -1855,6 +1907,13 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	case tools.ApprovalDangerously:
 	default:
 		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid approval mode %q", cfg.ApprovalMode)
+	}
+	opts.outputMode = transport.NormalizeOutputMode(opts.outputMode)
+	if opts.outputMode == "" {
+		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid output mode")
+	}
+	if name == "chat" && transport.IsStructuredMode(opts.outputMode) {
+		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("structured output mode is only supported for run")
 	}
 
 	return cfg, opts, fs.Args(), bufio.NewReader(os.Stdin), nil

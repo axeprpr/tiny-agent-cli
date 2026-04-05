@@ -16,6 +16,7 @@ import (
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/session"
+	"tiny-agent-cli/internal/transport"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -164,6 +165,23 @@ func TestStartupMode(t *testing.T) {
 				t.Fatalf("unexpected mode: got %q want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseAgentFlagsValidatesOutputMode(t *testing.T) {
+	_, opts, _, _, err := parseAgentFlags("run", []string{"--output", "jsonl", "inspect repo"})
+	if err != nil {
+		t.Fatalf("parseAgentFlags returned error: %v", err)
+	}
+	if opts.outputMode != transport.OutputJSONL {
+		t.Fatalf("unexpected output mode: %q", opts.outputMode)
+	}
+}
+
+func TestParseAgentFlagsRejectsStructuredChatOutput(t *testing.T) {
+	_, _, _, _, err := parseAgentFlags("chat", []string{"--output", "json"})
+	if err == nil {
+		t.Fatalf("expected error for structured chat output")
 	}
 }
 
