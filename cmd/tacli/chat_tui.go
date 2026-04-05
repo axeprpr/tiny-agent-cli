@@ -55,11 +55,6 @@ type tuiEntry struct {
 	text string
 }
 
-type tuiLogEntry struct {
-	kind string
-	text string
-}
-
 type tuiLogWriter struct {
 	events chan tea.Msg
 }
@@ -208,8 +203,6 @@ type chatKeyMap struct {
 	Newline  key.Binding
 	Quit     key.Binding
 	Help     key.Binding
-	Switch   key.Binding
-	Filter   key.Binding
 	PageDown key.Binding
 	PageUp   key.Binding
 	Home     key.Binding
@@ -222,7 +215,7 @@ func (k chatKeyMap) ShortHelp() []key.Binding {
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Switch, k.Filter, k.Help, k.Quit},
+		{k.Send, k.Newline, k.Help, k.Quit},
 		{k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
@@ -231,13 +224,11 @@ type chatTUIModel struct {
 	runtime       *chatRuntime
 	events        chan tea.Msg
 	chatViewport  viewport.Model
-	logViewport   viewport.Model
 	input         textarea.Model
 	spinner       spinner.Model
 	help          help.Model
 	keys          chatKeyMap
 	entries       []tuiEntry
-	logs          []tuiLogEntry
 	approval      *tuiApprovalMsg
 	width         int
 	height        int
@@ -245,12 +236,8 @@ type chatTUIModel struct {
 	stepText      string
 	statusText    string
 	showFullHelp  bool
-	showDrawer    bool
-	logFilter     string
 	entriesDirty  bool
-	logsDirty     bool
 	entriesWidth  int
-	logsWidth     int
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
@@ -350,9 +337,6 @@ var (
 
 	conversationStyle = lipgloss.NewStyle().
 				Padding(0, 0, 1, 0)
-
-	activityDrawerStyle = lipgloss.NewStyle().
-				Padding(0, 0, 0, 2)
 )
 
 func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
@@ -370,24 +354,16 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	chatVP := viewport.New(0, 0)
 	chatVP.MouseWheelEnabled = true
 
-	logVP := viewport.New(0, 0)
-	logVP.MouseWheelEnabled = true
-
 	m := chatTUIModel{
 		runtime:      runtime,
 		events:       events,
 		input:        ta,
 		spinner:      sp,
 		chatViewport: chatVP,
-		logViewport:  logVP,
 		help:         help.New(),
-		showDrawer:   true,
-		logFilter:    "all",
 		keys: chatKeyMap{
 			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:  key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Switch:   key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "toggle activity")),
-			Filter:   key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "filter logs")),
 			Help:     key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 			PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
@@ -396,7 +372,6 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			End:      key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
 		entriesDirty: true,
-		logsDirty:    true,
 	}
 
 	for _, msg := range runtime.session.Messages() {
@@ -497,24 +472,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			keyHandled = true
 			m.showFullHelp = !m.showFullHelp
-		case key.Matches(msg, m.keys.Switch):
-			keyHandled = true
-			m.showDrawer = !m.showDrawer
-			if m.showDrawer {
-				m.statusText = i18n.T("tui.status.drawer.shown")
-			} else {
-				m.statusText = i18n.T("tui.status.drawer.hidden")
-			}
-		case key.Matches(msg, m.keys.Filter):
-			keyHandled = true
-			m.logFilter = nextLogFilter(m.logFilter)
-			if m.showDrawer {
-				m.statusText = "log filter: " + m.logFilter
-			} else {
-				m.statusText = i18n.T("tui.status.filter.updated")
-			}
-			m.logsDirty = true
-			immediateRefresh = true
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
 			m.chatViewport.HalfViewUp()
@@ -593,10 +550,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
-		m.logs = append(m.logs, tuiLogEntry{kind: msg.kind, text: msg.text})
-		capLogs(&m.logs, 500)
 		m.appendActivityEntry(msg.kind, msg.text)
-		m.logsDirty = true
 		m.entriesDirty = true
 		if !m.refreshQueued {
 			m.refreshQueued = true
@@ -605,11 +559,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiApprovalMsg:
 		m.approval = &msg
-		m.logs = append(m.logs, tuiLogEntry{kind: "approval", text: msg.title + ": " + strings.ReplaceAll(msg.body, "\n", " | ")})
-		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "approval", text: renderApprovalInlineText(&msg)})
 		m.statusText = i18n.T("tui.status.approval")
-		m.logsDirty = true
 		m.entriesDirty = true
 		m.refreshInputState()
 		immediateRefresh = true
@@ -645,11 +596,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		immediateRefresh = true
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiJobUpdateMsg:
-		m.logs = append(m.logs, tuiLogEntry{kind: "steps", text: msg.text})
-		capLogs(&m.logs, 500)
 		m.entries = append(m.entries, tuiEntry{role: "system", text: msg.text})
 		m.statusText = i18n.T("tui.status.bg.update")
-		m.logsDirty = true
 		m.entriesDirty = true
 		if !m.refreshQueued {
 			m.refreshQueued = true
@@ -671,7 +619,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiRefreshMsg:
 		m.refreshQueued = false
 		immediateRefresh = true
-		if m.entriesDirty || m.logsDirty {
+		if m.entriesDirty {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
 		}
@@ -679,9 +627,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollQueued = false
 		if m.pendingScroll != 0 {
 			applyMouseScroll(&m.chatViewport, m.pendingScroll)
-			if m.showDrawer {
-				applyMouseScroll(&m.logViewport, m.pendingScroll)
-			}
 			m.pendingScroll = 0
 		}
 	case spinner.TickMsg:
@@ -697,8 +642,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		m.chatViewport, cmd = m.chatViewport.Update(msg)
-		cmds = append(cmds, cmd)
-		m.logViewport, cmd = m.logViewport.Update(msg)
 		cmds = append(cmds, cmd)
 		// Dynamic input height
 		lines := strings.Count(m.input.Value(), "\n") + 1
@@ -717,9 +660,6 @@ func (m chatTUIModel) View() string {
 	statusParts := []string{
 		contextStatus(m.runtime, m.input.Value()),
 	}
-	if m.showDrawer {
-		statusParts = append(statusParts, "activity")
-	}
 	if m.busy {
 		statusParts = append(statusParts, m.spinner.View()+" "+m.statusText)
 	} else {
@@ -730,9 +670,6 @@ func (m chatTUIModel) View() string {
 	}
 
 	content := m.renderConversation()
-	if m.showDrawer {
-		content = lipgloss.JoinVertical(lipgloss.Left, content, "", m.renderActivityDrawer())
-	}
 
 	parts := []string{
 		header,
@@ -758,21 +695,13 @@ func (m *chatTUIModel) resize(forceRefresh bool) {
 	extra := 7 + footerHeight + m.input.Height()
 	contentWidth := max(20, m.width-4)
 	availableHeight := m.height - extra
-	drawerHeight := 0
-	if m.showDrawer {
-		drawerHeight = activityDrawerHeight(availableHeight)
-	}
-	m.chatViewport.Height = max(6, availableHeight-drawerHeight)
-	m.logViewport.Height = drawerHeight
+	m.chatViewport.Height = max(6, availableHeight)
 	newChatWidth := max(18, contentWidth)
-	newLogWidth := max(18, contentWidth)
-	widthChanged := m.chatViewport.Width != newChatWidth || m.logViewport.Width != newLogWidth
+	widthChanged := m.chatViewport.Width != newChatWidth
 	m.chatViewport.Width = newChatWidth
-	m.logViewport.Width = newLogWidth
 	m.input.SetWidth(max(20, contentWidth-4))
 	if widthChanged {
 		m.entriesDirty = true
-		m.logsDirty = true
 	}
 	if widthChanged || forceRefresh {
 		m.refreshViewports()
@@ -792,20 +721,6 @@ func (m *chatTUIModel) refreshViewports() {
 			}
 			m.entriesDirty = false
 			m.entriesWidth = m.chatViewport.Width
-		}
-	}
-	if m.logViewport.Width > 0 {
-		if m.logsDirty || m.logsWidth != m.logViewport.Width {
-			atBottom := m.logViewport.AtBottom()
-			offset := m.logViewport.YOffset
-			m.logViewport.SetContent(m.renderLogs())
-			if atBottom {
-				m.logViewport.GotoBottom()
-			} else {
-				m.logViewport.SetYOffset(offset)
-			}
-			m.logsDirty = false
-			m.logsWidth = m.logViewport.Width
 		}
 	}
 }
@@ -886,49 +801,6 @@ func (m *chatTUIModel) renderEntries() string {
 	return strings.Join(rendered, "\n\n")
 }
 
-func (m *chatTUIModel) renderLogs() string {
-	if len(m.logs) == 0 {
-		return logBodyStyle.Render(i18n.T("tui.label.no.activity"))
-	}
-	width := max(16, m.logViewport.Width-2)
-	filtered := make([]tuiLogEntry, 0, len(m.logs))
-	for _, entry := range m.logs {
-		if !isUserVisibleLogEntry(entry) {
-			continue
-		}
-		if m.logFilter == "all" || m.logFilter == entry.kind {
-			filtered = append(filtered, entry)
-		}
-	}
-	if len(filtered) == 0 {
-		return logBodyStyle.Render(i18n.T("tui.label.no.match"))
-	}
-	out := make([]string, 0, len(filtered))
-	start := 0
-	if len(filtered) > 80 {
-		start = len(filtered) - 80
-	}
-	for _, entry := range filtered[start:] {
-		style := logBodyStyle
-		prefix := "step"
-		switch entry.kind {
-		case "tools":
-			prefix = "tool"
-		case "audit":
-			prefix = "audit"
-			style = chipMutedStyle
-		case "approval":
-			prefix = "ask"
-			style = systemLabelStyle
-		case "error":
-			prefix = "error"
-			style = errorBodyStyle
-		}
-		out = append(out, style.Width(width).Render(prefix+"  "+entry.text))
-	}
-	return strings.Join(out, "\n")
-}
-
 func contextStatus(runtime *chatRuntime, input string) string {
 	window := runtime.cfg.ContextWindow
 	if window <= 0 {
@@ -990,12 +862,6 @@ func isCJK(r rune) bool {
 		(r >= 0x20000 && r <= 0x2FA1F)
 }
 
-func capLogs(logs *[]tuiLogEntry, limit int) {
-	if len(*logs) > limit {
-		*logs = (*logs)[len(*logs)-limit:]
-	}
-}
-
 func mouseScrollDelta(msg tea.MouseMsg, step int) (int, bool) {
 	if msg.Action != tea.MouseActionPress {
 		return 0, false
@@ -1020,21 +886,6 @@ func applyMouseScroll(vp *viewport.Model, delta int) {
 	}
 }
 
-func activityDrawerHeight(total int) int {
-	total = max(10, total)
-	height := total / 3
-	if height < 7 {
-		height = 7
-	}
-	if height > 12 {
-		height = 12
-	}
-	if total-height < 6 {
-		height = max(0, total-6)
-	}
-	return height
-}
-
 func classifyLogKind(line string) string {
 	lower := strings.ToLower(strings.TrimSpace(line))
 	switch {
@@ -1046,23 +897,6 @@ func classifyLogKind(line string) string {
 		return "steps"
 	default:
 		return "steps"
-	}
-}
-
-func nextLogFilter(current string) string {
-	switch current {
-	case "all":
-		return "steps"
-	case "steps":
-		return "tools"
-	case "tools":
-		return "audit"
-	case "audit":
-		return "error"
-	case "error":
-		return "approval"
-	default:
-		return "all"
 	}
 }
 
@@ -1187,17 +1021,6 @@ func (m chatTUIModel) renderTodoSummary() string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func (m chatTUIModel) renderActivityDrawer() string {
-	title := paneTitleStyle.Width(max(20, m.logViewport.Width)).Render(
-		fmt.Sprintf(i18n.T("tui.label.activity"), strings.ToUpper(m.logFilter), m.filteredLogCount()),
-	)
-	return activityDrawerStyle.Render(lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		m.logViewport.View(),
-	))
-}
-
 func (m chatTUIModel) renderComposer() string {
 	lines := []string{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
@@ -1220,19 +1043,6 @@ func todoLine(item tools.TodoItem) string {
 	default:
 		return "[todo] " + item.Text
 	}
-}
-
-func (m chatTUIModel) filteredLogCount() int {
-	count := 0
-	for _, entry := range m.logs {
-		if !isUserVisibleLogEntry(entry) {
-			continue
-		}
-		if m.logFilter == "all" || entry.kind == m.logFilter {
-			count++
-		}
-	}
-	return count
 }
 
 func (m *chatTUIModel) refreshInputState() {
@@ -1368,28 +1178,8 @@ func isHiddenActivityLogLine(text string) bool {
 		strings.Contains(lower, "model response")
 }
 
-func isUserVisibleLogEntry(entry tuiLogEntry) bool {
-	if strings.TrimSpace(entry.text) == "" {
-		return false
-	}
-	if entry.kind == "steps" && isHiddenActivityLogLine(entry.text) {
-		return false
-	}
-	return true
-}
-
 func (m chatTUIModel) visibleConversationEntries() []tuiEntry {
-	if !m.showDrawer {
-		return m.entries
-	}
-	visible := make([]tuiEntry, 0, len(m.entries))
-	for _, entry := range m.entries {
-		if entry.role == "activity" {
-			continue
-		}
-		visible = append(visible, entry)
-	}
-	return visible
+	return m.entries
 }
 
 func sanitizeUserVisibleLogLine(text string) string {
