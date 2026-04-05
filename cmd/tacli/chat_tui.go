@@ -399,7 +399,7 @@ func runChatTUI(runtime *chatRuntime) int {
 	if runtime.jobs != nil {
 		jobs = jobToolAdapter{manager: runtime.jobs}
 	}
-	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs, &tuiAuditSink{events: events})
+	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs, runtime.permissions, &tuiAuditSink{events: events})
 	runtime.attachAgentEventSink()
 	runtime.session.SetAgent(runtime.loop)
 	if runtime.jobs != nil {

@@ -13,6 +13,7 @@ import (
 type State struct {
 	Notes    []string            `json:"notes,omitempty"`
 	Global   []string            `json:"global,omitempty"`
+	Teams    map[string][]string `json:"teams,omitempty"`
 	Projects map[string][]string `json:"projects,omitempty"`
 	SavedAt  time.Time           `json:"saved_at"`
 }
@@ -20,7 +21,9 @@ type State struct {
 type Summary struct {
 	SavedAt      time.Time
 	GlobalCount  int
+	TeamCount    int
 	ProjectCount int
+	TeamScope    string
 	ScopeCount   int
 }
 
@@ -48,6 +51,7 @@ func Load(path string) (State, error) {
 		return State{}, err
 	}
 	state.Global = Normalize(append(state.Global, state.Notes...))
+	state.Teams = normalizeProjects(state.Teams)
 	state.Projects = normalizeProjects(state.Projects)
 	state.Notes = nil
 	return state, nil
@@ -58,6 +62,7 @@ func Save(path string, state State) error {
 		return err
 	}
 	state.Global = Normalize(state.Global)
+	state.Teams = normalizeProjects(state.Teams)
 	state.Projects = normalizeProjects(state.Projects)
 	state.Notes = nil
 	state.SavedAt = time.Now().UTC()
@@ -75,11 +80,23 @@ func Save(path string, state State) error {
 func Merge(base, update State) State {
 	out := State{
 		Global:   Normalize(append(base.Global, update.Global...)),
+		Teams:    normalizeProjects(base.Teams),
 		Projects: normalizeProjects(base.Projects),
 		SavedAt:  base.SavedAt,
 	}
+	if out.Teams == nil {
+		out.Teams = make(map[string][]string)
+	}
 	if out.Projects == nil {
 		out.Projects = make(map[string][]string)
+	}
+	for key, notes := range update.Teams {
+		normalized := Normalize(notes)
+		if len(normalized) == 0 {
+			delete(out.Teams, key)
+			continue
+		}
+		out.Teams[key] = normalized
 	}
 	for key, notes := range update.Projects {
 		normalized := Normalize(notes)
@@ -88,6 +105,9 @@ func Merge(base, update State) State {
 			continue
 		}
 		out.Projects[key] = normalized
+	}
+	if len(out.Teams) == 0 {
+		out.Teams = nil
 	}
 	if len(out.Projects) == 0 {
 		out.Projects = nil
@@ -108,14 +128,30 @@ func DeleteScope(state State, scopeKey string) State {
 	return state
 }
 
-func Summarize(state State, scopeKey string) Summary {
+func DeleteTeamScope(state State, teamKey string) State {
+	teamKey = strings.TrimSpace(teamKey)
+	if teamKey == "" || len(state.Teams) == 0 {
+		return state
+	}
+	state.Teams = normalizeProjects(state.Teams)
+	delete(state.Teams, teamKey)
+	if len(state.Teams) == 0 {
+		state.Teams = nil
+	}
+	return state
+}
+
+func Summarize(state State, teamKey, scopeKey string) Summary {
 	state.Global = Normalize(state.Global)
+	state.Teams = normalizeProjects(state.Teams)
 	state.Projects = normalizeProjects(state.Projects)
 	return Summary{
 		SavedAt:      state.SavedAt,
 		GlobalCount:  len(state.Global),
+		TeamCount:    len(state.Teams[strings.TrimSpace(teamKey)]),
 		ProjectCount: len(state.Projects[strings.TrimSpace(scopeKey)]),
-		ScopeCount:   len(state.Projects),
+		TeamScope:    strings.TrimSpace(teamKey),
+		ScopeCount:   len(state.Teams) + len(state.Projects),
 	}
 }
 
@@ -133,10 +169,11 @@ func Normalize(notes []string) []string {
 	return out
 }
 
-func RenderSystemMemory(global, project []string) string {
+func RenderSystemMemory(global, team, project []string) string {
 	global = Normalize(global)
+	team = Normalize(team)
 	project = Normalize(project)
-	if len(global) == 0 && len(project) == 0 {
+	if len(global) == 0 && len(team) == 0 && len(project) == 0 {
 		return ""
 	}
 
@@ -145,6 +182,14 @@ func RenderSystemMemory(global, project []string) string {
 	if len(global) > 0 {
 		b.WriteString("Global notes:\n")
 		for _, note := range global {
+			b.WriteString("- ")
+			b.WriteString(note)
+			b.WriteByte('\n')
+		}
+	}
+	if len(team) > 0 {
+		b.WriteString("Team notes:\n")
+		for _, note := range team {
 			b.WriteString("- ")
 			b.WriteString(note)
 			b.WriteByte('\n')
@@ -185,10 +230,11 @@ func ForgetMatching(notes []string, query string) ([]string, int) {
 	return out, removed
 }
 
-func FormatNotes(global, project []string) string {
+func FormatNotes(global, team, project []string) string {
 	global = Normalize(global)
+	team = Normalize(team)
 	project = Normalize(project)
-	if len(global) == 0 && len(project) == 0 {
+	if len(global) == 0 && len(team) == 0 && len(project) == 0 {
 		return "(no memory notes)"
 	}
 
@@ -196,6 +242,15 @@ func FormatNotes(global, project []string) string {
 	if len(global) > 0 {
 		b.WriteString("Global memory:\n")
 		for i, note := range global {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, note)
+		}
+	}
+	if len(team) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("Team memory:\n")
+		for i, note := range team {
 			fmt.Fprintf(&b, "%d. %s\n", i+1, note)
 		}
 	}

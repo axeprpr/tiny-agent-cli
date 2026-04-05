@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,8 +17,8 @@ import (
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/session"
-	"tiny-agent-cli/internal/transport"
 	"tiny-agent-cli/internal/tools"
+	"tiny-agent-cli/internal/transport"
 )
 
 func TestExtractStableMemoryNotes(t *testing.T) {
@@ -143,6 +144,80 @@ func TestResolveChatSessionName(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteOwnerFromURLParsesGitHubURL(t *testing.T) {
+	if got := remoteOwnerFromURL("git@github.com:acme/tiny-agent-cli.git"); got != "acme" {
+		t.Fatalf("unexpected owner: %q", got)
+	}
+}
+
+func TestTeamMemoryCommandRememberAndForget(t *testing.T) {
+	r := &chatRuntime{
+		cfg:        config.Config{Model: "test-model"},
+		memoryPath: filepath.Join(t.TempDir(), "memory.json"),
+		teamKey:    "eng",
+		scopeKey:   "/repo",
+		session:    agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	output := r.teamMemoryCommand([]string{"remember", "Run", "reviews"}, "/memory team remember Run reviews")
+	if !strings.Contains(output, "team_notes=1") {
+		t.Fatalf("expected team note in output, got %q", output)
+	}
+	if len(r.teamMemory) != 1 || r.teamMemory[0] != "Run reviews" {
+		t.Fatalf("unexpected team memory: %#v", r.teamMemory)
+	}
+
+	output = r.teamMemoryCommand([]string{"forget", "reviews"}, "/memory team forget reviews")
+	if !strings.Contains(output, "removed 1 team memory note") {
+		t.Fatalf("unexpected forget output: %q", output)
+	}
+	if len(r.teamMemory) != 0 {
+		t.Fatalf("expected team memory to be cleared, got %#v", r.teamMemory)
+	}
+}
+
+func TestPolicyCommandUpdatesAndPersistsStore(t *testing.T) {
+	stateDir := t.TempDir()
+	r := &chatRuntime{
+		cfg:            config.Config{StateDir: stateDir, WorkDir: stateDir, Model: "test-model", ApprovalMode: "confirm"},
+		permissionPath: tools.PermissionPath(stateDir),
+		permissions:    loadRuntimePolicy(config.Config{StateDir: stateDir}),
+		approver:       newStubApprover(),
+		session:        agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+
+	output := r.policyCommand([]string{"/policy", "default", "allow"})
+	if !strings.Contains(output, "default=allow") {
+		t.Fatalf("unexpected default policy output: %q", output)
+	}
+
+	output = r.policyCommand([]string{"/policy", "tool", "write_file", "deny"})
+	if !strings.Contains(output, "write_file=deny") {
+		t.Fatalf("unexpected tool policy output: %q", output)
+	}
+
+	reloaded, err := tools.LoadPermissionStore(r.permissionPath)
+	if err != nil {
+		t.Fatalf("reload permission store: %v", err)
+	}
+	if reloaded.ModeForTool("write_file") != tools.PermissionModeDeny {
+		t.Fatalf("expected persisted deny mode, got %#v", reloaded.Snapshot())
+	}
+}
+
+type stubApprover struct{}
+
+func newStubApprover() stubApprover {
+	return stubApprover{}
+}
+
+func (stubApprover) Mode() string { return tools.ApprovalConfirm }
+
+func (stubApprover) SetMode(string) error { return nil }
+
+func (stubApprover) ApproveCommand(context.Context, string) (bool, error) { return true, nil }
+
+func (stubApprover) ApproveWrite(context.Context, string, string) (bool, error) { return true, nil }
 
 func TestStartupMode(t *testing.T) {
 	tests := []struct {

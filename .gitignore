@@ -14,3 +14,7 @@ coverage/
 cmd/tacli/.tacli/tasks-v2.json
 tacli
 .cache
+.cache
+tacli
+cmd/tacli/.tacli/
+cmd/tacli/.tmp

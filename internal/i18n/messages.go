@@ -76,10 +76,12 @@ var messagesEN = map[string]string{
   /skills               List discovered skills
   /scope                Show current project scope key
   /model <name>         Switch model for this session
+  /policy ...           Show or change persisted tool policy
   /tasks ...            Manage persistent project tasks
   /review [base]        Review the current git diff
   /approval <mode>      Set approval mode (confirm|dangerously)
   /memory               Show or manage saved memory notes
+  /memory team ...      Show or manage team-scoped memory notes
   /remember <text>      Save a project memory note
   /remember-global <t>  Save a global memory note
   /forget <query>       Remove matching project memory

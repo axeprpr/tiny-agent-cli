@@ -24,6 +24,9 @@ type Config struct {
 	ModelTimeout   time.Duration
 	Shell          string
 	ApprovalMode   string
+	Team           string
+	SettingsURL    string
+	SettingsSync   bool
 	Hooks          tools.HookConfig
 }
 
@@ -48,6 +51,9 @@ func FromEnv() Config {
 		ModelTimeout:   getEnvDuration("MODEL_TIMEOUT", 180*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
 		ApprovalMode:   getEnv("AGENT_APPROVAL", "confirm"),
+		Team:           getEnv("AGENT_TEAM", ""),
+		SettingsURL:    getEnv("AGENT_SETTINGS_ENDPOINT", ""),
+		SettingsSync:   getEnvBool("AGENT_SETTINGS_SYNC", true),
 		Hooks:          loadHookConfigFromEnv(),
 	}
 	if cfg.BaseURL == "" {
@@ -125,6 +131,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("resolve state dir: %w", err)
 	}
 	c.StateDir = stateAbs
+	c.Team = strings.TrimSpace(c.Team)
+	c.SettingsURL = strings.TrimSpace(c.SettingsURL)
 	return nil
 }
 
@@ -174,4 +182,19 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

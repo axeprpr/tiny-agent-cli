@@ -17,8 +17,10 @@ type State struct {
 	Model         string          `json:"model"`
 	OutputMode    string          `json:"output_mode"`
 	ApprovalMode  string          `json:"approval_mode"`
+	TeamKey       string          `json:"team_key,omitempty"`
 	ScopeKey      string          `json:"scope_key,omitempty"`
 	GlobalMemory  []string        `json:"global_memory,omitempty"`
+	TeamMemory    []string        `json:"team_memory,omitempty"`
 	ProjectMemory []string        `json:"project_memory,omitempty"`
 	Jobs          json.RawMessage `json:"jobs,omitempty"`
 	SavedAt       time.Time       `json:"saved_at"`

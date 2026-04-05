@@ -41,3 +41,20 @@ func TestFromEnvLoadsHookConfig(t *testing.T) {
 		t.Fatalf("unexpected disabled hooks: %#v", cfg.Hooks.Disabled)
 	}
 }
+
+func TestFromEnvLoadsSettingsSyncConfig(t *testing.T) {
+	t.Setenv("AGENT_SETTINGS_ENDPOINT", "https://settings.example/api")
+	t.Setenv("AGENT_SETTINGS_SYNC", "false")
+	t.Setenv("AGENT_TEAM", "eng")
+
+	cfg := FromEnv()
+	if cfg.SettingsURL != "https://settings.example/api" {
+		t.Fatalf("unexpected settings url: %q", cfg.SettingsURL)
+	}
+	if cfg.SettingsSync {
+		t.Fatalf("expected settings sync to be disabled")
+	}
+	if cfg.Team != "eng" {
+		t.Fatalf("unexpected team: %q", cfg.Team)
+	}
+}

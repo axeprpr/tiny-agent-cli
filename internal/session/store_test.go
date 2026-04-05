@@ -14,8 +14,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Model:         "test-model",
 		OutputMode:    "terminal",
 		ApprovalMode:  "dangerously",
+		TeamKey:       "eng",
 		ScopeKey:      "/tmp/project",
 		GlobalMemory:  []string{"Prefer concise answers"},
+		TeamMemory:    []string{"Run reviews before merge"},
 		ProjectMemory: []string{"Repo uses Go"},
 		Messages: []model.Message{
 			{Role: "user", Content: "inspect repo"},
@@ -37,8 +39,14 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.ScopeKey != want.ScopeKey {
 		t.Fatalf("unexpected scope key: %q", got.ScopeKey)
 	}
+	if got.TeamKey != want.TeamKey {
+		t.Fatalf("unexpected team key: %q", got.TeamKey)
+	}
 	if len(got.GlobalMemory) != 1 || got.GlobalMemory[0] != want.GlobalMemory[0] {
 		t.Fatalf("unexpected global memory: %#v", got.GlobalMemory)
+	}
+	if len(got.TeamMemory) != 1 || got.TeamMemory[0] != want.TeamMemory[0] {
+		t.Fatalf("unexpected team memory: %#v", got.TeamMemory)
 	}
 	if len(got.ProjectMemory) != 1 || got.ProjectMemory[0] != want.ProjectMemory[0] {
 		t.Fatalf("unexpected project memory: %#v", got.ProjectMemory)

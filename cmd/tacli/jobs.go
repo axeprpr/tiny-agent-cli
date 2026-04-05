@@ -227,7 +227,7 @@ func (m *jobManager) StartWithRole(role, task string) (string, error) {
 	bgCfg.ApprovalMode = tools.ApprovalDangerously
 	bgApprover := tools.NewTerminalApprover(nil, io.Discard, bgCfg.ApprovalMode, false)
 	logWriter := &backgroundLogWriter{manager: m, jobID: id}
-	loop := buildAgentWith(bgCfg, bgApprover, logWriter, nil)
+	loop := buildAgentWith(bgCfg, bgApprover, logWriter, nil, loadRuntimePolicy(bgCfg))
 	job := &backgroundJob{
 		id:        id,
 		role:      role,

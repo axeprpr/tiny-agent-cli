@@ -159,8 +159,10 @@ iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cl
 - `/status`               显示当前状态
 - `/scope`                显示项目作用域
 - `/model <name>`         切换模型
+- `/policy ...`           查看或调整持久化工具策略
 - `/approval <mode>`      设置审批模式 (confirm|dangerously)
 - `/memory`               查看记忆
+- `/memory team ...`      查看或管理团队记忆
 - `/remember <text>`      保存项目记忆
 - `/remember-global <t>`  保存全局记忆
 - `/forget <query>`       删除匹配的项目记忆
@@ -204,10 +206,12 @@ tacli> 给我写个最小发布检查单
 
 现在 `tiny-agent-cli` 已经支持一个轻量的长期记忆层。
 
-它分成两个作用域：
+它分成三个作用域：
 
 - 全局记忆
   跨项目通用的偏好，比如语言、回答风格
+- 团队记忆
+  通过 `AGENT_TEAM` 指定；若未设置，则优先回退到 git `origin` 的 owner
 - 项目记忆
   只绑定当前工作目录的规则和背景
 
@@ -215,6 +219,7 @@ tacli> 给我写个最小发布检查单
 
 ```text
 tacli> /remember-global 默认输出中文，简洁回答。
+tacli> /memory team remember 合并前先做 review。
 tacli> /remember 这个项目优先支持 ARM64。
 tacli> /scope
 tacli> /memory
@@ -225,12 +230,14 @@ tacli> /forget ARM64
 记忆文件默认保存在：
 
 - `.tacli/memory.json`
+- `.tacli/permissions.json`
 
 后续新的 chat 会话会把命中的记忆作为背景上下文注入到第一条 system prompt。
 
 补充说明：
 
 - 项目记忆按工作目录路径隔离
+- 团队记忆按 `AGENT_TEAM` 或 `remote.origin.url` 推断出的 owner 隔离
 - `/memorize` 会把当前会话提炼成项目记忆
 - chat 会在退出时自动执行这一步
 - 如果模型侧的记忆总结超时或失败，`tiny-agent-cli` 会回退到本地提取明显的长期偏好和项目事实
@@ -274,6 +281,12 @@ tacli> /job-apply job-001
   默认值：Linux/macOS 下为 `bash`，Windows 下为 `powershell.exe`
 - `AGENT_APPROVAL`
   默认值：`confirm`
+- `AGENT_TEAM`
+  默认值：空。未设置时，团队记忆会尽量回退到 git `origin` owner。
+- `AGENT_SETTINGS_ENDPOINT`
+  默认值：空。可选的远程配置端点，使用 `GET`/`PUT` JSON 同步设置。
+- `AGENT_SETTINGS_SYNC`
+  默认值：`true`。设为 `false` 可关闭远程设置同步。
 
 ## 源码构建
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -24,10 +25,10 @@ import (
 	"tiny-agent-cli/internal/model/openaiapi"
 	"tiny-agent-cli/internal/plugins"
 	"tiny-agent-cli/internal/session"
-	"tiny-agent-cli/internal/transport"
 	"tiny-agent-cli/internal/tasks"
 	"tiny-agent-cli/internal/tools"
 	"tiny-agent-cli/internal/trace"
+	"tiny-agent-cli/internal/transport"
 )
 
 var version = "dev"
@@ -53,8 +54,10 @@ type chatRuntime struct {
 	auditPath      string
 	tracePath      string
 	permissionPath string
+	teamKey        string
 	scopeKey       string
 	globalMemory   []string
+	teamMemory     []string
 	projectMemory  []string
 	permissions    *tools.PermissionStore
 	taskStore      *tasks.Store
@@ -332,18 +335,27 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		autoMemoryExit: opts.autoMemoryExit,
 		memoryPath:     memory.Path(cfg.StateDir),
 		auditPath:      tools.AuditPath(cfg.StateDir),
+		teamKey:        resolveTeamKey(cfg),
 		scopeKey:       memory.ScopeKey(cfg.WorkDir),
 		taskStore:      tasks.New(filepath.Join(cfg.WorkDir, ".tacli", "tasks.json")),
 		pluginCommands: make(map[string]plugins.Command),
 	}
+	r.permissionPath = tools.PermissionPath(cfg.StateDir)
+	r.permissions = loadRuntimePolicy(cfg)
+	if err := r.pullRemoteSettings(); err != nil {
+		r.recordTrace(context.Background(), "runtime", "settings_pull_error", map[string]any{"error": err.Error()})
+	}
+	r.teamKey = resolveTeamKey(r.cfg)
 	r.setSessionName(sessionName)
 	r.attachAgentEventSink()
+	r.rebuildLoop()
 	if mem, err := memory.Load(r.memoryPath); err == nil {
 		r.globalMemory = mem.Global
+		r.teamMemory = mem.Teams[r.teamKey]
 		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
-	r.jobs = newJobManager(cfg, memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+	r.jobs = newJobManager(cfg, r.renderSystemMemory())
 	r.jobs.SetRoleRouter(llmBackgroundRoleRouter(cfg))
 	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
 		r.skills = discovered
@@ -404,8 +416,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if r.pluginManager != nil {
 			pluginSummary = fmt.Sprintf("plugins=%d/%d", len(r.pluginManager.Loaded()), len(r.pluginManager.List()))
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\naudit=%s\ntrace=%s\n%s\n%s",
-			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, auditSummary, traceSummary, jobSummary, pluginSummary), exitCode: -1}
+		settingsSummary := "settings_sync=disabled"
+		if strings.TrimSpace(r.cfg.SettingsURL) != "" {
+			settingsSummary = fmt.Sprintf("settings_sync=%t endpoint=%s", r.cfg.SettingsSync, r.cfg.SettingsURL)
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s",
+			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary), exitCode: -1}
 	case "/plan":
 		return runtimeCommandResult{handled: true, output: r.planCommand(), exitCode: -1}
 	case "/compact":
@@ -468,6 +484,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		r.cfg.ApprovalMode = r.approver.Mode()
 		_ = r.save()
+		_ = r.pushRemoteSettings()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.approval.set"), r.approver.Mode()), exitCode: -1}
 	case "/output":
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.output.deprecated"), exitCode: -1}
@@ -477,7 +494,10 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		r.cfg.Model = strings.Join(fields[1:], " ")
 		r.rebuildLoop()
+		_ = r.pushRemoteSettings()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model), exitCode: -1}
+	case "/policy":
+		return runtimeCommandResult{handled: true, output: r.policyCommand(fields), exitCode: -1}
 	case "/bg":
 		id, err := r.jobs.Start(strings.TrimSpace(input[len("/bg"):]))
 		if err != nil {
@@ -608,10 +628,12 @@ func (r *chatRuntime) rebuildLoop() {
 	if r.jobs != nil {
 		jobs = jobToolAdapter{manager: r.jobs}
 	}
-	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs)
+	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs, r.permissions)
 	r.attachAgentEventSink()
 	r.applyLoadedPlugins()
-	r.session.SetAgent(r.loop)
+	if r.session != nil {
+		r.session.SetAgent(r.loop)
+	}
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
 	if r.jobs != nil {
 		r.jobs.UpdateConfig(r.cfg)
@@ -657,8 +679,9 @@ func (r *chatRuntime) loadSessionState(name string) (bool, error) {
 		}
 	}
 	r.rebuildLoop()
-	if state.ScopeKey == r.scopeKey {
+	if state.TeamKey == r.teamKey && state.ScopeKey == r.scopeKey {
 		r.globalMemory = append([]string(nil), state.GlobalMemory...)
+		r.teamMemory = append([]string(nil), state.TeamMemory...)
 		r.projectMemory = append([]string(nil), state.ProjectMemory...)
 		r.refreshMemoryContext()
 	}
@@ -775,7 +798,60 @@ func (r *chatRuntime) hooksCommand(fields []string) string {
 	}
 	r.rebuildLoop()
 	_ = r.save()
+	_ = r.pushRemoteSettings()
 	return r.hooksCommand([]string{"/hooks"})
+}
+
+func (r *chatRuntime) policyCommand(fields []string) string {
+	if r.permissions == nil {
+		r.permissions = loadRuntimePolicy(r.cfg)
+	}
+	if r.permissions == nil {
+		return "policy store unavailable"
+	}
+	usage := strings.Join([]string{
+		"usage: /policy",
+		"usage: /policy default <confirm|allow|deny>",
+		"usage: /policy tool <name> <confirm|allow|deny>",
+		"usage: /policy reload",
+		"usage: /policy save",
+	}, "\n")
+	if len(fields) == 1 || strings.EqualFold(fields[1], "show") || strings.EqualFold(fields[1], "list") {
+		return tools.FormatPermissionState(r.permissions.Snapshot())
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "default":
+		if len(fields) != 3 {
+			return usage
+		}
+		r.permissions.SetDefault(fields[2])
+	case "tool":
+		if len(fields) != 4 {
+			return usage
+		}
+		r.permissions.SetToolMode(fields[2], fields[3])
+	case "reload":
+		r.permissions = loadRuntimePolicy(r.cfg)
+		if r.permissions == nil {
+			return "policy store unavailable"
+		}
+		r.rebuildLoop()
+		return tools.FormatPermissionState(r.permissions.Snapshot())
+	case "save":
+		if err := r.permissions.Save(); err != nil {
+			return "policy save error: " + err.Error()
+		}
+		_ = r.pushRemoteSettings()
+		return tools.FormatPermissionState(r.permissions.Snapshot())
+	default:
+		return usage
+	}
+	if err := r.permissions.Save(); err != nil {
+		return "policy save error: " + err.Error()
+	}
+	r.rebuildLoop()
+	_ = r.pushRemoteSettings()
+	return tools.FormatPermissionState(r.permissions.Snapshot())
 }
 
 func (r *chatRuntime) skillsCommand() string {
@@ -994,6 +1070,8 @@ func (r *chatRuntime) memoryCommand(fields []string, input string) string {
 			return "usage: /memory remember-global <text>"
 		}
 		r.globalMemory = memory.Add(r.globalMemory, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1])))
+	case "team":
+		return r.teamMemoryCommand(fields[2:], input)
 	case "forget":
 		if len(fields) < 3 {
 			return "usage: /memory forget <query>"
@@ -1209,7 +1287,7 @@ func sameTodoItems(a, b []tools.TodoItem) bool {
 func (r *chatRuntime) applyMemoryIntent(intent memoryIntent) (string, error) {
 	switch intent.action {
 	case memoryActionShow:
-		return memory.FormatNotes(r.globalMemory, r.projectMemory), nil
+		return memory.FormatNotes(r.globalMemory, r.teamMemory, r.projectMemory), nil
 	case memoryActionRemember:
 		note, ok := normalizeRememberedNote(intent.body)
 		if !ok {
@@ -1513,7 +1591,7 @@ func buildAutoExploreTask(task string) string {
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
-	return r.loop.NewSessionWithPrompt(promptContextFor(r.cfg, r.loop, "chat", memory.RenderSystemMemory(r.globalMemory, r.projectMemory)))
+	return r.loop.NewSessionWithPrompt(promptContextFor(r.cfg, r.loop, "chat", r.renderSystemMemory()))
 }
 
 func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
@@ -1528,14 +1606,14 @@ func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
 
 func (r *chatRuntime) refreshMemoryContext() {
 	if r.jobs != nil {
-		r.jobs.UpdateMemory(memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
+		r.jobs.UpdateMemory(r.renderSystemMemory())
 	}
 	messages := r.session.Messages()
 	if len(messages) == 0 {
 		r.session = r.newSession()
 		return
 	}
-	messages[0].Content = agent.BuildSystemPrompt(promptContextFor(r.cfg, r.loop, "chat", memory.RenderSystemMemory(r.globalMemory, r.projectMemory)))
+	messages[0].Content = agent.BuildSystemPrompt(promptContextFor(r.cfg, r.loop, "chat", r.renderSystemMemory()))
 	r.session.ReplaceMessages(messages)
 }
 
@@ -1544,6 +1622,7 @@ func (r *chatRuntime) reloadMemory() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			r.globalMemory = nil
+			r.teamMemory = nil
 			r.projectMemory = nil
 			r.refreshMemoryContext()
 			return nil
@@ -1551,21 +1630,25 @@ func (r *chatRuntime) reloadMemory() error {
 		return err
 	}
 	r.globalMemory = append([]string(nil), state.Global...)
+	r.teamMemory = append([]string(nil), state.Teams[r.teamKey]...)
 	r.projectMemory = append([]string(nil), state.Projects[r.scopeKey]...)
 	r.refreshMemoryContext()
 	return nil
 }
 
 func (r *chatRuntime) describeMemory() string {
-	text := memory.FormatNotes(r.globalMemory, r.projectMemory)
+	text := memory.FormatNotes(r.globalMemory, r.teamMemory, r.projectMemory)
 	summary := memory.Summarize(memory.State{
 		Global:   r.globalMemory,
+		Teams:    map[string][]string{r.teamKey: r.teamMemory},
 		Projects: map[string][]string{r.scopeKey: r.projectMemory},
-	}, r.scopeKey)
+	}, r.teamKey, r.scopeKey)
 	lines := []string{
 		fmt.Sprintf("path=%s", r.memoryPath),
+		fmt.Sprintf("team=%s", firstNonEmpty(r.teamKey, "(none)")),
 		fmt.Sprintf("scope=%s", r.scopeKey),
 		fmt.Sprintf("global_notes=%d", summary.GlobalCount),
+		fmt.Sprintf("team_notes=%d", summary.TeamCount),
 		fmt.Sprintf("project_notes=%d", summary.ProjectCount),
 		text,
 	}
@@ -1578,8 +1661,10 @@ func (r *chatRuntime) save() error {
 		Model:         r.cfg.Model,
 		OutputMode:    r.outputMode,
 		ApprovalMode:  r.cfg.ApprovalMode,
+		TeamKey:       r.teamKey,
 		ScopeKey:      r.scopeKey,
 		GlobalMemory:  append([]string(nil), r.globalMemory...),
+		TeamMemory:    append([]string(nil), r.teamMemory...),
 		ProjectMemory: append([]string(nil), r.projectMemory...),
 		Messages:      r.session.Messages(),
 	})
@@ -1588,20 +1673,109 @@ func (r *chatRuntime) save() error {
 func (r *chatRuntime) saveMemory() error {
 	state := memory.State{
 		Global: r.globalMemory,
+		Teams: map[string][]string{
+			r.teamKey: append([]string(nil), r.teamMemory...),
+		},
 		Projects: map[string][]string{
 			r.scopeKey: append([]string(nil), r.projectMemory...),
 		},
+	}
+	if len(r.teamMemory) == 0 || strings.TrimSpace(r.teamKey) == "" {
+		state.Teams = nil
 	}
 	if len(r.projectMemory) == 0 {
 		state.Projects = nil
 	}
 	if existing, err := memory.Load(r.memoryPath); err == nil {
 		state = memory.Merge(existing, state)
+		if len(r.teamMemory) == 0 || strings.TrimSpace(r.teamKey) == "" {
+			state = memory.DeleteTeamScope(state, r.teamKey)
+		}
 		if len(r.projectMemory) == 0 {
 			state = memory.DeleteScope(state, r.scopeKey)
 		}
 	}
 	return memory.Save(r.memoryPath, state)
+}
+
+func (r *chatRuntime) pullRemoteSettings() error {
+	if r == nil || !r.cfg.SettingsSync || strings.TrimSpace(r.cfg.SettingsURL) == "" {
+		return nil
+	}
+	ctx, cancel := config.SettingsSyncContext(context.Background())
+	defer cancel()
+	settings, err := config.PullSettings(ctx, r.cfg.SettingsURL)
+	if err != nil {
+		return err
+	}
+	r.cfg.ApplySettings(settings)
+	if r.permissions == nil {
+		r.permissions = loadRuntimePolicy(r.cfg)
+	}
+	if r.permissions != nil {
+		r.permissions.Replace(settings.Permissions)
+		_ = r.permissions.Save()
+	}
+	return nil
+}
+
+func (r *chatRuntime) pushRemoteSettings() error {
+	if r == nil || !r.cfg.SettingsSync || strings.TrimSpace(r.cfg.SettingsURL) == "" {
+		return nil
+	}
+	ctx, cancel := config.SettingsSyncContext(context.Background())
+	defer cancel()
+	var permissions tools.PermissionState
+	if r.permissions != nil {
+		permissions = r.permissions.Snapshot()
+	}
+	return config.PushSettings(ctx, r.cfg.SettingsURL, config.SnapshotSettings(r.cfg, permissions))
+}
+
+func (r *chatRuntime) teamMemoryCommand(fields []string, input string) string {
+	if strings.TrimSpace(r.teamKey) == "" {
+		return "team memory is unavailable; set AGENT_TEAM or configure a git origin remote"
+	}
+	if len(fields) == 0 || strings.EqualFold(fields[0], "show") || strings.EqualFold(fields[0], "list") {
+		return r.describeMemory()
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[0])) {
+	case "remember":
+		if len(fields) < 2 {
+			return "usage: /memory team remember <text>"
+		}
+		r.teamMemory = memory.Add(r.teamMemory, memoryCommandBody(input, "/memory team remember"))
+	case "forget":
+		if len(fields) < 2 {
+			return "usage: /memory team forget <query>"
+		}
+		var removed int
+		r.teamMemory, removed = memory.ForgetMatching(r.teamMemory, memoryCommandBody(input, "/memory team forget"))
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return fmt.Sprintf("removed %d team memory note(s)", removed)
+	case "clear":
+		r.teamMemory = nil
+	default:
+		return "usage: /memory team [show|remember <text>|forget <query>|clear]"
+	}
+	r.refreshMemoryContext()
+	_ = r.saveMemory()
+	_ = r.save()
+	return r.describeMemory()
+}
+
+func (r *chatRuntime) renderSystemMemory() string {
+	return memory.RenderSystemMemory(r.globalMemory, r.teamMemory, r.projectMemory)
+}
+
+func memoryCommandBody(input string, prefix string) string {
+	trimmed := strings.TrimSpace(input)
+	if len(trimmed) <= len(prefix) {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[len(prefix):])
 }
 
 func (r *chatRuntime) beforeExit(allowAutoMemory bool) {
@@ -1887,6 +2061,41 @@ func joinedLength(parts []string, sep string) int {
 	return total
 }
 
+func resolveTeamKey(cfg config.Config) string {
+	if strings.TrimSpace(cfg.Team) != "" {
+		return strings.TrimSpace(cfg.Team)
+	}
+	return gitRemoteOwner(cfg.WorkDir)
+}
+
+func gitRemoteOwner(workDir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "config", "--get", "remote.origin.url")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return remoteOwnerFromURL(string(out))
+}
+
+func remoteOwnerFromURL(raw string) string {
+	url := strings.TrimSpace(raw)
+	if url == "" {
+		return ""
+	}
+	url = strings.TrimSuffix(url, ".git")
+	url = strings.ReplaceAll(url, "\\", "/")
+	if idx := strings.Index(url, ":"); idx >= 0 && !strings.Contains(url[:idx], "/") {
+		url = url[idx+1:]
+	}
+	parts := strings.Split(url, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[len(parts)-2])
+}
+
 func pingModel(args []string) int {
 	cfg := config.FromEnv()
 
@@ -2034,11 +2243,19 @@ func defaultChatSessionName(now time.Time) string {
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	factory := harness.NewFactory(cfg)
 	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
-	return factory.NewAgent(approver, os.Stderr, nil, nil), approver
+	return factory.NewAgent(approver, os.Stderr, nil, loadRuntimePolicy(cfg)), approver
 }
 
-func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
-	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, nil, extraAuditSinks...)
+func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, policy *tools.PermissionStore, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
+	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, policy, extraAuditSinks...)
+}
+
+func loadRuntimePolicy(cfg config.Config) *tools.PermissionStore {
+	store, err := tools.LoadPermissionStore(tools.PermissionPath(cfg.StateDir))
+	if err != nil {
+		return nil
+	}
+	return store
 }
 
 func promptContextFor(cfg config.Config, loop *agent.Agent, sessionMode, memoryText string) agent.PromptContext {

@@ -155,8 +155,10 @@ Built-in chat commands:
 - `/status`               Show session and config status
 - `/scope`                Show current project scope key
 - `/model <name>`         Switch model for this session
+- `/policy ...`           Show or change persisted tool policy
 - `/approval <mode>`      Set approval mode (confirm|dangerously)
 - `/memory`               Show saved memory notes
+- `/memory team ...`      Show or manage team-scoped memory notes
 - `/remember <text>`      Save a project memory note
 - `/remember-global <t>`  Save a global memory note
 - `/forget <query>`       Remove matching project memory
@@ -200,10 +202,12 @@ Advanced storage tuning is still available through environment variables like `A
 
 `tiny-agent-cli` now has a lightweight persistent memory layer for long-lived usage.
 
-It supports two scopes:
+It supports three scopes:
 
 - global memory
   Cross-project preferences, such as response style or language
+- team memory
+  Shared notes keyed by `AGENT_TEAM` or the git origin owner when available
 - project memory
   Notes tied to the current workspace path
 
@@ -211,6 +215,7 @@ Use it to store user preferences, project rules, or stable context:
 
 ```text
 tacli> /remember-global Prefer concise answers in Chinese.
+tacli> /memory team remember Run reviews before merge.
 tacli> /remember This repo targets ARM64 first.
 tacli> /scope
 tacli> /memory
@@ -221,12 +226,14 @@ tacli> /forget ARM64
 Memory is stored in:
 
 - `.tacli/memory.json`
+- `.tacli/permissions.json`
 
 Future chat sessions inject matching memory into the first system prompt as background context.
 
 Notes:
 
 - project memory is keyed by workspace path
+- team memory is keyed by `AGENT_TEAM` or the repo owner inferred from `remote.origin.url`
 - `/memorize` summarizes the current session into project memory
 - chat runs that summarization automatically on exit
 - if the model-side memory summarizer fails, `tiny-agent-cli` falls back to local extraction of obvious stable preferences and project facts
@@ -270,6 +277,12 @@ Up to 2 background jobs can run concurrently. Each runs in its own agent session
   Default: `bash` on Linux/macOS, `powershell.exe` on Windows
 - `AGENT_APPROVAL`
   Default: `confirm`
+- `AGENT_TEAM`
+  Default: empty. When unset, team memory falls back to the git origin owner if available.
+- `AGENT_SETTINGS_ENDPOINT`
+  Default: empty. Optional remote endpoint used for settings sync via `GET`/`PUT` JSON.
+- `AGENT_SETTINGS_SYNC`
+  Default: `true`. Set to `false` to disable remote settings pull/push.
 
 ## Build From Source
 

@@ -71,8 +71,10 @@ var messagesCN = map[string]string{
   /skills               列出已发现技能
   /scope                显示项目作用域
   /model <name>         切换模型
+  /policy ...           查看或调整持久化工具策略
   /approval <mode>      设置审批模式 (confirm|dangerously)
   /memory               查看或管理记忆
+  /memory team ...      查看或管理团队记忆
   /remember <text>      保存项目记忆
   /remember-global <t>  保存全局记忆
   /forget <query>       删除匹配的项目记忆

@@ -108,6 +108,27 @@ func (s *PermissionStore) Snapshot() PermissionState {
 	return out
 }
 
+func (s *PermissionStore) Replace(state PermissionState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Default = normalizePermissionMode(state.Default)
+	s.data.Tools = make(map[string]string, len(state.Tools))
+	for key, value := range state.Tools {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		mode := normalizePermissionMode(value)
+		if mode == PermissionModeConfirm {
+			continue
+		}
+		s.data.Tools[name] = mode
+	}
+}
+
 func (s *PermissionStore) Save() error {
 	if s == nil {
 		return nil
