@@ -14,7 +14,7 @@ func TestPullSettings(t *testing.T) {
 			if r.Method != http.MethodGet {
 				t.Fatalf("unexpected method: %s", r.Method)
 			}
-			return jsonResponse(http.StatusOK, `{"model":"gpt-test","approval_mode":"dangerously","team":"eng","hooks":{"enabled":true,"disabled":["command_safety"]},"permissions":{"default":"allow","tools":{"write_file":"deny"}}}`), nil
+			return jsonResponse(http.StatusOK, `{"model":"gpt-test","approval_mode":"dangerously","team":"eng","hooks":{"PreToolUse":["printf 'pre'"],"PostToolUse":["printf 'post'"]},"permissions":{"default":"allow","tools":{"write_file":"deny"}}}`), nil
 		}),
 	}
 	t.Cleanup(func() { settingsHTTPClient = http.DefaultClient })
@@ -67,12 +67,15 @@ func TestApplySettings(t *testing.T) {
 		Model:        "after",
 		ApprovalMode: "dangerously",
 		Team:         "eng",
-		Hooks:        tools.HookConfig{Enabled: true, Disabled: []string{"command_safety"}},
+		Hooks:        tools.HookConfig{PreToolUse: []string{"printf 'pre'"}, PostToolUse: []string{"printf 'post'"}},
 	})
 	if cfg.Model != "after" || cfg.ApprovalMode != "dangerously" || cfg.Team != "eng" {
 		t.Fatalf("unexpected config after apply: %#v", cfg)
 	}
-	if len(cfg.Hooks.Disabled) != 1 || cfg.Hooks.Disabled[0] != "command_safety" {
+	if len(cfg.Hooks.PreToolUse) != 1 || cfg.Hooks.PreToolUse[0] != "printf 'pre'" {
+		t.Fatalf("unexpected pre hooks: %#v", cfg.Hooks)
+	}
+	if len(cfg.Hooks.PostToolUse) != 1 || cfg.Hooks.PostToolUse[0] != "printf 'post'" {
 		t.Fatalf("unexpected hooks: %#v", cfg.Hooks)
 	}
 }

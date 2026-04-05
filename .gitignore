@@ -18,3 +18,5 @@ tacli
 tacli
 cmd/tacli/.tacli/
 cmd/tacli/.tmp
+cmd/tacli/.tacli/
+cmd/tacli/.tmp

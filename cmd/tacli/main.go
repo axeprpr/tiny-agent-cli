@@ -765,41 +765,62 @@ func (r *chatRuntime) planCommand() string {
 
 func (r *chatRuntime) hooksCommand(fields []string) string {
 	if len(fields) == 1 {
-		disabled := "(none)"
-		if len(r.cfg.Hooks.Disabled) > 0 {
-			disabled = strings.Join(r.cfg.Hooks.Disabled, ", ")
-		}
-		return fmt.Sprintf("enabled=%t\ndisabled=%s", r.cfg.Hooks.Enabled, disabled)
+		return strings.Join([]string{
+			"PreToolUse:",
+			formatHookCommandList(r.cfg.Hooks.PreToolUse),
+			"PostToolUse:",
+			formatHookCommandList(r.cfg.Hooks.PostToolUse),
+		}, "\n")
 	}
 	switch strings.ToLower(strings.TrimSpace(fields[1])) {
-	case "enable":
-		r.cfg.Hooks.Enabled = true
-	case "disable":
-		r.cfg.Hooks.Enabled = false
-	case "disable-hook":
+	case "add-pre":
 		if len(fields) < 3 {
-			return "usage: /hooks disable-hook <name>"
+			return "usage: /hooks add-pre <command>"
 		}
-		r.cfg.Hooks.Disabled = append(r.cfg.Hooks.Disabled, fields[2])
-	case "enable-hook":
+		r.cfg.Hooks.PreToolUse = append(r.cfg.Hooks.PreToolUse, strings.TrimSpace(strings.Join(fields[2:], " ")))
+	case "add-post":
 		if len(fields) < 3 {
-			return "usage: /hooks enable-hook <name>"
+			return "usage: /hooks add-post <command>"
 		}
-		target := strings.ToLower(strings.TrimSpace(fields[2]))
-		filtered := make([]string, 0, len(r.cfg.Hooks.Disabled))
-		for _, item := range r.cfg.Hooks.Disabled {
-			if strings.ToLower(strings.TrimSpace(item)) != target {
-				filtered = append(filtered, item)
-			}
+		r.cfg.Hooks.PostToolUse = append(r.cfg.Hooks.PostToolUse, strings.TrimSpace(strings.Join(fields[2:], " ")))
+	case "remove-pre":
+		if len(fields) != 3 {
+			return "usage: /hooks remove-pre <index>"
 		}
-		r.cfg.Hooks.Disabled = filtered
+		index, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil || index < 1 || index > len(r.cfg.Hooks.PreToolUse) {
+			return "invalid PreToolUse index"
+		}
+		r.cfg.Hooks.PreToolUse = append(r.cfg.Hooks.PreToolUse[:index-1], r.cfg.Hooks.PreToolUse[index:]...)
+	case "remove-post":
+		if len(fields) != 3 {
+			return "usage: /hooks remove-post <index>"
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil || index < 1 || index > len(r.cfg.Hooks.PostToolUse) {
+			return "invalid PostToolUse index"
+		}
+		r.cfg.Hooks.PostToolUse = append(r.cfg.Hooks.PostToolUse[:index-1], r.cfg.Hooks.PostToolUse[index:]...)
+	case "clear":
+		r.cfg.Hooks = tools.HookConfig{}
 	default:
-		return "usage: /hooks [enable|disable|disable-hook <name>|enable-hook <name>]"
+		return "usage: /hooks [add-pre <command>|add-post <command>|remove-pre <index>|remove-post <index>|clear]"
 	}
 	r.rebuildLoop()
 	_ = r.save()
 	_ = r.pushRemoteSettings()
 	return r.hooksCommand([]string{"/hooks"})
+}
+
+func formatHookCommandList(commands []string) string {
+	if len(commands) == 0 {
+		return "(none)"
+	}
+	lines := make([]string, 0, len(commands))
+	for i, command := range commands {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, command))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (r *chatRuntime) policyCommand(fields []string) string {

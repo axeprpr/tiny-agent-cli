@@ -43,9 +43,7 @@ func (c *Config) ApplySettings(settings SyncedSettings) {
 	if strings.TrimSpace(settings.Team) != "" {
 		c.Team = strings.TrimSpace(settings.Team)
 	}
-	if settings.Hooks.Enabled != tools.DefaultHookConfig().Enabled || len(settings.Hooks.Disabled) > 0 {
-		c.Hooks = settings.Hooks
-	}
+	c.Hooks = settings.Hooks
 }
 
 func PullSettings(ctx context.Context, endpoint string) (SyncedSettings, error) {

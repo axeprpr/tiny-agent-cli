@@ -67,20 +67,26 @@ func FromEnv() Config {
 }
 
 func loadHookConfigFromEnv() tools.HookConfig {
-	cfg := tools.DefaultHookConfig()
-	if raw := strings.TrimSpace(os.Getenv("AGENT_HOOKS_ENABLED")); raw != "" {
-		cfg.Enabled = raw != "0" && !strings.EqualFold(raw, "false") && !strings.EqualFold(raw, "off")
+	return tools.HookConfig{
+		PreToolUse:  splitHookCommands(os.Getenv("AGENT_PRE_TOOL_USE_HOOKS")),
+		PostToolUse: splitHookCommands(os.Getenv("AGENT_POST_TOOL_USE_HOOKS")),
 	}
-	if raw := strings.TrimSpace(os.Getenv("AGENT_HOOKS_DISABLED")); raw != "" {
-		parts := strings.Split(raw, ",")
-		cfg.Disabled = make([]string, 0, len(parts))
-		for _, part := range parts {
-			if trimmed := strings.TrimSpace(part); trimmed != "" {
-				cfg.Disabled = append(cfg.Disabled, trimmed)
-			}
+}
+
+func splitHookCommands(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
 		}
 	}
-	return cfg
+	return out
 }
 
 func defaultStateDir(workDir string) string {

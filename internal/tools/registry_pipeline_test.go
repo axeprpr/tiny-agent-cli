@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"tiny-agent-cli/internal/model"
@@ -207,6 +208,58 @@ func TestRegistryCallPipelineCanHandleToolError(t *testing.T) {
 	}
 	if out != "recovered" {
 		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestRegistryCallPreToolHookDenialBlocksExecution(t *testing.T) {
+	called := false
+	r := &Registry{
+		tools: map[string]Tool{
+			"fake": &stubTool{
+				output: "ok",
+				onCall: func() { called = true },
+			},
+		},
+		hookRunner: NewHookRunner(HookConfig{
+			PreToolUse: []string{hookShellSnippet("printf 'blocked by hook'; exit 2")},
+		}),
+	}
+
+	out, err := r.Call(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+	if err == nil {
+		t.Fatalf("expected hook denial error")
+	}
+	if called {
+		t.Fatalf("tool should not execute when hook denies")
+	}
+	if !strings.Contains(out, "Hook feedback (denied):\nblocked by hook") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestRegistryCallAppendsPreAndPostHookFeedback(t *testing.T) {
+	r := &Registry{
+		tools: map[string]Tool{
+			"fake": &stubTool{output: "tool output"},
+		},
+		hookRunner: NewHookRunner(HookConfig{
+			PreToolUse:  []string{hookShellSnippet("printf 'pre hook ran'")},
+			PostToolUse: []string{hookShellSnippet("printf 'post hook ran'")},
+		}),
+	}
+
+	out, err := r.Call(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !strings.Contains(out, "tool output") {
+		t.Fatalf("missing tool output: %q", out)
+	}
+	if !strings.Contains(out, "pre hook ran") {
+		t.Fatalf("missing pre hook feedback: %q", out)
+	}
+	if !strings.Contains(out, "post hook ran") {
+		t.Fatalf("missing post hook feedback: %q", out)
 	}
 }
 

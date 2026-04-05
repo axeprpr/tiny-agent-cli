@@ -27,18 +27,21 @@ func TestDefaultStateDirPrefersLegacyDirWhenPresent(t *testing.T) {
 }
 
 func TestFromEnvLoadsHookConfig(t *testing.T) {
-	t.Setenv("AGENT_HOOKS_ENABLED", "false")
-	t.Setenv("AGENT_HOOKS_DISABLED", "command_safety, custom ")
+	t.Setenv("AGENT_PRE_TOOL_USE_HOOKS", "printf 'pre one'\nprintf 'pre two'")
+	t.Setenv("AGENT_POST_TOOL_USE_HOOKS", "printf 'post one'")
 
 	cfg := FromEnv()
-	if cfg.Hooks.Enabled {
-		t.Fatalf("expected hooks to be disabled")
+	if got, want := len(cfg.Hooks.PreToolUse), 2; got != want {
+		t.Fatalf("unexpected pre hook count: got %d want %d", got, want)
 	}
-	if got, want := len(cfg.Hooks.Disabled), 2; got != want {
-		t.Fatalf("unexpected disabled hooks length: got %d want %d", got, want)
+	if got, want := len(cfg.Hooks.PostToolUse), 1; got != want {
+		t.Fatalf("unexpected post hook count: got %d want %d", got, want)
 	}
-	if cfg.Hooks.Disabled[0] != "command_safety" || cfg.Hooks.Disabled[1] != "custom" {
-		t.Fatalf("unexpected disabled hooks: %#v", cfg.Hooks.Disabled)
+	if cfg.Hooks.PreToolUse[0] != "printf 'pre one'" || cfg.Hooks.PreToolUse[1] != "printf 'pre two'" {
+		t.Fatalf("unexpected pre hooks: %#v", cfg.Hooks.PreToolUse)
+	}
+	if cfg.Hooks.PostToolUse[0] != "printf 'post one'" {
+		t.Fatalf("unexpected post hooks: %#v", cfg.Hooks.PostToolUse)
 	}
 }
 

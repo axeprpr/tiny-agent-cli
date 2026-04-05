@@ -1,10 +1,14 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -37,17 +41,13 @@ type ToolHook interface {
 	OnToolError(ctx context.Context, inv *ToolInvocation, out *ToolOutcome) error
 }
 
-type NamedToolHook interface {
-	Name() string
-}
-
 type HookConfig struct {
-	Enabled  bool
-	Disabled []string
+	PreToolUse  []string `json:"PreToolUse,omitempty"`
+	PostToolUse []string `json:"PostToolUse,omitempty"`
 }
 
 func DefaultHookConfig() HookConfig {
-	return HookConfig{Enabled: true}
+	return HookConfig{}
 }
 
 type ToolPermissionDecider interface {
@@ -68,96 +68,260 @@ type ToolAuditSink interface {
 	RecordToolEvent(ctx context.Context, event ToolAuditEvent)
 }
 
-type runCommandSafetyHook struct{}
+type HookEvent string
 
-func NewDefaultHooks(cfg HookConfig) []ToolHook {
-	cfg = cfg.normalized()
-	if !cfg.Enabled {
-		return nil
+const (
+	HookEventPreToolUse  HookEvent = "PreToolUse"
+	HookEventPostToolUse HookEvent = "PostToolUse"
+)
+
+type HookRunResult struct {
+	denied   bool
+	messages []string
+}
+
+func AllowHook(messages []string) HookRunResult {
+	return HookRunResult{
+		denied:   false,
+		messages: append([]string(nil), messages...),
 	}
-	candidates := []ToolHook{
-		runCommandSafetyHook{},
+}
+
+func (r HookRunResult) IsDenied() bool {
+	return r.denied
+}
+
+func (r HookRunResult) Messages() []string {
+	return append([]string(nil), r.messages...)
+}
+
+type HookRunner struct {
+	config HookConfig
+}
+
+type hookCommandRequest struct {
+	event      HookEvent
+	toolName   string
+	toolInput  string
+	toolOutput *string
+	isError    bool
+	payload    []byte
+}
+
+func NewDefaultHooks(HookConfig) []ToolHook {
+	return nil
+}
+
+func NewHookRunner(config HookConfig) HookRunner {
+	return HookRunner{config: config.normalized()}
+}
+
+func (r HookRunner) RunPreToolUse(toolName, toolInput string) HookRunResult {
+	return r.runCommands(HookEventPreToolUse, r.config.PreToolUse, toolName, toolInput, nil, false)
+}
+
+func (r HookRunner) RunPostToolUse(toolName, toolInput, toolOutput string, isError bool) HookRunResult {
+	return r.runCommands(HookEventPostToolUse, r.config.PostToolUse, toolName, toolInput, &toolOutput, isError)
+}
+
+func (r HookRunner) runCommands(event HookEvent, commands []string, toolName, toolInput string, toolOutput *string, isError bool) HookRunResult {
+	if len(commands) == 0 {
+		return AllowHook(nil)
 	}
-	hooks := make([]ToolHook, 0, len(candidates))
-	for _, hook := range candidates {
-		if hookDisabled(cfg.Disabled, hook) {
-			continue
+	payload, err := json.Marshal(map[string]any{
+		"hook_event_name":      string(event),
+		"tool_name":            toolName,
+		"tool_input":           parseHookToolInput(toolInput),
+		"tool_input_json":      toolInput,
+		"tool_output":          toolOutput,
+		"tool_result_is_error": isError,
+	})
+	if err != nil {
+		return AllowHook([]string{fmt.Sprintf("failed to encode hook payload for %q: %v", toolName, err)})
+	}
+
+	messages := make([]string, 0)
+	for _, command := range commands {
+		outcome := runHookCommand(command, hookCommandRequest{
+			event:      event,
+			toolName:   toolName,
+			toolInput:  toolInput,
+			toolOutput: toolOutput,
+			isError:    isError,
+			payload:    payload,
+		})
+		switch outcome.kind {
+		case hookOutcomeAllow:
+			if outcome.message != "" {
+				messages = append(messages, outcome.message)
+			}
+		case hookOutcomeDeny:
+			message := outcome.message
+			if strings.TrimSpace(message) == "" {
+				message = fmt.Sprintf("%s hook denied tool `%s`", event, toolName)
+			}
+			messages = append(messages, message)
+			return HookRunResult{denied: true, messages: messages}
+		case hookOutcomeWarn:
+			messages = append(messages, outcome.message)
 		}
-		hooks = append(hooks, hook)
 	}
-	return hooks
-}
-
-func (runCommandSafetyHook) Name() string {
-	return "command_safety"
-}
-
-func (runCommandSafetyHook) BeforeTool(_ context.Context, inv *ToolInvocation) error {
-	if inv == nil {
-		return nil
-	}
-	if inv.Name != "run_command" {
-		return nil
-	}
-	var args struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(inv.Raw, &args); err != nil {
-		return fmt.Errorf("decode args: %w", err)
-	}
-	command := strings.TrimSpace(args.Command)
-	if command == "" {
-		return fmt.Errorf("command is required")
-	}
-	return validateCommand(command)
-}
-
-func (runCommandSafetyHook) AfterTool(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
-	return nil
-}
-
-func (runCommandSafetyHook) OnToolError(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
-	return nil
+	return AllowHook(messages)
 }
 
 func (c HookConfig) normalized() HookConfig {
-	if !c.Enabled && len(c.Disabled) == 0 {
-		return DefaultHookConfig()
-	}
 	out := HookConfig{
-		Enabled:  c.Enabled,
-		Disabled: make([]string, 0, len(c.Disabled)),
-	}
-	seen := make(map[string]struct{}, len(c.Disabled))
-	for _, name := range c.Disabled {
-		trimmed := strings.ToLower(strings.TrimSpace(name))
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out.Disabled = append(out.Disabled, trimmed)
+		PreToolUse:  normalizeHookCommands(c.PreToolUse),
+		PostToolUse: normalizeHookCommands(c.PostToolUse),
 	}
 	return out
 }
 
-func hookDisabled(disabled []string, hook ToolHook) bool {
-	named, ok := hook.(NamedToolHook)
-	if !ok {
-		return false
+func normalizeHookCommands(commands []string) []string {
+	out := make([]string, 0, len(commands))
+	for _, command := range commands {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			continue
+		}
+		out = append(out, command)
 	}
-	name := strings.ToLower(strings.TrimSpace(named.Name()))
-	if name == "" {
-		return false
+	return out
+}
+
+type hookCommandOutcomeKind int
+
+const (
+	hookOutcomeAllow hookCommandOutcomeKind = iota
+	hookOutcomeDeny
+	hookOutcomeWarn
+)
+
+type hookCommandOutcome struct {
+	kind    hookCommandOutcomeKind
+	message string
+}
+
+func parseHookToolInput(toolInput string) any {
+	var parsed any
+	if err := json.Unmarshal([]byte(toolInput), &parsed); err == nil {
+		return parsed
 	}
-	for _, item := range disabled {
-		if item == name {
-			return true
+	return map[string]string{"raw": toolInput}
+}
+
+func runHookCommand(command string, req hookCommandRequest) hookCommandOutcome {
+	cmd := hookShellCommand(command)
+	cmd.Stdin = bytes.NewReader(req.payload)
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &bytes.Buffer{}
+	cmd.Env = append(os.Environ(),
+		"HOOK_EVENT="+string(req.event),
+		"HOOK_TOOL_NAME="+req.toolName,
+		"HOOK_TOOL_INPUT="+req.toolInput,
+		"HOOK_TOOL_IS_ERROR="+hookErrorEnv(req.isError),
+	)
+	if req.toolOutput != nil {
+		cmd.Env = append(cmd.Env, "HOOK_TOOL_OUTPUT="+*req.toolOutput)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	stdoutText := strings.TrimSpace(stdout.String())
+	stderrText := strings.TrimSpace(stderr.String())
+	if err == nil {
+		return hookCommandOutcome{kind: hookOutcomeAllow, message: stdoutText}
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if code := exitErr.ExitCode(); code == 2 {
+			return hookCommandOutcome{kind: hookOutcomeDeny, message: stdoutText}
+		} else if code >= 0 {
+			return hookCommandOutcome{
+				kind:    hookOutcomeWarn,
+				message: formatHookWarning(command, code, stdoutText, stderrText),
+			}
+		}
+		return hookCommandOutcome{
+			kind: hookOutcomeWarn,
+			message: fmt.Sprintf(
+				"%s hook `%s` terminated by signal while handling `%s`",
+				req.event,
+				command,
+				req.toolName,
+			),
 		}
 	}
-	return false
+
+	return hookCommandOutcome{
+		kind: hookOutcomeWarn,
+		message: fmt.Sprintf(
+			"%s hook `%s` failed to start for `%s`: %v",
+			req.event,
+			command,
+			req.toolName,
+			err,
+		),
+	}
+}
+
+func hookShellCommand(command string) *exec.Cmd {
+	if isWindowsShell() {
+		return exec.Command("cmd", "/C", command)
+	}
+	return exec.Command("sh", "-lc", command)
+}
+
+func isWindowsShell() bool {
+	return runtime.GOOS == "windows"
+}
+
+func hookErrorEnv(isError bool) string {
+	if isError {
+		return "1"
+	}
+	return "0"
+}
+
+func formatHookWarning(command string, code int, stdout, stderr string) string {
+	message := fmt.Sprintf(
+		"Hook `%s` exited with status %d; allowing tool execution to continue",
+		command,
+		code,
+	)
+	if stdout != "" {
+		return message + ": " + stdout
+	}
+	if stderr != "" {
+		return message + ": " + stderr
+	}
+	return message
+}
+
+func formatHookMessage(result HookRunResult, fallback string) string {
+	if len(result.messages) == 0 {
+		return fallback
+	}
+	return strings.Join(result.messages, "\n")
+}
+
+func mergeHookFeedback(messages []string, output string, denied bool) string {
+	if len(messages) == 0 {
+		return output
+	}
+	sections := make([]string, 0, 2)
+	if strings.TrimSpace(output) != "" {
+		sections = append(sections, output)
+	}
+	label := "Hook feedback"
+	if denied {
+		label = "Hook feedback (denied)"
+	}
+	sections = append(sections, label+":\n"+strings.Join(messages, "\n"))
+	return strings.Join(sections, "\n\n")
 }
 
 type approvalPermissionDecider struct {

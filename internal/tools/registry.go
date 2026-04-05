@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,7 @@ type Registry struct {
 	todo       *todoStore
 	hooks      []ToolHook
 	hookConfig HookConfig
+	hookRunner HookRunner
 	permission ToolPermissionDecider
 	policy     *PermissionStore
 	audit      ToolAuditSink
@@ -46,6 +48,7 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 	taskStore := tasks.New(filepath.Join(workDir, ".tacli", "tasks.json"))
 	r.todo = todos
 	r.permission = newApprovalPermissionDecider(workDir, approver, policy)
+	r.hookRunner = NewHookRunner(r.hookConfig)
 	r.hooks = append(r.hooks, NewDefaultHooks(r.hookConfig)...)
 
 	toolset := []Tool{
@@ -157,14 +160,29 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 			return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
 		}
 	}
+	preHookResult := r.hookRunner.RunPreToolUse(name, string(inv.Raw))
+	if preHookResult.IsDenied() {
+		err := errors.New(formatHookMessage(preHookResult, fmt.Sprintf("PreToolUse hook denied tool `%s`", name)))
+		out := ToolOutcome{
+			Output: mergeHookFeedback(preHookResult.Messages(), "", true),
+			Err:    err,
+		}
+		r.recordAudit(ctx, inv, out, "pre_hook_denied")
+		return r.structuredResult(name, out, outputFormat), err
+	}
 
 	started := time.Now()
 	output, err := tool.Call(ctx, inv.Raw)
 	out := ToolOutcome{
-		Output:   output,
+		Output:   mergeHookFeedback(preHookResult.Messages(), output, false),
 		Err:      err,
 		Duration: time.Since(started),
 	}
+	postHookResult := r.hookRunner.RunPostToolUse(name, string(inv.Raw), out.Output, out.Err != nil)
+	if postHookResult.IsDenied() {
+		out.Err = errors.New(formatHookMessage(postHookResult, fmt.Sprintf("PostToolUse hook denied tool `%s`", name)))
+	}
+	out.Output = mergeHookFeedback(postHookResult.Messages(), out.Output, postHookResult.IsDenied())
 	if err != nil {
 		for _, hook := range r.hooks {
 			if hook == nil {

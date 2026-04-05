@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"tiny-agent-cli/internal/model"
@@ -55,13 +57,48 @@ func TestValidateToolInputWithSchema(t *testing.T) {
 	}
 }
 
-func TestNewDefaultHooksRespectsDisabledList(t *testing.T) {
-	hooks := NewDefaultHooks(HookConfig{
-		Enabled:  true,
-		Disabled: []string{"command_safety"},
+func TestHookRunnerAllowsExitCodeZeroAndCapturesStdout(t *testing.T) {
+	runner := NewHookRunner(HookConfig{
+		PreToolUse: []string{hookShellSnippet("printf 'pre ok'")},
 	})
-	if len(hooks) != 0 {
-		t.Fatalf("expected no hooks, got %d", len(hooks))
+
+	result := runner.RunPreToolUse("Read", `{"path":"README.md"}`)
+
+	if result.IsDenied() {
+		t.Fatalf("expected hook to allow")
+	}
+	if got := result.Messages(); len(got) != 1 || got[0] != "pre ok" {
+		t.Fatalf("unexpected hook messages: %#v", got)
+	}
+}
+
+func TestHookRunnerDeniesExitCodeTwo(t *testing.T) {
+	runner := NewHookRunner(HookConfig{
+		PreToolUse: []string{hookShellSnippet("printf 'blocked by hook'; exit 2")},
+	})
+
+	result := runner.RunPreToolUse("Bash", `{"command":"pwd"}`)
+
+	if !result.IsDenied() {
+		t.Fatalf("expected hook denial")
+	}
+	if got := result.Messages(); len(got) != 1 || got[0] != "blocked by hook" {
+		t.Fatalf("unexpected hook messages: %#v", got)
+	}
+}
+
+func TestHookRunnerWarnsForOtherNonZeroStatuses(t *testing.T) {
+	runner := NewHookRunner(HookConfig{
+		PreToolUse: []string{hookShellSnippet("printf 'warning hook'; exit 1")},
+	})
+
+	result := runner.RunPreToolUse("Edit", `{"file":"src/lib.rs"}`)
+
+	if result.IsDenied() {
+		t.Fatalf("expected warning, not denial")
+	}
+	if got := strings.Join(result.Messages(), "\n"); !strings.Contains(got, "allowing tool execution to continue") {
+		t.Fatalf("unexpected warning output: %q", got)
 	}
 }
 
@@ -80,4 +117,11 @@ func TestApprovalPermissionDeciderChecksEditFileWrites(t *testing.T) {
 	if err == nil || err.Error() != "file write rejected by user" {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func hookShellSnippet(script string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(script, "'", "\"")
+	}
+	return script
 }
