@@ -44,6 +44,7 @@ type jobSnapshot struct {
 	LastOutput string
 	LastError  string
 	LogTail    string
+	Session    agent.SubagentSessionState
 	Summary    jobSummary
 	Applied    bool
 	CreatedAt  time.Time
@@ -112,6 +113,7 @@ func (j *backgroundJob) snapshot() jobSnapshot {
 		LastOutput: j.lastOutput,
 		LastError:  j.lastError,
 		LogTail:    j.logTail,
+		Session:    agent.SnapshotSession(j.session),
 		Summary:    j.summary,
 		Applied:    j.applied,
 		CreatedAt:  j.createdAt,
@@ -122,10 +124,11 @@ func (j *backgroundJob) snapshot() jobSnapshot {
 }
 
 type jobManager struct {
-	cfg      config.Config
-	memory   string
-	notifier func(string)
-	router   backgroundRoleRouter
+	cfg           config.Config
+	memory        string
+	notifier      func(string)
+	router        backgroundRoleRouter
+	orchestration *agent.OrchestrationRegistry
 
 	mu     sync.RWMutex
 	nextID int
@@ -134,10 +137,11 @@ type jobManager struct {
 
 func newJobManager(cfg config.Config, memoryText string) *jobManager {
 	return &jobManager{
-		cfg:    cfg,
-		memory: memoryText,
-		router: keywordBackgroundRoleRouter(),
-		jobs:   make(map[string]*backgroundJob),
+		cfg:           cfg,
+		memory:        memoryText,
+		router:        keywordBackgroundRoleRouter(),
+		orchestration: agent.NewOrchestrationRegistry(),
+		jobs:          make(map[string]*backgroundJob),
 	}
 }
 
@@ -237,6 +241,17 @@ func (m *jobManager) StartWithRole(role, task string) (string, error) {
 	workerCtx, cancel := context.WithCancel(context.Background())
 	job.cancel = cancel
 	m.jobs[id] = job
+	if m.orchestration != nil {
+		m.orchestration.Register(agent.SubagentSnapshot{
+			ID:        id,
+			Status:    string(jobQueued),
+			Role:      role,
+			Model:     bgCfg.Model,
+			Session:   agent.SnapshotSession(job.session),
+			CreatedAt: job.createdAt,
+			UpdatedAt: job.updatedAt,
+		}, cancel)
+	}
 	m.mu.Unlock()
 
 	go m.run(workerCtx, job)
@@ -276,6 +291,7 @@ func (m *jobManager) Cancel(id string) error {
 	job.finishedAt = job.updatedAt
 	job.mu.Unlock()
 	job.cancel()
+	m.syncOrchestration(job)
 	m.notify(fmt.Sprintf("%s canceled", id))
 	return nil
 }
@@ -422,11 +438,54 @@ func (m *jobManager) Restore(raw json.RawMessage) error {
 			}
 		}
 		m.jobs[job.id] = job
+		if m.orchestration != nil {
+			m.orchestration.Register(agent.SubagentSnapshot{
+				ID:         job.id,
+				Status:     string(job.status),
+				Role:       job.role,
+				Model:      job.model,
+				TaskCount:  job.taskCount,
+				Queued:     job.queued,
+				LastPrompt: job.lastPrompt,
+				LastOutput: job.lastOutput,
+				LastError:  job.lastError,
+				LogTail:    job.logTail,
+				Session:    snap.Session,
+				CreatedAt:  job.createdAt,
+				StartedAt:  job.startedAt,
+				UpdatedAt:  job.updatedAt,
+				FinishedAt: job.finishedAt,
+			}, nil)
+		}
 		if n := parseJobOrdinal(job.id); n > m.nextID {
 			m.nextID = n
 		}
 	}
 	return nil
+}
+
+func (m *jobManager) syncOrchestration(job *backgroundJob) {
+	if m == nil || m.orchestration == nil || job == nil {
+		return
+	}
+	snap := job.snapshot()
+	m.orchestration.Update(agent.SubagentSnapshot{
+		ID:         snap.ID,
+		Status:     string(snap.Status),
+		Role:       snap.Role,
+		Model:      snap.Model,
+		TaskCount:  snap.TaskCount,
+		Queued:     snap.Queued,
+		LastPrompt: snap.LastPrompt,
+		LastOutput: snap.LastOutput,
+		LastError:  snap.LastError,
+		LogTail:    snap.LogTail,
+		Session:    snap.Session,
+		CreatedAt:  snap.CreatedAt,
+		StartedAt:  snap.StartedAt,
+		UpdatedAt:  snap.UpdatedAt,
+		FinishedAt: snap.FinishedAt,
+	})
 }
 
 func (m *jobManager) activeJobsLocked() int {
@@ -478,6 +537,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 			}
 			job.updatedAt = now
 			job.mu.Unlock()
+			m.syncOrchestration(job)
 
 			m.notify(fmt.Sprintf("%s (%s) running: %s", job.id, job.role, compactJobText(task, 80)))
 
@@ -491,6 +551,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 					job.lastError = ctx.Err().Error()
 					job.finishedAt = job.updatedAt
 					job.mu.Unlock()
+					m.syncOrchestration(job)
 					m.notify(fmt.Sprintf("%s canceled", job.id))
 					return
 				}
@@ -498,6 +559,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 				job.lastError = err.Error()
 				job.finishedAt = job.updatedAt
 				job.mu.Unlock()
+				m.syncOrchestration(job)
 				m.notify(fmt.Sprintf("%s (%s) failed: %s", job.id, job.role, compactJobText(err.Error(), 120)))
 				continue
 			}
@@ -512,6 +574,7 @@ func (m *jobManager) run(ctx context.Context, job *backgroundJob) {
 				job.status = jobReady
 			}
 			job.mu.Unlock()
+			m.syncOrchestration(job)
 
 			m.notify(fmt.Sprintf("%s (%s) ready: %s", job.id, job.role, compactJobText(job.snapshot().LastOutput, 120)))
 		}
@@ -536,6 +599,26 @@ func (m *jobManager) appendLog(jobID, line string) {
 	}
 	job.logTail = strings.Join(lines, "\n")
 	job.updatedAt = time.Now()
+	jobSnap := job.snapshot()
+	if m.orchestration != nil {
+		m.orchestration.Update(agent.SubagentSnapshot{
+			ID:         jobSnap.ID,
+			Status:     string(jobSnap.Status),
+			Role:       jobSnap.Role,
+			Model:      jobSnap.Model,
+			TaskCount:  jobSnap.TaskCount,
+			Queued:     jobSnap.Queued,
+			LastPrompt: jobSnap.LastPrompt,
+			LastOutput: jobSnap.LastOutput,
+			LastError:  jobSnap.LastError,
+			LogTail:    jobSnap.LogTail,
+			Session:    jobSnap.Session,
+			CreatedAt:  jobSnap.CreatedAt,
+			StartedAt:  jobSnap.StartedAt,
+			UpdatedAt:  jobSnap.UpdatedAt,
+			FinishedAt: jobSnap.FinishedAt,
+		})
+	}
 }
 
 func (m *jobManager) notify(text string) {
@@ -595,6 +678,9 @@ func formatJobList(snaps []jobSnapshot) string {
 		} else if strings.TrimSpace(snap.LastOutput) != "" {
 			line += "\n  last_output: " + compactJobText(tools.SingleLineText(snap.LastOutput), 120)
 		}
+		if snap.Session.MessageCount > 0 {
+			line += fmt.Sprintf("\n  session_messages: %d", snap.Session.MessageCount)
+		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n\n")
@@ -625,6 +711,9 @@ func formatJobSnapshot(snap jobSnapshot) string {
 	}
 	if strings.TrimSpace(snap.LastOutput) != "" {
 		lines = append(lines, "last_output="+compactJobText(tools.SingleLineText(snap.LastOutput), 240))
+	}
+	if snap.Session.MessageCount > 0 {
+		lines = append(lines, fmt.Sprintf("session_messages=%d", snap.Session.MessageCount))
 	}
 	if summary := renderJobSummary(snap.Summary); summary != "" {
 		lines = append(lines, "summary:\n"+summary)
