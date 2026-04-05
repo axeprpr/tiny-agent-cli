@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -30,22 +30,25 @@ func TestParseDDGResultsFallbackAnchors(t *testing.T) {
 }
 
 func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/html":
-			_, _ = w.Write([]byte(`<html><body><div>no result blocks here</div></body></html>`))
-		case "/lite":
-			_, _ = w.Write([]byte(`<html><body><a href="https://example.com/fallback">Fallback Result</a></body></html>`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
 	tool := &webSearchTool{
-		client: &http.Client{Timeout: 2 * time.Second},
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body := `<html><body><div>no result blocks here</div></body></html>`
+				if req.URL.Path == "/lite" {
+					body = `<html><body><a href="https://example.com/fallback">Fallback Result</a></body></html>`
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
 		searchEndpoints: func(_ string) []string {
-			return []string{server.URL + "/html", server.URL + "/lite"}
+			return []string{"https://search.test/html", "https://search.test/lite"}
 		},
 	}
 
@@ -59,4 +62,10 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	if !strings.Contains(out, "https://example.com/fallback") {
 		t.Fatalf("expected fallback url in output, got: %q", out)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }

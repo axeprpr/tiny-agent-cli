@@ -588,7 +588,6 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{
@@ -644,7 +643,9 @@ func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	}
 	if len(client.requests) != 2 {
 		t.Fatalf("expected second request after recovery, got %d", len(client.requests))
-=======
+	}
+}
+
 func TestApproxTokenCountTreatsCJKAsHeavier(t *testing.T) {
 	ascii := approxTokenCount("hello world")
 	cjk := approxTokenCount("你好世界")
@@ -661,6 +662,5 @@ func TestConversationSizeUsesTokenApproximation(t *testing.T) {
 	}
 	if cjk <= ascii/2 {
 		t.Fatalf("expected CJK size not to be heavily undercounted: ascii=%d cjk=%d", ascii, cjk)
->>>>>>> 30aa4ed (feat: P2/P3 fixes - shell timeout, context tokens, web search fallback, validateCommand)
 	}
 }

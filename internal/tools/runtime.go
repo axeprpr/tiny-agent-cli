@@ -22,6 +22,14 @@ type ToolOutcome struct {
 	Duration time.Duration
 }
 
+type ToolResult struct {
+	Tool       string `json:"tool"`
+	Status     string `json:"status"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
 type ToolHook interface {
 	BeforeTool(ctx context.Context, inv *ToolInvocation) error
 	AfterTool(ctx context.Context, inv *ToolInvocation, out *ToolOutcome) error
@@ -154,20 +162,35 @@ func hookDisabled(disabled []string, hook ToolHook) bool {
 type approvalPermissionDecider struct {
 	workDir  string
 	approver Approver
+	policy   *PermissionStore
 }
 
-func newApprovalPermissionDecider(workDir string, approver Approver) ToolPermissionDecider {
-	if approver == nil {
+func newApprovalPermissionDecider(workDir string, approver Approver, policy *PermissionStore) ToolPermissionDecider {
+	if approver == nil && policy == nil {
 		return nil
 	}
 	return &approvalPermissionDecider{
 		workDir:  workDir,
 		approver: approver,
+		policy:   policy,
 	}
 }
 
 func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocation) error {
-	if d == nil || d.approver == nil {
+	if d == nil {
+		return nil
+	}
+	mode := PermissionModeConfirm
+	if d.policy != nil {
+		mode = d.policy.ModeForTool(inv.Name)
+	}
+	if mode == PermissionModeDeny {
+		return fmt.Errorf("tool %q is denied by permission policy", inv.Name)
+	}
+	if mode == PermissionModeAllow {
+		return nil
+	}
+	if d.approver == nil {
 		return nil
 	}
 	switch inv.Name {
@@ -212,6 +235,27 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 		// Background jobs enforce internal command limits; allow and rely on audit trail.
 	}
 	return nil
+}
+
+func extractToolOutputFormat(raw json.RawMessage) (json.RawMessage, string, error) {
+	if len(raw) == 0 {
+		return raw, "", nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return raw, "", nil
+	}
+	value, ok := payload["_output"]
+	if !ok {
+		return raw, "", nil
+	}
+	delete(payload, "_output")
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, "", err
+	}
+	format, _ := value.(string)
+	return out, strings.ToLower(strings.TrimSpace(format)), nil
 }
 
 func validateToolInput(raw json.RawMessage, params map[string]any) error {

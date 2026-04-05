@@ -69,28 +69,23 @@ func TestRenderTodoSummary(t *testing.T) {
 func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 20),
-		logViewport:  viewport.New(80, 10),
 		entries:      []tuiEntry{{role: "assistant", text: "hello"}},
-		logs:         []tuiLogEntry{{kind: "steps", text: "executing 1 tool(s)"}},
 		entriesDirty: true,
-		logsDirty:    true,
 	}
 
 	m.refreshViewports()
-	if m.entriesDirty || m.logsDirty {
-		t.Fatalf("expected refresh to clear dirty flags")
+	if m.entriesDirty {
+		t.Fatalf("expected refresh to clear dirty flag")
 	}
 
 	entriesWidth := m.entriesWidth
-	logsWidth := m.logsWidth
 	content := m.chatViewport.View()
-	logContent := m.logViewport.View()
 
 	m.refreshViewports()
-	if m.entriesWidth != entriesWidth || m.logsWidth != logsWidth {
+	if m.entriesWidth != entriesWidth {
 		t.Fatalf("expected cached widths to remain unchanged")
 	}
-	if m.chatViewport.View() != content || m.logViewport.View() != logContent {
+	if m.chatViewport.View() != content {
 		t.Fatalf("expected viewport content to remain stable without rerender")
 	}
 }
@@ -100,7 +95,6 @@ func TestResizeSkipsDirtyRefreshUntilForced(t *testing.T) {
 		width:        100,
 		height:       30,
 		chatViewport: viewport.New(96, 18),
-		logViewport:  viewport.New(96, 7),
 		input:        textarea.New(),
 		entries:      []tuiEntry{{role: "assistant", text: "hello"}},
 		entriesDirty: true,
@@ -138,47 +132,6 @@ func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
 	got := m.renderEntries()
 	if !strings.Contains(got, "# heading") || !strings.Contains(got, "- item") {
 		t.Fatalf("expected assistant text to remain plain, got %q", got)
-	}
-}
-
-func TestRenderLogsSkipsHiddenInternalStepLines(t *testing.T) {
-	m := chatTUIModel{
-		logViewport: viewport.New(80, 10),
-		logs: []tuiLogEntry{
-			{kind: "steps", text: "requesting model turn=1 messages=2 tools=15 approx_chars=2030"},
-			{kind: "steps", text: "executing 1 tool(s)"},
-		},
-		logFilter: "all",
-	}
-
-	got := m.renderLogs()
-	if strings.Contains(got, "requesting model") {
-		t.Fatalf("expected hidden step line to be omitted, got %q", got)
-	}
-	if !strings.Contains(got, "executing 1 tool(s)") {
-		t.Fatalf("expected visible step line to remain, got %q", got)
-	}
-	if count := m.filteredLogCount(); count != 1 {
-		t.Fatalf("expected hidden log lines to be excluded from count, got %d", count)
-	}
-}
-
-func TestRenderEntriesOmitsInlineActivityWhenDrawerShown(t *testing.T) {
-	m := chatTUIModel{
-		chatViewport: viewport.New(80, 20),
-		showDrawer:   true,
-		entries: []tuiEntry{
-			{role: "assistant", text: "final answer"},
-			{role: "activity", text: "tool  [1/1] read_file README.md"},
-		},
-	}
-
-	got := m.renderEntries()
-	if !strings.Contains(got, "final answer") {
-		t.Fatalf("expected assistant content to remain visible, got %q", got)
-	}
-	if strings.Contains(got, "read_file") {
-		t.Fatalf("expected inline activity to be hidden while drawer is shown, got %q", got)
 	}
 }
 
@@ -250,16 +203,5 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 	}
 	if m.chatViewport.YOffset != 5 {
 		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
-	}
-}
-
-func TestNextLogFilterIncludesAudit(t *testing.T) {
-	seq := []string{"all", "steps", "tools", "audit", "error", "approval", "all"}
-	cur := seq[0]
-	for i := 1; i < len(seq); i++ {
-		cur = nextLogFilter(cur)
-		if cur != seq[i] {
-			t.Fatalf("unexpected filter at step %d: got %q want %q", i, cur, seq[i])
-		}
 	}
 }

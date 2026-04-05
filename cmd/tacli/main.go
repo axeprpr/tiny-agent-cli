@@ -49,9 +49,11 @@ type chatRuntime struct {
 	memoryPath     string
 	auditPath      string
 	tracePath      string
+	permissionPath string
 	scopeKey       string
 	globalMemory   []string
 	projectMemory  []string
+	permissions    *tools.PermissionStore
 	autoMemoryExit bool
 	dirtySession   bool
 	tracer         *trace.FileSink
@@ -299,7 +301,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	}
 
 	if strings.TrimSpace(opts.session) != "" {
-		if _, err := r.loadSessionState(); err != nil {
+		if _, err := r.loadCurrentSessionState(); err != nil {
 			return nil, err
 		}
 	}
@@ -374,6 +376,9 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if len(fields) == 1 {
 			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
 		}
+		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "list" {
+			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
+		}
 		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "save" {
 			if err := r.save(); err != nil {
 				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session save error: %v", err), exitCode: -1}
@@ -381,14 +386,18 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: "session saved", exitCode: -1}
 		}
 		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "restore" || action == "load" {
-			loaded, err := r.loadSessionState()
+			target := r.sessionName
+			if len(fields) > 2 {
+				target = strings.Join(fields[2:], " ")
+			}
+			loaded, err := r.loadSessionState(target)
 			if err != nil {
 				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session restore error: %v", err), exitCode: -1}
 			}
 			if !loaded {
-				return runtimeCommandResult{handled: true, output: "no saved state for current session", exitCode: -1}
+				return runtimeCommandResult{handled: true, output: fmt.Sprintf("no saved state for session %s", resolveChatSessionName(target, time.Now())), exitCode: -1}
 			}
-			return runtimeCommandResult{handled: true, output: "session restored", exitCode: -1}
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("session restored: %s", r.sessionName), exitCode: -1}
 		}
 		switchedTo, err := r.switchSession(strings.Join(fields[1:], " "))
 		if err != nil {
@@ -560,17 +569,41 @@ func (r *chatRuntime) setSessionName(name string) {
 	r.tracer = trace.NewFileSink(r.tracePath)
 }
 
-func (r *chatRuntime) loadSessionState() (bool, error) {
-	state, err := session.Load(r.statePath)
+func (r *chatRuntime) loadCurrentSessionState() (bool, error) {
+	return r.loadSessionState(r.sessionName)
+}
+
+func (r *chatRuntime) loadSessionState(name string) (bool, error) {
+	next := resolveChatSessionName(name, time.Now())
+	path := session.SessionPath(r.cfg.StateDir, next)
+	state, err := session.Load(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return false, err
 	}
-
+	r.setSessionName(next)
 	if len(state.Messages) > 0 {
 		r.session.ReplaceMessages(state.Messages)
+	}
+	if strings.TrimSpace(state.Model) != "" {
+		r.cfg.Model = state.Model
+	}
+	if strings.TrimSpace(state.OutputMode) != "" {
+		r.outputMode = state.OutputMode
+	}
+	if strings.TrimSpace(state.ApprovalMode) != "" {
+		r.cfg.ApprovalMode = state.ApprovalMode
+		if r.approver != nil {
+			_ = r.approver.SetMode(state.ApprovalMode)
+		}
+	}
+	r.rebuildLoop()
+	if state.ScopeKey == r.scopeKey {
+		r.globalMemory = append([]string(nil), state.GlobalMemory...)
+		r.projectMemory = append([]string(nil), state.ProjectMemory...)
+		r.refreshMemoryContext()
 	}
 	return true, nil
 }
@@ -588,7 +621,7 @@ func (r *chatRuntime) switchSession(name string) (string, error) {
 	r.session = r.newSession()
 	r.dirtySession = false
 
-	loaded, err := r.loadSessionState()
+	loaded, err := r.loadCurrentSessionState()
 	if err != nil {
 		return "", err
 	}
@@ -606,21 +639,38 @@ func (r *chatRuntime) switchSession(name string) (string, error) {
 func (r *chatRuntime) describeSessions() string {
 	lines := []string{
 		"current=" + r.sessionName,
+		"usage: /session list",
 		"usage: /session <name>",
 		"usage: /session new",
 		"usage: /session save",
-		"usage: /session restore",
+		"usage: /session load [name]",
 	}
 
-	names, err := session.ListSessionNames(r.cfg.StateDir)
-	if err != nil || len(names) == 0 {
+	summaries, err := session.ListSessions(r.cfg.StateDir)
+	if err != nil || len(summaries) == 0 {
 		return strings.Join(lines, "\n")
 	}
 
-	if len(names) > 8 {
-		names = names[:8]
+	if len(summaries) > 8 {
+		summaries = summaries[:8]
 	}
-	lines = append(lines, "recent="+strings.Join(names, ", "))
+	lines = append(lines, "recent:")
+	for _, item := range summaries {
+		line := fmt.Sprintf("- %s", item.Name)
+		if !item.SavedAt.IsZero() {
+			line += " saved=" + item.SavedAt.Format(time.RFC3339)
+		}
+		if item.MessageCount > 0 {
+			line += fmt.Sprintf(" messages=%d", item.MessageCount)
+		}
+		if strings.TrimSpace(item.Model) != "" {
+			line += " model=" + item.Model
+		}
+		if strings.TrimSpace(item.ApprovalMode) != "" {
+			line += " approval=" + item.ApprovalMode
+		}
+		lines = append(lines, line)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -776,9 +826,21 @@ func (r *chatRuntime) applyPlugin(loaded plugins.Loaded) {
 
 func (r *chatRuntime) memoryCommand(fields []string, input string) string {
 	if len(fields) == 1 || strings.EqualFold(fields[1], "show") {
-		return memory.FormatNotes(r.globalMemory, r.projectMemory)
+		return r.describeMemory()
 	}
 	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "list":
+		return r.describeMemory()
+	case "save":
+		if err := r.saveMemory(); err != nil {
+			return "memory save error: " + err.Error()
+		}
+		return r.describeMemory()
+	case "reload", "load":
+		if err := r.reloadMemory(); err != nil {
+			return "memory reload error: " + err.Error()
+		}
+		return r.describeMemory()
 	case "remember":
 		if len(fields) < 3 {
 			return "usage: /memory remember <text>"
@@ -809,13 +871,19 @@ func (r *chatRuntime) memoryCommand(fields []string, input string) string {
 		_ = r.saveMemory()
 		_ = r.save()
 		return fmt.Sprintf("removed %d global memory note(s)", removed)
+	case "clear-project":
+		r.projectMemory = nil
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return r.describeMemory()
 	default:
-		return "usage: /memory [show|remember <text>|remember-global <text>|forget <query>|forget-global <query>]"
+		return "usage: /memory [show|list|save|reload|remember <text>|remember-global <text>|forget <query>|forget-global <query>|clear-project]"
 	}
 	r.refreshMemoryContext()
 	_ = r.saveMemory()
 	_ = r.save()
-	return memory.FormatNotes(r.globalMemory, r.projectMemory)
+	return r.describeMemory()
 }
 
 func firstNonEmpty(values ...string) string {
@@ -1328,13 +1396,49 @@ func (r *chatRuntime) refreshMemoryContext() {
 	r.session.ReplaceMessages(messages)
 }
 
+func (r *chatRuntime) reloadMemory() error {
+	state, err := memory.Load(r.memoryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			r.globalMemory = nil
+			r.projectMemory = nil
+			r.refreshMemoryContext()
+			return nil
+		}
+		return err
+	}
+	r.globalMemory = append([]string(nil), state.Global...)
+	r.projectMemory = append([]string(nil), state.Projects[r.scopeKey]...)
+	r.refreshMemoryContext()
+	return nil
+}
+
+func (r *chatRuntime) describeMemory() string {
+	text := memory.FormatNotes(r.globalMemory, r.projectMemory)
+	summary := memory.Summarize(memory.State{
+		Global:   r.globalMemory,
+		Projects: map[string][]string{r.scopeKey: r.projectMemory},
+	}, r.scopeKey)
+	lines := []string{
+		fmt.Sprintf("path=%s", r.memoryPath),
+		fmt.Sprintf("scope=%s", r.scopeKey),
+		fmt.Sprintf("global_notes=%d", summary.GlobalCount),
+		fmt.Sprintf("project_notes=%d", summary.ProjectCount),
+		text,
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (r *chatRuntime) save() error {
 	return session.Save(r.statePath, session.State{
-		SessionName:  r.sessionName,
-		Model:        "",
-		OutputMode:   "",
-		ApprovalMode: "",
-		Messages:     r.session.Messages(),
+		SessionName:   r.sessionName,
+		Model:         r.cfg.Model,
+		OutputMode:    r.outputMode,
+		ApprovalMode:  r.cfg.ApprovalMode,
+		ScopeKey:      r.scopeKey,
+		GlobalMemory:  append([]string(nil), r.globalMemory...),
+		ProjectMemory: append([]string(nil), r.projectMemory...),
+		Messages:      r.session.Messages(),
 	})
 }
 
@@ -1342,16 +1446,17 @@ func (r *chatRuntime) saveMemory() error {
 	state := memory.State{
 		Global: r.globalMemory,
 		Projects: map[string][]string{
-			r.scopeKey: r.projectMemory,
+			r.scopeKey: append([]string(nil), r.projectMemory...),
 		},
 	}
+	if len(r.projectMemory) == 0 {
+		state.Projects = nil
+	}
 	if existing, err := memory.Load(r.memoryPath); err == nil {
-		state.Global = memory.Normalize(append(existing.Global, r.globalMemory...))
-		state.Projects = existing.Projects
-		if state.Projects == nil {
-			state.Projects = make(map[string][]string)
+		state = memory.Merge(existing, state)
+		if len(r.projectMemory) == 0 {
+			state = memory.DeleteScope(state, r.scopeKey)
 		}
-		state.Projects[r.scopeKey] = r.projectMemory
 	}
 	return memory.Save(r.memoryPath, state)
 }
@@ -1777,11 +1882,11 @@ func defaultChatSessionName(now time.Time) string {
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	factory := harness.NewFactory(cfg)
 	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
-	return factory.NewAgent(approver, os.Stderr, nil), approver
+	return factory.NewAgent(approver, os.Stderr, nil, nil), approver
 }
 
 func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
-	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, extraAuditSinks...)
+	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, nil, extraAuditSinks...)
 }
 
 func promptContextFor(cfg config.Config, loop *agent.Agent, sessionMode, memoryText string) agent.PromptContext {

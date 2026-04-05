@@ -13,12 +13,24 @@ import (
 )
 
 type State struct {
-	SessionName  string          `json:"session_name"`
-	Model        string          `json:"model"`
-	OutputMode   string          `json:"output_mode"`
-	ApprovalMode string          `json:"approval_mode"`
-	SavedAt      time.Time       `json:"saved_at"`
-	Messages     []model.Message `json:"messages"`
+	SessionName   string          `json:"session_name"`
+	Model         string          `json:"model"`
+	OutputMode    string          `json:"output_mode"`
+	ApprovalMode  string          `json:"approval_mode"`
+	ScopeKey      string          `json:"scope_key,omitempty"`
+	GlobalMemory  []string        `json:"global_memory,omitempty"`
+	ProjectMemory []string        `json:"project_memory,omitempty"`
+	Jobs          json.RawMessage `json:"jobs,omitempty"`
+	SavedAt       time.Time       `json:"saved_at"`
+	Messages      []model.Message `json:"messages"`
+}
+
+type Summary struct {
+	Name         string
+	SavedAt      time.Time
+	Model        string
+	ApprovalMode string
+	MessageCount int
 }
 
 func SessionPath(stateDir, name string) string {
@@ -30,6 +42,18 @@ func TranscriptPath(stateDir, name string) string {
 }
 
 func ListSessionNames(stateDir string) ([]string, error) {
+	summaries, err := ListSessions(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(summaries))
+	for _, entry := range summaries {
+		names = append(names, entry.Name)
+	}
+	return names, nil
+}
+
+func ListSessions(stateDir string) ([]Summary, error) {
 	dir := filepath.Join(stateDir, "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -39,35 +63,33 @@ func ListSessionNames(stateDir string) ([]string, error) {
 		return nil, err
 	}
 
-	type sessionEntry struct {
-		name    string
-		modTime time.Time
-	}
-
-	out := make([]sessionEntry, 0, len(entries))
+	out := make([]Summary, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		info, err := entry.Info()
+		path := filepath.Join(dir, entry.Name())
+		state, err := Load(path)
 		if err != nil {
 			continue
 		}
-		out = append(out, sessionEntry{
-			name:    strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())),
-			modTime: info.ModTime(),
+		name := strings.TrimSpace(state.SessionName)
+		if name == "" {
+			name = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		}
+		out = append(out, Summary{
+			Name:         name,
+			SavedAt:      state.SavedAt,
+			Model:        strings.TrimSpace(state.Model),
+			ApprovalMode: strings.TrimSpace(state.ApprovalMode),
+			MessageCount: len(state.Messages),
 		})
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].modTime.After(out[j].modTime)
+		return out[i].SavedAt.After(out[j].SavedAt)
 	})
-
-	names := make([]string, 0, len(out))
-	for _, entry := range out {
-		names = append(names, entry.name)
-	}
-	return names, nil
+	return out, nil
 }
 
 func Load(path string) (State, error) {

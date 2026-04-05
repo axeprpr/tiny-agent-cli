@@ -40,6 +40,10 @@ func (t *fetchURLTool) Definition() model.Tool {
 						"type":        "string",
 						"description": "HTTP or HTTPS URL",
 					},
+					"max_bytes": map[string]any{
+						"type":        "integer",
+						"description": "Optional max response bytes to read, default 65536.",
+					},
 				},
 			},
 		},
@@ -48,7 +52,8 @@ func (t *fetchURLTool) Definition() model.Tool {
 
 func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
-		URL string `json:"url"`
+		URL      string `json:"url"`
+		MaxBytes int64  `json:"max_bytes"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
@@ -71,16 +76,23 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if args.MaxBytes <= 0 {
+		args.MaxBytes = 64 * 1024
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, args.MaxBytes))
 	if err != nil {
 		return "", err
 	}
 
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	text := compactHTML(string(body))
+	if !strings.Contains(strings.ToLower(contentType), "html") && strings.TrimSpace(string(body)) != "" {
+		text = strings.TrimSpace(string(body))
+	}
 	if text == "" {
 		text = "(empty body)"
 	}
-	return fmt.Sprintf("status: %s\nurl: %s\n\n%s", resp.Status, target, text), nil
+	return fmt.Sprintf("status: %s\nurl: %s\ncontent_type: %s\n\n%s", resp.Status, target, firstNonEmptyContentType(contentType), text), nil
 }
 
 type webSearchTool struct {
@@ -111,6 +123,10 @@ func (t *webSearchTool) Definition() model.Tool {
 						"type":        "string",
 						"description": "Search query",
 					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum results to return, default 5.",
+					},
 				},
 			},
 		},
@@ -120,6 +136,7 @@ func (t *webSearchTool) Definition() model.Tool {
 func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
 		Query string `json:"query"`
+		Limit int    `json:"limit"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
@@ -128,6 +145,9 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	query := strings.TrimSpace(args.Query)
 	if query == "" {
 		return "", fmt.Errorf("query is required")
+	}
+	if args.Limit <= 0 {
+		args.Limit = 5
 	}
 
 	endpoints := defaultSearchEndpoints(query)
@@ -173,6 +193,9 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		return strings.Join(lines, "\n"), nil
 	}
 
+	if len(results) > args.Limit {
+		results = results[:args.Limit]
+	}
 	for i, r := range results {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, r.title))
 		if r.url != "" {
@@ -316,6 +339,14 @@ func stripTags(s string) string {
 	s = decodeHTMLEntities(s)
 	s = spacePattern.ReplaceAllString(s, " ")
 	return strings.TrimSpace(s)
+}
+
+func firstNonEmptyContentType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func decodeHTMLEntities(s string) string {

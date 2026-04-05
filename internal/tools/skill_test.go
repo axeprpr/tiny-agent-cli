@@ -53,8 +53,13 @@ func TestDiscoverSkillsSkipsFoldersWithoutSkillMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover skills: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected no skills, got %#v", got)
+	if len(got) == 0 {
+		t.Fatalf("expected bundled skills, got %#v", got)
+	}
+	for _, item := range got {
+		if item.Path == filepath.Join(workDir, ".codex", "skills", "broken", skillFileName) {
+			t.Fatalf("unexpected broken workspace skill in results: %#v", got)
+		}
 	}
 }
 

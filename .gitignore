@@ -13,3 +13,4 @@ coverage/
 .vercel
 cmd/tacli/.tacli/tasks-v2.json
 tacli
+.cache

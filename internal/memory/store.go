@@ -17,6 +17,13 @@ type State struct {
 	SavedAt  time.Time           `json:"saved_at"`
 }
 
+type Summary struct {
+	SavedAt      time.Time
+	GlobalCount  int
+	ProjectCount int
+	ScopeCount   int
+}
+
 func Path(stateDir string) string {
 	return filepath.Join(stateDir, "memory.json")
 }
@@ -63,6 +70,53 @@ func Save(path string, state State) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func Merge(base, update State) State {
+	out := State{
+		Global:   Normalize(append(base.Global, update.Global...)),
+		Projects: normalizeProjects(base.Projects),
+		SavedAt:  base.SavedAt,
+	}
+	if out.Projects == nil {
+		out.Projects = make(map[string][]string)
+	}
+	for key, notes := range update.Projects {
+		normalized := Normalize(notes)
+		if len(normalized) == 0 {
+			delete(out.Projects, key)
+			continue
+		}
+		out.Projects[key] = normalized
+	}
+	if len(out.Projects) == 0 {
+		out.Projects = nil
+	}
+	return out
+}
+
+func DeleteScope(state State, scopeKey string) State {
+	scopeKey = strings.TrimSpace(scopeKey)
+	if scopeKey == "" || len(state.Projects) == 0 {
+		return state
+	}
+	state.Projects = normalizeProjects(state.Projects)
+	delete(state.Projects, scopeKey)
+	if len(state.Projects) == 0 {
+		state.Projects = nil
+	}
+	return state
+}
+
+func Summarize(state State, scopeKey string) Summary {
+	state.Global = Normalize(state.Global)
+	state.Projects = normalizeProjects(state.Projects)
+	return Summary{
+		SavedAt:      state.SavedAt,
+		GlobalCount:  len(state.Global),
+		ProjectCount: len(state.Projects[strings.TrimSpace(scopeKey)]),
+		ScopeCount:   len(state.Projects),
+	}
 }
 
 func Normalize(notes []string) []string {

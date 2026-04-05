@@ -129,8 +129,8 @@ func TestResolveChatSessionName(t *testing.T) {
 		input string
 		want  string
 	}{
-		{name: "blank creates new session", input: "", want: "chat-20260320-140506"},
-		{name: "new creates new session", input: "new", want: "chat-20260320-140506"},
+		{name: "blank creates new session", input: "", want: "chat-20260320-060506"},
+		{name: "new creates new session", input: "new", want: "chat-20260320-060506"},
 		{name: "explicit session kept", input: "bugfix", want: "bugfix"},
 	}
 
@@ -251,7 +251,7 @@ func TestSummarizeJobForSession(t *testing.T) {
 	}
 }
 
-func TestSaveDoesNotPersistApprovalMode(t *testing.T) {
+func TestSavePersistsSessionState(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Config{
 		Model:          "test-model",
@@ -265,12 +265,15 @@ func TestSaveDoesNotPersistApprovalMode(t *testing.T) {
 		ApprovalMode:   tools.ApprovalConfirm,
 	}
 	r := &chatRuntime{
-		cfg:         cfg,
-		approver:    tools.NewTerminalApprover(bufio.NewReader(strings.NewReader("")), os.Stderr, tools.ApprovalDangerously, true),
-		session:     agentSessionStub(),
-		sessionName: "chat-test",
-		statePath:   session.SessionPath(dir, "chat-test"),
-		outputMode:  "terminal",
+		cfg:           cfg,
+		approver:      tools.NewTerminalApprover(bufio.NewReader(strings.NewReader("")), os.Stderr, tools.ApprovalDangerously, true),
+		session:       agentSessionStub(),
+		sessionName:   "chat-test",
+		statePath:     session.SessionPath(dir, "chat-test"),
+		outputMode:    "terminal",
+		scopeKey:      memory.ScopeKey(dir),
+		globalMemory:  []string{"Prefer concise answers"},
+		projectMemory: []string{"Repo uses Go"},
 	}
 	if err := r.save(); err != nil {
 		t.Fatalf("save failed: %v", err)
@@ -279,14 +282,23 @@ func TestSaveDoesNotPersistApprovalMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
-	if state.ApprovalMode != "" {
-		t.Fatalf("approval mode should not persist, got %q", state.ApprovalMode)
+	if state.ApprovalMode != tools.ApprovalConfirm {
+		t.Fatalf("approval mode mismatch: %q", state.ApprovalMode)
 	}
-	if state.Model != "" {
-		t.Fatalf("model should not persist, got %q", state.Model)
+	if state.Model != cfg.Model {
+		t.Fatalf("model mismatch: %q", state.Model)
 	}
-	if state.OutputMode != "" {
-		t.Fatalf("output mode should not persist, got %q", state.OutputMode)
+	if state.OutputMode != "terminal" {
+		t.Fatalf("output mode mismatch: %q", state.OutputMode)
+	}
+	if state.ScopeKey != r.scopeKey {
+		t.Fatalf("scope key mismatch: %q", state.ScopeKey)
+	}
+	if len(state.GlobalMemory) != 1 || state.GlobalMemory[0] != r.globalMemory[0] {
+		t.Fatalf("global memory mismatch: %#v", state.GlobalMemory)
+	}
+	if len(state.ProjectMemory) != 1 || state.ProjectMemory[0] != r.projectMemory[0] {
+		t.Fatalf("project memory mismatch: %#v", state.ProjectMemory)
 	}
 }
 

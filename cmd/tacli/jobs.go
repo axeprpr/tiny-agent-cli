@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -361,6 +362,73 @@ func (m *jobManager) Summary() string {
 	return fmt.Sprintf("jobs=%d running=%d queued=%d", len(snaps), running, queued)
 }
 
+func (m *jobManager) ClearFinished() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := 0
+	for id, job := range m.jobs {
+		switch job.snapshot().Status {
+		case jobReady, jobFailed, jobCanceled:
+			delete(m.jobs, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+func (m *jobManager) Export() json.RawMessage {
+	snaps := m.List()
+	data, err := json.Marshal(snaps)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func (m *jobManager) Restore(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var snaps []jobSnapshot
+	if err := json.Unmarshal(raw, &snaps); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, snap := range snaps {
+		job := &backgroundJob{
+			id:         snap.ID,
+			role:       normalizeBackgroundRole(snap.Role),
+			model:      snap.Model,
+			status:     snap.Status,
+			taskCount:  snap.TaskCount,
+			queued:     0,
+			lastPrompt: snap.LastPrompt,
+			lastOutput: snap.LastOutput,
+			lastError:  snap.LastError,
+			logTail:    snap.LogTail,
+			summary:    snap.Summary,
+			applied:    snap.Applied,
+			createdAt:  snap.CreatedAt,
+			startedAt:  snap.StartedAt,
+			updatedAt:  snap.UpdatedAt,
+			finishedAt: snap.FinishedAt,
+		}
+		if job.status == jobQueued || job.status == jobRunning {
+			job.status = jobFailed
+			job.lastError = "restored from saved state; original background worker is no longer running"
+			if job.finishedAt.IsZero() {
+				job.finishedAt = time.Now()
+			}
+		}
+		m.jobs[job.id] = job
+		if n := parseJobOrdinal(job.id); n > m.nextID {
+			m.nextID = n
+		}
+	}
+	return nil
+}
+
 func (m *jobManager) activeJobsLocked() int {
 	active := 0
 	for _, job := range m.jobs {
@@ -626,6 +694,12 @@ func compactJobText(text string, limit int) string {
 		return text[:limit] + "..."
 	}
 	return text
+}
+
+func parseJobOrdinal(id string) int {
+	var n int
+	_, _ = fmt.Sscanf(strings.TrimSpace(id), "job-%d", &n)
+	return n
 }
 
 func summarizeBackgroundResult(text string) jobSummary {
