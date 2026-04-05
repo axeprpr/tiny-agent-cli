@@ -25,6 +25,7 @@ import (
 	"tiny-agent-cli/internal/plugins"
 	"tiny-agent-cli/internal/session"
 	"tiny-agent-cli/internal/transport"
+	"tiny-agent-cli/internal/tasks"
 	"tiny-agent-cli/internal/tools"
 	"tiny-agent-cli/internal/trace"
 )
@@ -56,6 +57,7 @@ type chatRuntime struct {
 	globalMemory   []string
 	projectMemory  []string
 	permissions    *tools.PermissionStore
+	taskStore      *tasks.Store
 	autoMemoryExit bool
 	dirtySession   bool
 	tracer         *trace.FileSink
@@ -331,6 +333,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		memoryPath:     memory.Path(cfg.StateDir),
 		auditPath:      tools.AuditPath(cfg.StateDir),
 		scopeKey:       memory.ScopeKey(cfg.WorkDir),
+		taskStore:      tasks.New(filepath.Join(cfg.WorkDir, ".tacli", "tasks.json")),
 		pluginCommands: make(map[string]plugins.Command),
 	}
 	r.setSessionName(sessionName)
@@ -541,6 +544,10 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobapply.ok"), fields[1]), exitCode: -1}
 	case "/memory":
 		return runtimeCommandResult{handled: true, output: r.memoryCommand(fields, input), exitCode: -1}
+	case "/tasks":
+		return runtimeCommandResult{handled: true, output: r.tasksCommand(fields, input), exitCode: -1}
+	case "/review":
+		return runtimeCommandResult{handled: true, output: r.reviewCommand(fields), exitCode: -1}
 	case "/remember":
 		if len(fields) < 2 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.remember.usage"), exitCode: -1}
@@ -787,6 +794,92 @@ func (r *chatRuntime) skillsCommand() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) tasksCommand(fields []string, input string) string {
+	if r == nil || r.taskStore == nil {
+		return "task store unavailable"
+	}
+	usage := strings.Join([]string{
+		"usage: /tasks list",
+		"usage: /tasks create <title>",
+		"usage: /tasks update <id> [status=<pending|in_progress|completed|canceled>] [title=<text>] [details=<text>]",
+		"usage: /tasks delete <id>",
+	}, "\n")
+	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
+		return tasks.Format(r.taskStore.List())
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "create":
+		title := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
+		item, err := r.taskStore.Create(title, "")
+		if err != nil {
+			return err.Error()
+		}
+		return tasks.Format([]tasks.Item{item})
+	case "update":
+		if len(fields) < 3 {
+			return usage
+		}
+		update, err := parseTaskUpdateFields(fields[3:])
+		if err != nil {
+			return err.Error()
+		}
+		item, err := r.taskStore.Update(fields[2], update)
+		if err != nil {
+			return err.Error()
+		}
+		return tasks.Format([]tasks.Item{item})
+	case "delete":
+		if len(fields) != 3 {
+			return usage
+		}
+		if err := r.taskStore.Delete(fields[2]); err != nil {
+			return err.Error()
+		}
+		return "deleted " + fields[2]
+	default:
+		return usage
+	}
+}
+
+func parseTaskUpdateFields(fields []string) (tasks.Update, error) {
+	var update tasks.Update
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return tasks.Update{}, fmt.Errorf("invalid update field %q", field)
+		}
+		value = strings.TrimSpace(value)
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "title":
+			update.Title = &value
+		case "status":
+			update.Status = &value
+		case "details":
+			update.Details = &value
+		default:
+			return tasks.Update{}, fmt.Errorf("unknown task field %q", key)
+		}
+	}
+	return update, nil
+}
+
+func (r *chatRuntime) reviewCommand(fields []string) string {
+	base := "HEAD"
+	if len(fields) > 1 {
+		base = strings.TrimSpace(fields[1])
+	}
+	prompt := "Review the current git diff"
+	if base != "" {
+		prompt += " against " + base
+	}
+	prompt += ". Use review_diff first. Focus on bugs, regressions, risky assumptions, and missing tests. Present findings first with file references when possible. If there are no findings, say so explicitly."
+	output, err := r.executeTask(context.Background(), prompt)
+	if err != nil {
+		return "review error: " + err.Error()
+	}
+	return output
 }
 
 func (r *chatRuntime) pluginCommand(fields []string, raw string) string {

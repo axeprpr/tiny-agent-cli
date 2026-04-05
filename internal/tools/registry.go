@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tasks"
 )
 
 type Tool interface {
@@ -42,6 +43,7 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 		policy:     policy,
 	}
 	todos := newTodoStoreWithPath(filepath.Join(workDir, ".tacli", "tasks-v2.json"))
+	taskStore := tasks.New(filepath.Join(workDir, ".tacli", "tasks.json"))
 	r.todo = todos
 	r.permission = newApprovalPermissionDecider(workDir, approver, policy)
 	r.hooks = append(r.hooks, NewDefaultHooks(r.hookConfig)...)
@@ -49,6 +51,11 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 	toolset := []Tool{
 		newUpdateTodoTool(todos),
 		newShowTodoTool(todos),
+		newCreateTaskTool(taskStore),
+		newListTasksTool(taskStore),
+		newUpdateTaskTool(taskStore),
+		newDeleteTaskTool(taskStore),
+		newReviewDiffTool(workDir),
 		newListFilesTool(workDir),
 		newGlobSearchTool(workDir),
 		newReadFileTool(workDir),
@@ -244,6 +251,24 @@ func (r *Registry) Preview(name string, raw json.RawMessage) string {
 		return compactPreviewString(args["items"], 120)
 	case "run_command":
 		return compactPreviewString(args["command"], 80)
+	case "create_task":
+		return compactPreviewString(args["title"], 80)
+	case "update_task":
+		return joinPreviewParts(
+			compactKeyValue("id", args["id"], 24),
+			compactKeyValue("status", args["status"], 20),
+			compactKeyValue("title", args["title"], 40),
+		)
+	case "delete_task":
+		return compactKeyValue("id", args["id"], 24)
+	case "list_tasks":
+		return ""
+	case "review_diff":
+		return joinPreviewParts(
+			compactKeyValue("base", args["base"], 24),
+			compactKeyValue("target", args["target"], 24),
+			compactKeyValue("path", args["path"], 40),
+		)
 	case "start_background_job":
 		return compactPreviewString(args["task"], 80)
 	case "delegate_subagent":
