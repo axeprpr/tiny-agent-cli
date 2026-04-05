@@ -64,6 +64,36 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	}
 }
 
+func TestFetchURLRejectsUnsupportedScheme(t *testing.T) {
+	tool := newFetchURLTool()
+	_, err := tool.Call(context.Background(), json.RawMessage(`{"url":"file:///etc/passwd"}`))
+	if err == nil || !strings.Contains(err.Error(), "unsupported URL scheme") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFetchURLReturnsErrorForHTTPFailure(t *testing.T) {
+	tool := &fetchURLTool{
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Body:       io.NopCloser(strings.NewReader("missing")),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	_, err := tool.Call(context.Background(), json.RawMessage(`{"url":"https://example.com/missing"}`))
+	if err == nil || !strings.Contains(err.Error(), "404 Not Found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

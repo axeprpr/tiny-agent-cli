@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"tiny-agent-cli/internal/model"
@@ -59,5 +62,22 @@ func TestNewDefaultHooksRespectsDisabledList(t *testing.T) {
 	})
 	if len(hooks) != 0 {
 		t.Fatalf("expected no hooks, got %d", len(hooks))
+	}
+}
+
+func TestApprovalPermissionDeciderChecksEditFileWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	decider := newApprovalPermissionDecider(dir, mockApprover{writeAllowed: false}, nil)
+	err := decider.Decide(context.Background(), ToolInvocation{
+		Name: "edit_file",
+		Raw:  json.RawMessage(`{"path":"note.txt","old_text":"beta","new_text":"BETA"}`),
+	})
+	if err == nil || err.Error() != "file write rejected by user" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

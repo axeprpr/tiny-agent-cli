@@ -62,6 +62,28 @@ func TestWriteFileToolWritesWhenApproved(t *testing.T) {
 	}
 }
 
+func TestWriteFileToolPreservesExistingPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	tool := newWriteFileTool(dir, mockApprover{writeAllowed: true})
+	raw := json.RawMessage(`{"path":"script.sh","content":"#!/bin/sh\necho new\n"}`)
+	if _, err := tool.Call(context.Background(), raw); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("unexpected mode: %o", got)
+	}
+}
+
 func TestReadFileToolRejectsBinaryContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tacli")

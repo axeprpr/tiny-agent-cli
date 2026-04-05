@@ -154,8 +154,7 @@ func (c *Client) CompleteStream(ctx context.Context, req model.Request) (<-chan 
 		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	streamClient := &http.Client{}
-	resp, err := streamClient.Do(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		errc <- fmt.Errorf("request failed: %w", err)
 		close(chunks)

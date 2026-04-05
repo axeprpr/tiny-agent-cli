@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -225,6 +226,34 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 			return err
 		}
 		approved, err := d.approver.ApproveWrite(ctx, path, args.Content)
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return fmt.Errorf("file write rejected by user")
+		}
+	case "edit_file":
+		var args struct {
+			Path    string `json:"path"`
+			OldText string `json:"old_text"`
+			NewText string `json:"new_text"`
+		}
+		if err := json.Unmarshal(inv.Raw, &args); err != nil {
+			return fmt.Errorf("decode args: %w", err)
+		}
+		path, err := securePath(d.workDir, args.Path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if looksBinary(data) {
+			return fmt.Errorf("edit_file only supports text files")
+		}
+		updated := strings.Replace(string(data), args.OldText, args.NewText, 1)
+		approved, err := d.approver.ApproveWrite(ctx, path, updated)
 		if err != nil {
 			return err
 		}

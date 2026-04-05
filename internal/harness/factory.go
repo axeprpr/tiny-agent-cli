@@ -3,9 +3,11 @@ package harness
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +21,11 @@ import (
 type Factory struct {
 	cfg config.Config
 }
+
+const (
+	maxInstructionFileChars  = 4000
+	maxTotalInstructionChars = 12000
+)
 
 func NewFactory(cfg config.Config) Factory {
 	return Factory{cfg: cfg}
@@ -60,6 +67,7 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 			})
 		}
 	}
+	instructions, _ := discoverInstructionFiles(cfg.WorkDir)
 	gitBranch, gitStatus := gitPromptContext(cfg.WorkDir)
 	return agent.PromptContext{
 		MemoryText:   memoryText,
@@ -69,6 +77,7 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 		Model:        cfg.Model,
 		ToolNames:    toolNames,
 		Skills:       skills,
+		Instructions: instructions,
 		GitBranch:    gitBranch,
 		GitStatus:    gitStatus,
 		SessionMode:  sessionMode,
@@ -86,21 +95,22 @@ func gitPromptContext(workDir string) (branch string, status string) {
 		branch = strings.TrimSpace(firstLine(branchOut))
 	}
 
-	statusOut, err := runGitPromptCmd(workDir, "status", "--porcelain")
+	statusOut, err := runGitPromptCmd(workDir, "status", "--short", "--branch")
 	if err != nil {
 		return branch, ""
 	}
-	lines := strings.Split(strings.TrimSpace(statusOut), "\n")
-	changes := 0
-	for _, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			changes++
-		}
+	statusOut = strings.TrimSpace(statusOut)
+	if statusOut == "" {
+		return branch, ""
 	}
-	if changes == 0 {
+	lines := strings.Split(statusOut, "\n")
+	if len(lines) == 1 && strings.HasPrefix(strings.TrimSpace(lines[0]), "## ") {
 		return branch, "clean"
 	}
-	return branch, "dirty(" + strconv.Itoa(changes) + " changes)"
+	if len(lines) > 12 {
+		lines = append(lines[:12], fmt.Sprintf("... (%d more lines)", len(lines)-12))
+	}
+	return branch, strings.Join(lines, "\n")
 }
 
 func runGitPromptCmd(workDir string, args ...string) (string, error) {
@@ -132,4 +142,81 @@ func roleFromSessionMode(sessionMode string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(lower, prefix))
+}
+
+func discoverInstructionFiles(workDir string) ([]agent.PromptInstructionFile, error) {
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var dirs []string
+	for dir := absWorkDir; ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+
+	candidates := []string{
+		"CLAW.md",
+		"CLAW.local.md",
+		filepath.Join(".claw", "CLAW.md"),
+		filepath.Join(".claw", "instructions.md"),
+	}
+
+	var files []agent.PromptInstructionFile
+	totalChars := 0
+	seen := make(map[string]struct{})
+	for _, dir := range dirs {
+		for _, candidate := range candidates {
+			path := filepath.Join(dir, candidate)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			item, ok, err := readInstructionFile(path, maxInstructionFileChars)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			remaining := maxTotalInstructionChars - totalChars
+			if remaining <= 0 {
+				return files, nil
+			}
+			if len(item.Content) > remaining {
+				item.Content = item.Content[:remaining] + "\n...[truncated]"
+			}
+			seen[path] = struct{}{}
+			totalChars += len(item.Content)
+			files = append(files, item)
+		}
+	}
+	return files, nil
+}
+
+func readInstructionFile(path string, maxChars int) (agent.PromptInstructionFile, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return agent.PromptInstructionFile{}, false, nil
+		}
+		return agent.PromptInstructionFile{}, false, err
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return agent.PromptInstructionFile{}, false, nil
+	}
+	if maxChars > 0 && len(content) > maxChars {
+		content = content[:maxChars] + "\n...[truncated]"
+	}
+	return agent.PromptInstructionFile{
+		Path:    path,
+		Content: content,
+	}, true, nil
 }

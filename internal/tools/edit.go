@@ -97,7 +97,8 @@ func (t *editFileTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 			return "", fmt.Errorf("file write rejected by user")
 		}
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	mode := fileModeOrDefault(path, 0o644)
+	if err := os.WriteFile(path, []byte(updated), mode); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("edited %s", path), nil

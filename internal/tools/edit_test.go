@@ -64,3 +64,25 @@ func TestEditFileToolRejectsAmbiguousMatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestEditFileToolPreservesExistingPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nbeta\n"), 0o755); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	tool := newEditFileTool(dir, mockApprover{writeAllowed: true})
+	raw := json.RawMessage(`{"path":"script.sh","old_text":"beta","new_text":"BETA"}`)
+	if _, err := tool.Call(context.Background(), raw); err != nil {
+		t.Fatalf("edit failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("unexpected mode: %o", got)
+	}
+}

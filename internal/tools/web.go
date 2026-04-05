@@ -63,6 +63,15 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 	if target == "" {
 		return "", fmt.Errorf("url is required")
 	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("parse url: %w", err)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("unsupported URL scheme %q", parsed.Scheme)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -91,6 +100,9 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 	}
 	if text == "" {
 		text = "(empty body)"
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("fetch failed with %s", resp.Status)
 	}
 	return fmt.Sprintf("status: %s\nurl: %s\ncontent_type: %s\n\n%s", resp.Status, target, firstNonEmptyContentType(contentType), text), nil
 }

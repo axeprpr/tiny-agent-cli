@@ -13,6 +13,7 @@ type PromptContext struct {
 	Model        string
 	ToolNames    []string
 	Skills       []PromptSkill
+	Instructions []PromptInstructionFile
 	GitBranch    string
 	GitStatus    string
 	SessionMode  string
@@ -25,28 +26,35 @@ type PromptSkill struct {
 	Path        string
 }
 
-const baseSystemPrompt = `You are a terminal coding agent.
+type PromptInstructionFile struct {
+	Path    string
+	Content string
+}
 
-Core rules:
-- Run one task at a time and drive it to completion.
-- Prefer evidence over assumptions. Read files and command output before deciding.
-- Use tools whenever they reduce uncertainty.
+const baseSystemPrompt = `You are an interactive agent that helps users with software engineering tasks.
+
+System:
+- Use tools when they reduce uncertainty. Prefer evidence over assumptions.
 - Keep reasoning private. Never expose chain-of-thought or hidden analysis.
-- Your visible reply must be either tool calls or the user-facing answer.
 - Never emit <think>, </think>, <thinking>, analysis tags, or hidden-reasoning markers.
 - Stay inside the workspace boundary. Do not access files outside the workspace.
-- Avoid destructive or risky commands unless explicitly required.
+- Prefer concise, actionable responses. The visible reply must be tool calls or the user-facing answer.
+- Keep multi-step work tracked with update_todo; refresh it when state changes.
+- Keep work in the foreground unless a subtask is clearly long-running. Inspect background jobs before relying on them.
 
-Execution:
-- Choose the smallest useful next action.
+Doing tasks:
+- Read relevant code before changing it.
+- Do not add speculative abstractions or broad refactors unless they are required.
 - For workspace tasks: inspect first, edit second, verify third.
-- For simple factual requests: answer immediately with no preamble.
-- Use tools instead of describing what you plan to do.
-- Keep multi-step work tracked with update_todo; refresh when state changes.
-- Use show_todo when you need the current plan.
-- Keep work in the foreground unless a subtask is clearly long-running.
-- If a background job is started, collect evidence with inspect_background_job or list_background_jobs.
+- Run the smallest useful command or edit that moves the task forward.
+- When a user asks for a review, prioritize findings, regressions, and missing tests over summaries.
 - Stop as soon as the task is complete.
+
+Actions with care:
+- Carefully consider reversibility and blast radius before running commands or editing files.
+- Avoid destructive or risky commands unless explicitly required.
+- Check whether the worktree already contains user changes before modifying related files.
+- Prefer targeted diffs and preserve unrelated user edits.
 
 Output style:
 - Plain text only.
@@ -62,6 +70,7 @@ func BuildSystemPrompt(ctx PromptContext) string {
 		baseSystemPrompt,
 		renderRuntimeSection(ctx),
 		renderGitSection(ctx),
+		renderInstructionSection(ctx.Instructions),
 		renderRoleSection(ctx),
 		renderToolSection(ctx.ToolNames),
 		renderSkillSection(ctx.Skills),
@@ -131,14 +140,48 @@ func renderGitSection(ctx PromptContext) string {
 	if branch == "" && status == "" {
 		return ""
 	}
-	var lines []string
+	lines := []string{"Project context:"}
 	if branch != "" {
-		lines = append(lines, "branch="+branch)
+		lines = append(lines, "- git_branch="+branch)
 	}
 	if status != "" {
-		lines = append(lines, "status="+status)
+		lines = append(lines, "- git_status:")
+		for _, line := range strings.Split(status, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			lines = append(lines, "  "+line)
+		}
 	}
-	return "Git context:\n- " + strings.Join(lines, "\n- ")
+	return strings.Join(lines, "\n")
+}
+
+func renderInstructionSection(files []PromptInstructionFile) string {
+	if len(files) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "Instruction files:")
+	for _, file := range files {
+		path := strings.TrimSpace(file.Path)
+		content := strings.TrimSpace(file.Content)
+		if path == "" || content == "" {
+			continue
+		}
+		lines = append(lines, "- "+path+":")
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			lines = append(lines, "  "+line)
+		}
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderToolSection(names []string) string {

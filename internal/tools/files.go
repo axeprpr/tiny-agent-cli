@@ -252,11 +252,20 @@ func (t *writeFileTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(args.Content), 0o644); err != nil {
+	mode := fileModeOrDefault(path, 0o644)
+	if err := os.WriteFile(path, []byte(args.Content), mode); err != nil {
 		return "", err
 	}
 
 	return fmt.Sprintf("wrote %d bytes to %s", len(args.Content), path), nil
+}
+
+func fileModeOrDefault(path string, fallback os.FileMode) os.FileMode {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fallback
+	}
+	return info.Mode().Perm()
 }
 
 type grepTool struct {

@@ -96,8 +96,36 @@ func TestGitPromptContextCleanAndDirty(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 	_, dirty := gitPromptContext(workDir)
-	if !strings.HasPrefix(dirty, "dirty(") {
+	if !strings.Contains(dirty, "README.md") {
 		t.Fatalf("expected dirty status, got %q", dirty)
+	}
+}
+
+func TestDiscoverInstructionFilesWalksFromRootToWorkdir(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "projects", "demo")
+	if err := os.MkdirAll(filepath.Join(nested, ".claw"), 0o755); err != nil {
+		t.Fatalf("mkdir nested dirs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "CLAW.md"), []byte("root rules\n"), 0o644); err != nil {
+		t.Fatalf("write root instruction: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".claw", "instructions.md"), []byte("local rules\n"), 0o644); err != nil {
+		t.Fatalf("write local instruction: %v", err)
+	}
+
+	files, err := discoverInstructionFiles(nested)
+	if err != nil {
+		t.Fatalf("discoverInstructionFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("unexpected instruction files: %#v", files)
+	}
+	if files[0].Path != filepath.Join(root, "CLAW.md") {
+		t.Fatalf("unexpected first path: %#v", files)
+	}
+	if files[1].Path != filepath.Join(nested, ".claw", "instructions.md") {
+		t.Fatalf("unexpected second path: %#v", files)
 	}
 }
 

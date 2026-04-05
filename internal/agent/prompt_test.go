@@ -68,9 +68,22 @@ func TestBuildSystemPromptIncludesSkills(t *testing.T) {
 func TestBuildSystemPromptIncludesGitContext(t *testing.T) {
 	prompt := BuildSystemPrompt(PromptContext{
 		GitBranch: "main",
-		GitStatus: "dirty(2 changes)",
+		GitStatus: "## main\n M prompt.go",
 	})
-	for _, want := range []string{"Git context:", "branch=main", "status=dirty(2 changes)"} {
+	for _, want := range []string{"Project context:", "git_branch=main", "git_status:", "## main", "M prompt.go"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildSystemPromptIncludesInstructionFiles(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		Instructions: []PromptInstructionFile{
+			{Path: "/repo/CLAW.md", Content: "Follow repo rules\nRun tests"},
+		},
+	})
+	for _, want := range []string{"Instruction files:", "/repo/CLAW.md:", "Follow repo rules", "Run tests"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
