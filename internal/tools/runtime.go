@@ -23,9 +23,22 @@ type ToolOutcome struct {
 }
 
 type ToolHook interface {
-	BeforeTool(ctx context.Context, inv ToolInvocation) error
-	AfterTool(ctx context.Context, inv ToolInvocation, out ToolOutcome)
-	OnToolError(ctx context.Context, inv ToolInvocation, out ToolOutcome)
+	BeforeTool(ctx context.Context, inv *ToolInvocation) error
+	AfterTool(ctx context.Context, inv *ToolInvocation, out *ToolOutcome) error
+	OnToolError(ctx context.Context, inv *ToolInvocation, out *ToolOutcome) error
+}
+
+type NamedToolHook interface {
+	Name() string
+}
+
+type HookConfig struct {
+	Enabled  bool
+	Disabled []string
+}
+
+func DefaultHookConfig() HookConfig {
+	return HookConfig{Enabled: true}
 }
 
 type ToolPermissionDecider interface {
@@ -48,13 +61,32 @@ type ToolAuditSink interface {
 
 type runCommandSafetyHook struct{}
 
-func NewDefaultHooks() []ToolHook {
-	return []ToolHook{
+func NewDefaultHooks(cfg HookConfig) []ToolHook {
+	cfg = cfg.normalized()
+	if !cfg.Enabled {
+		return nil
+	}
+	candidates := []ToolHook{
 		runCommandSafetyHook{},
 	}
+	hooks := make([]ToolHook, 0, len(candidates))
+	for _, hook := range candidates {
+		if hookDisabled(cfg.Disabled, hook) {
+			continue
+		}
+		hooks = append(hooks, hook)
+	}
+	return hooks
 }
 
-func (runCommandSafetyHook) BeforeTool(_ context.Context, inv ToolInvocation) error {
+func (runCommandSafetyHook) Name() string {
+	return "command_safety"
+}
+
+func (runCommandSafetyHook) BeforeTool(_ context.Context, inv *ToolInvocation) error {
+	if inv == nil {
+		return nil
+	}
 	if inv.Name != "run_command" {
 		return nil
 	}
@@ -71,9 +103,53 @@ func (runCommandSafetyHook) BeforeTool(_ context.Context, inv ToolInvocation) er
 	return validateCommand(command)
 }
 
-func (runCommandSafetyHook) AfterTool(_ context.Context, _ ToolInvocation, _ ToolOutcome) {}
+func (runCommandSafetyHook) AfterTool(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
+	return nil
+}
 
-func (runCommandSafetyHook) OnToolError(_ context.Context, _ ToolInvocation, _ ToolOutcome) {}
+func (runCommandSafetyHook) OnToolError(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
+	return nil
+}
+
+func (c HookConfig) normalized() HookConfig {
+	if !c.Enabled && len(c.Disabled) == 0 {
+		return DefaultHookConfig()
+	}
+	out := HookConfig{
+		Enabled:  c.Enabled,
+		Disabled: make([]string, 0, len(c.Disabled)),
+	}
+	seen := make(map[string]struct{}, len(c.Disabled))
+	for _, name := range c.Disabled {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out.Disabled = append(out.Disabled, trimmed)
+	}
+	return out
+}
+
+func hookDisabled(disabled []string, hook ToolHook) bool {
+	named, ok := hook.(NamedToolHook)
+	if !ok {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(named.Name()))
+	if name == "" {
+		return false
+	}
+	for _, item := range disabled {
+		if item == name {
+			return true
+		}
+	}
+	return false
+}
 
 type approvalPermissionDecider struct {
 	workDir  string

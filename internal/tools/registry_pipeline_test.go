@@ -30,17 +30,19 @@ type recordHook struct {
 	events *[]string
 }
 
-func (h recordHook) BeforeTool(_ context.Context, _ ToolInvocation) error {
+func (h recordHook) BeforeTool(_ context.Context, _ *ToolInvocation) error {
 	*h.events = append(*h.events, "before")
 	return nil
 }
 
-func (h recordHook) AfterTool(_ context.Context, _ ToolInvocation, _ ToolOutcome) {
+func (h recordHook) AfterTool(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
 	*h.events = append(*h.events, "after")
+	return nil
 }
 
-func (h recordHook) OnToolError(_ context.Context, _ ToolInvocation, _ ToolOutcome) {
+func (h recordHook) OnToolError(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
 	*h.events = append(*h.events, "fail")
+	return nil
 }
 
 type recordPermission struct {
@@ -88,6 +90,36 @@ func TestRegistryCallPipelineSuccess(t *testing.T) {
 	if len(events) != len(want) {
 		t.Fatalf("unexpected events: got=%v want=%v", events, want)
 	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("unexpected events: got=%v want=%v", events, want)
+		}
+	}
+}
+
+func TestRegistryCallPipelineAllowsHookMutation(t *testing.T) {
+	var events []string
+	tool := &stubTool{
+		output: "initial",
+		onCall: func() { events = append(events, "tool") },
+	}
+	hook := mutationHook{events: &events}
+	r := &Registry{
+		tools: map[string]Tool{
+			"fake": tool,
+		},
+		permission: recordPermission{events: &events},
+	}
+	r.AddHook(hook)
+
+	out, err := r.Call(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if out != "mutated" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	want := []string{"before", "permission", "tool", "after"}
 	for i := range want {
 		if events[i] != want[i] {
 			t.Fatalf("unexpected events: got=%v want=%v", events, want)
@@ -155,4 +187,60 @@ func TestRegistryCallPermissionDeniedAudited(t *testing.T) {
 	if audit.events[0].Status != "permission_denied" {
 		t.Fatalf("unexpected audit status: %s", audit.events[0].Status)
 	}
+}
+
+func TestRegistryCallPipelineCanHandleToolError(t *testing.T) {
+	tool := &stubTool{
+		output: "boom",
+		err:    errors.New("tool failed"),
+	}
+	r := &Registry{
+		tools: map[string]Tool{
+			"fake": tool,
+		},
+	}
+	r.AddHook(errorHandlingHook{})
+
+	out, err := r.Call(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("expected hook to recover, got %v", err)
+	}
+	if out != "recovered" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+type mutationHook struct {
+	events *[]string
+}
+
+func (h mutationHook) BeforeTool(_ context.Context, _ *ToolInvocation) error {
+	*h.events = append(*h.events, "before")
+	return nil
+}
+
+func (h mutationHook) AfterTool(_ context.Context, _ *ToolInvocation, out *ToolOutcome) error {
+	*h.events = append(*h.events, "after")
+	out.Output = "mutated"
+	return nil
+}
+
+func (h mutationHook) OnToolError(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
+	return nil
+}
+
+type errorHandlingHook struct{}
+
+func (errorHandlingHook) BeforeTool(_ context.Context, _ *ToolInvocation) error {
+	return nil
+}
+
+func (errorHandlingHook) AfterTool(_ context.Context, _ *ToolInvocation, _ *ToolOutcome) error {
+	return nil
+}
+
+func (errorHandlingHook) OnToolError(_ context.Context, _ *ToolInvocation, out *ToolOutcome) error {
+	out.Output = "recovered"
+	out.Err = nil
+	return nil
 }

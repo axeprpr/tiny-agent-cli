@@ -61,11 +61,18 @@ var messagesCN = map[string]string{
   /exit, /quit          退出
   /reset                清除对话上下文
   /session [name|new]   切换或新建会话
+  /session save         保存当前会话状态
+  /session restore      恢复当前会话状态
   /status               显示当前状态
+  /plan                 显示 docs/plan.md
+  /compact              立即压缩上下文
+  /hooks                查看或调整 hooks 配置
+  /plugin               列出或加载插件
+  /skills               列出已发现技能
   /scope                显示项目作用域
   /model <name>         切换模型
   /approval <mode>      设置审批模式 (confirm|dangerously)
-  /memory               查看记忆
+  /memory               查看或管理记忆
   /remember <text>      保存项目记忆
   /remember-global <t>  保存全局记忆
   /forget <query>       删除匹配的项目记忆

@@ -11,9 +11,12 @@ import (
 const skillFileName = "SKILL.md"
 
 type Skill struct {
-	Name        string
-	Description string
-	Path        string
+	Name            string
+	Description     string
+	Instructions    string
+	Path            string
+	Source          string
+	ToolDefinitions []string
 }
 
 func DiscoverSkills(workDir string) ([]Skill, error) {
@@ -23,7 +26,14 @@ func DiscoverSkills(workDir string) ([]Skill, error) {
 	}
 
 	seen := map[string]bool{}
-	var out []Skill
+	out := append([]Skill(nil), BundledSkills()...)
+	for _, item := range out {
+		key := strings.ToLower(strings.TrimSpace(item.Path))
+		if key == "" {
+			key = "bundled:" + strings.ToLower(strings.TrimSpace(item.Name))
+		}
+		seen[key] = true
+	}
 	for _, root := range roots {
 		items, err := discoverSkillsInRoot(root)
 		if err != nil {
@@ -64,6 +74,9 @@ func skillRoots(workDir string) ([]string, error) {
 	}
 	if strings.TrimSpace(codeHome) != "" {
 		roots = append(roots, filepath.Join(codeHome, "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, filepath.Join(home, ".config", "tiny-agent-cli", "skills"))
 	}
 
 	uniq := make([]string, 0, len(roots))
@@ -117,6 +130,7 @@ func discoverSkillsInRoot(root string) ([]Skill, error) {
 func parseSkillMarkdown(fallbackName, path, text string) Skill {
 	name := strings.TrimSpace(fallbackName)
 	desc := ""
+	var toolDefs []string
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
@@ -129,8 +143,21 @@ func parseSkillMarkdown(fallbackName, path, text string) Skill {
 			}
 			continue
 		}
-		desc = line
-		break
+		if strings.HasPrefix(line, "Tool:") || strings.HasPrefix(line, "Tools:") {
+			label := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "Tools:"), "Tool:"))
+			for _, item := range strings.Split(label, ",") {
+				item = strings.TrimSpace(strings.TrimPrefix(item, "-"))
+				if item != "" {
+					toolDefs = append(toolDefs, item)
+				}
+			}
+			if desc == "" {
+				continue
+			}
+		}
+		if desc == "" {
+			desc = line
+		}
 	}
 
 	if name == "" {
@@ -141,9 +168,62 @@ func parseSkillMarkdown(fallbackName, path, text string) Skill {
 	}
 
 	return Skill{
-		Name:        strings.TrimSpace(name),
-		Description: strings.TrimSpace(desc),
-		Path:        strings.TrimSpace(path),
+		Name:            strings.TrimSpace(name),
+		Description:     strings.TrimSpace(desc),
+		Instructions:    strings.TrimSpace(text),
+		Path:            strings.TrimSpace(path),
+		Source:          "local",
+		ToolDefinitions: uniqueSkillToolNames(toolDefs),
 	}
 }
 
+func BundledSkills() []Skill {
+	out := make([]Skill, len(bundledSkills))
+	copy(out, bundledSkills)
+	return out
+}
+
+func uniqueSkillToolNames(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+var bundledSkills = []Skill{
+	{
+		Name:            "memory",
+		Description:     "Persistent memory workflow for project and global notes.",
+		Instructions:    "Use /memory, /remember, /remember-global, /forget, and /memorize to manage durable context.",
+		Path:            "bundled:memory",
+		Source:          "bundled",
+		ToolDefinitions: []string{"update_todo"},
+	},
+	{
+		Name:            "planning",
+		Description:     "Use docs/plan.md as the source of truth for the current development plan.",
+		Instructions:    "Read docs/plan.md before implementation-heavy tasks and keep work aligned with the listed phases.",
+		Path:            "bundled:planning",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "list_files"},
+	},
+	{
+		Name:            "hooks",
+		Description:     "Inspect configured tool hooks and validate tool execution policy before risky commands.",
+		Instructions:    "Use /hooks to inspect or adjust hook configuration during interactive sessions.",
+		Path:            "bundled:hooks",
+		Source:          "bundled",
+		ToolDefinitions: []string{"run_command"},
+	},
+}

@@ -30,7 +30,7 @@ func (f Factory) NewApprover(reader *bufio.Reader, output io.Writer, interactive
 
 func (f Factory) NewAgent(approver tools.Approver, log io.Writer, jobs tools.JobControl, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
 	client := f.NewModelClient()
-	registry := tools.NewRegistry(f.cfg.WorkDir, f.cfg.Shell, f.cfg.CommandTimeout, approver, jobs)
+	registry := tools.NewRegistryWithHooks(f.cfg.WorkDir, f.cfg.Shell, f.cfg.CommandTimeout, approver, f.cfg.Hooks, jobs)
 	fileSink := tools.NewFileAuditSink(tools.AuditPath(f.cfg.StateDir))
 	allSinks := append([]tools.ToolAuditSink{fileSink}, extraAuditSinks...)
 	registry.SetAuditSink(tools.NewFanoutAuditSink(allSinks...))

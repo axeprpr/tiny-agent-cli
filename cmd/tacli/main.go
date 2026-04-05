@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/model/openaiapi"
+	"tiny-agent-cli/internal/plugins"
 	"tiny-agent-cli/internal/session"
 	"tiny-agent-cli/internal/tools"
 	"tiny-agent-cli/internal/trace"
@@ -53,6 +55,9 @@ type chatRuntime struct {
 	autoMemoryExit bool
 	dirtySession   bool
 	tracer         *trace.FileSink
+	pluginManager  *plugins.Manager
+	pluginCommands map[string]plugins.Command
+	skills         []tools.Skill
 }
 
 type runtimeAgentEventSink struct {
@@ -274,6 +279,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		memoryPath:     memory.Path(cfg.StateDir),
 		auditPath:      tools.AuditPath(cfg.StateDir),
 		scopeKey:       memory.ScopeKey(cfg.WorkDir),
+		pluginCommands: make(map[string]plugins.Command),
 	}
 	r.setSessionName(sessionName)
 	r.attachAgentEventSink()
@@ -284,6 +290,13 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	r.session = r.newSession()
 	r.jobs = newJobManager(cfg, memory.RenderSystemMemory(r.globalMemory, r.projectMemory))
 	r.jobs.SetRoleRouter(llmBackgroundRoleRouter(cfg))
+	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
+		r.skills = discovered
+	}
+	if manager, err := plugins.NewManager(); err == nil {
+		r.pluginManager = manager
+		_, _ = manager.Discover()
+	}
 
 	if strings.TrimSpace(opts.session) != "" {
 		if _, err := r.loadSessionState(); err != nil {
@@ -332,8 +345,27 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		auditSummary := r.auditStatusLine()
 		traceSummary := r.traceStatusLine()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\naudit=%s\ntrace=%s\n%s",
-			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, auditSummary, traceSummary, jobSummary), exitCode: -1}
+		pluginSummary := "plugins=0/0"
+		if r.pluginManager != nil {
+			pluginSummary = fmt.Sprintf("plugins=%d/%d", len(r.pluginManager.Loaded()), len(r.pluginManager.List()))
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\naudit=%s\ntrace=%s\n%s\n%s",
+			r.sessionName, r.scopeKey, len(r.globalMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, auditSummary, traceSummary, jobSummary, pluginSummary), exitCode: -1}
+	case "/plan":
+		return runtimeCommandResult{handled: true, output: r.planCommand(), exitCode: -1}
+	case "/compact":
+		if r.session.Compact() {
+			r.dirtySession = true
+			_ = r.save()
+			return runtimeCommandResult{handled: true, output: "conversation compacted", exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: "conversation did not need compaction", exitCode: -1}
+	case "/hooks":
+		return runtimeCommandResult{handled: true, output: r.hooksCommand(fields), exitCode: -1}
+	case "/plugin":
+		return runtimeCommandResult{handled: true, output: r.pluginCommand(fields, input), exitCode: -1}
+	case "/skills":
+		return runtimeCommandResult{handled: true, output: r.skillsCommand(), exitCode: -1}
 	case "/audit":
 		return runtimeCommandResult{handled: true, output: r.auditCommand(fields), exitCode: -1}
 	case "/trace":
@@ -341,6 +373,22 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/session":
 		if len(fields) == 1 {
 			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
+		}
+		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "save" {
+			if err := r.save(); err != nil {
+				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session save error: %v", err), exitCode: -1}
+			}
+			return runtimeCommandResult{handled: true, output: "session saved", exitCode: -1}
+		}
+		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "restore" || action == "load" {
+			loaded, err := r.loadSessionState()
+			if err != nil {
+				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session restore error: %v", err), exitCode: -1}
+			}
+			if !loaded {
+				return runtimeCommandResult{handled: true, output: "no saved state for current session", exitCode: -1}
+			}
+			return runtimeCommandResult{handled: true, output: "session restored", exitCode: -1}
 		}
 		switchedTo, err := r.switchSession(strings.Join(fields[1:], " "))
 		if err != nil {
@@ -433,7 +481,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		_ = r.save()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobapply.ok"), fields[1]), exitCode: -1}
 	case "/memory":
-		return runtimeCommandResult{handled: true, output: memory.FormatNotes(r.globalMemory, r.projectMemory), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: r.memoryCommand(fields, input), exitCode: -1}
 	case "/remember":
 		if len(fields) < 2 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.remember.usage"), exitCode: -1}
@@ -479,6 +527,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.memorize.ok"), added), exitCode: -1}
 	default:
+		if output, ok, err := r.runPluginCommand(fields, input); ok {
+			if err != nil {
+				return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+			}
+			return runtimeCommandResult{handled: true, output: output, exitCode: -1}
+		}
 		return runtimeCommandResult{handled: false, exitCode: -1}
 	}
 }
@@ -490,6 +544,7 @@ func (r *chatRuntime) rebuildLoop() {
 	}
 	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs)
 	r.attachAgentEventSink()
+	r.applyLoadedPlugins()
 	r.session.SetAgent(r.loop)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
 	if r.jobs != nil {
@@ -553,6 +608,8 @@ func (r *chatRuntime) describeSessions() string {
 		"current=" + r.sessionName,
 		"usage: /session <name>",
 		"usage: /session new",
+		"usage: /session save",
+		"usage: /session restore",
 	}
 
 	names, err := session.ListSessionNames(r.cfg.StateDir)
@@ -565,6 +622,209 @@ func (r *chatRuntime) describeSessions() string {
 	}
 	lines = append(lines, "recent="+strings.Join(names, ", "))
 	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) planCommand() string {
+	path := filepath.Join(r.cfg.WorkDir, "docs", "plan.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("plan read error: %v", err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (r *chatRuntime) hooksCommand(fields []string) string {
+	if len(fields) == 1 {
+		disabled := "(none)"
+		if len(r.cfg.Hooks.Disabled) > 0 {
+			disabled = strings.Join(r.cfg.Hooks.Disabled, ", ")
+		}
+		return fmt.Sprintf("enabled=%t\ndisabled=%s", r.cfg.Hooks.Enabled, disabled)
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "enable":
+		r.cfg.Hooks.Enabled = true
+	case "disable":
+		r.cfg.Hooks.Enabled = false
+	case "disable-hook":
+		if len(fields) < 3 {
+			return "usage: /hooks disable-hook <name>"
+		}
+		r.cfg.Hooks.Disabled = append(r.cfg.Hooks.Disabled, fields[2])
+	case "enable-hook":
+		if len(fields) < 3 {
+			return "usage: /hooks enable-hook <name>"
+		}
+		target := strings.ToLower(strings.TrimSpace(fields[2]))
+		filtered := make([]string, 0, len(r.cfg.Hooks.Disabled))
+		for _, item := range r.cfg.Hooks.Disabled {
+			if strings.ToLower(strings.TrimSpace(item)) != target {
+				filtered = append(filtered, item)
+			}
+		}
+		r.cfg.Hooks.Disabled = filtered
+	default:
+		return "usage: /hooks [enable|disable|disable-hook <name>|enable-hook <name>]"
+	}
+	r.rebuildLoop()
+	_ = r.save()
+	return r.hooksCommand([]string{"/hooks"})
+}
+
+func (r *chatRuntime) skillsCommand() string {
+	if len(r.skills) == 0 {
+		return "no skills discovered"
+	}
+	lines := make([]string, 0, len(r.skills))
+	for _, skill := range r.skills {
+		line := skill.Name + " [" + firstNonEmpty(skill.Source, "local") + "]"
+		if strings.TrimSpace(skill.Description) != "" {
+			line += ": " + skill.Description
+		}
+		if len(skill.ToolDefinitions) > 0 {
+			line += " tools=" + strings.Join(skill.ToolDefinitions, ",")
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) pluginCommand(fields []string, raw string) string {
+	if r.pluginManager == nil {
+		return "plugin manager unavailable"
+	}
+	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
+		_, _ = r.pluginManager.Discover()
+		discovered := r.pluginManager.List()
+		if len(discovered) == 0 {
+			return "no plugins discovered"
+		}
+		loaded := make(map[string]bool)
+		for _, item := range r.pluginManager.Loaded() {
+			loaded[item.Descriptor.Path] = true
+		}
+		lines := make([]string, 0, len(discovered))
+		for _, item := range discovered {
+			status := "discovered"
+			if loaded[item.Path] {
+				status = "loaded"
+			}
+			lines = append(lines, fmt.Sprintf("%s [%s] %s", item.Name, status, item.Path))
+		}
+		return strings.Join(lines, "\n")
+	}
+	if !strings.EqualFold(fields[1], "load") {
+		return "usage: /plugin [list|load <name-or-path>]"
+	}
+	if len(fields) < 3 {
+		return "usage: /plugin load <name-or-path>"
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), fields[0]+" "+fields[1]))
+	loaded, err := r.pluginManager.Load(target)
+	if err != nil {
+		return "plugin load error: " + err.Error()
+	}
+	r.rebuildLoop()
+	meta := loaded.Plugin.Metadata()
+	if strings.TrimSpace(meta.Name) == "" {
+		meta.Name = loaded.Descriptor.Name
+	}
+	return fmt.Sprintf("loaded plugin %s", meta.Name)
+}
+
+func (r *chatRuntime) runPluginCommand(fields []string, raw string) (string, bool, error) {
+	if len(fields) == 0 || r.pluginCommands == nil {
+		return "", false, nil
+	}
+	cmd, ok := r.pluginCommands[fields[0]]
+	if !ok {
+		return "", false, nil
+	}
+	output, err := cmd.Handler(context.Background(), fields[1:], raw)
+	return output, true, err
+}
+
+func (r *chatRuntime) applyLoadedPlugins() {
+	if r.pluginManager == nil {
+		return
+	}
+	r.pluginCommands = make(map[string]plugins.Command)
+	for _, loaded := range r.pluginManager.Loaded() {
+		r.applyPlugin(loaded)
+	}
+}
+
+func (r *chatRuntime) applyPlugin(loaded plugins.Loaded) {
+	for _, tool := range loaded.Plugin.Tools() {
+		r.loop.AddTool(tool)
+	}
+	for _, hook := range loaded.Plugin.Hooks() {
+		r.loop.AddHook(hook)
+	}
+	for _, command := range loaded.Plugin.Commands() {
+		name := strings.TrimSpace(command.Name)
+		if name == "" {
+			continue
+		}
+		if !strings.HasPrefix(name, "/") {
+			name = "/" + name
+		}
+		command.Name = name
+		r.pluginCommands[name] = command
+	}
+}
+
+func (r *chatRuntime) memoryCommand(fields []string, input string) string {
+	if len(fields) == 1 || strings.EqualFold(fields[1], "show") {
+		return memory.FormatNotes(r.globalMemory, r.projectMemory)
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "remember":
+		if len(fields) < 3 {
+			return "usage: /memory remember <text>"
+		}
+		r.projectMemory = memory.Add(r.projectMemory, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1])))
+	case "remember-global":
+		if len(fields) < 3 {
+			return "usage: /memory remember-global <text>"
+		}
+		r.globalMemory = memory.Add(r.globalMemory, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1])))
+	case "forget":
+		if len(fields) < 3 {
+			return "usage: /memory forget <query>"
+		}
+		var removed int
+		r.projectMemory, removed = memory.ForgetMatching(r.projectMemory, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1])))
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return fmt.Sprintf("removed %d project memory note(s)", removed)
+	case "forget-global":
+		if len(fields) < 3 {
+			return "usage: /memory forget-global <query>"
+		}
+		var removed int
+		r.globalMemory, removed = memory.ForgetMatching(r.globalMemory, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1])))
+		r.refreshMemoryContext()
+		_ = r.saveMemory()
+		_ = r.save()
+		return fmt.Sprintf("removed %d global memory note(s)", removed)
+	default:
+		return "usage: /memory [show|remember <text>|remember-global <text>|forget <query>|forget-global <query>]"
+	}
+	r.refreshMemoryContext()
+	_ = r.saveMemory()
+	_ = r.save()
+	return memory.FormatNotes(r.globalMemory, r.projectMemory)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, error) {

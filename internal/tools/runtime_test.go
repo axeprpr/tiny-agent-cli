@@ -51,3 +51,13 @@ func TestValidateToolInputWithSchema(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestNewDefaultHooksRespectsDisabledList(t *testing.T) {
+	hooks := NewDefaultHooks(HookConfig{
+		Enabled:  true,
+		Disabled: []string{"command_safety"},
+	})
+	if len(hooks) != 0 {
+		t.Fatalf("expected no hooks, got %d", len(hooks))
+	}
+}

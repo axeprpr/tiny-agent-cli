@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"tiny-agent-cli/internal/tools"
 )
 
 type Config struct {
@@ -22,6 +24,7 @@ type Config struct {
 	ModelTimeout   time.Duration
 	Shell          string
 	ApprovalMode   string
+	Hooks          tools.HookConfig
 }
 
 const defaultMaxSteps = 0
@@ -45,6 +48,7 @@ func FromEnv() Config {
 		ModelTimeout:   getEnvDuration("MODEL_TIMEOUT", 180*time.Second),
 		Shell:          getEnv("AGENT_SHELL", defaultShell()),
 		ApprovalMode:   getEnv("AGENT_APPROVAL", "confirm"),
+		Hooks:          loadHookConfigFromEnv(),
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1:11434/v1"
@@ -53,6 +57,23 @@ func FromEnv() Config {
 		cfg.Model = "qwen2.5-coder:7b"
 	}
 
+	return cfg
+}
+
+func loadHookConfigFromEnv() tools.HookConfig {
+	cfg := tools.DefaultHookConfig()
+	if raw := strings.TrimSpace(os.Getenv("AGENT_HOOKS_ENABLED")); raw != "" {
+		cfg.Enabled = raw != "0" && !strings.EqualFold(raw, "false") && !strings.EqualFold(raw, "off")
+	}
+	if raw := strings.TrimSpace(os.Getenv("AGENT_HOOKS_DISABLED")); raw != "" {
+		parts := strings.Split(raw, ",")
+		cfg.Disabled = make([]string, 0, len(parts))
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				cfg.Disabled = append(cfg.Disabled, trimmed)
+			}
+		}
+	}
 	return cfg
 }
 

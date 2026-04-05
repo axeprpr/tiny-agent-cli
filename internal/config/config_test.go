@@ -25,3 +25,19 @@ func TestDefaultStateDirPrefersLegacyDirWhenPresent(t *testing.T) {
 		t.Fatalf("unexpected state dir: got %q want %q", got, legacy)
 	}
 }
+
+func TestFromEnvLoadsHookConfig(t *testing.T) {
+	t.Setenv("AGENT_HOOKS_ENABLED", "false")
+	t.Setenv("AGENT_HOOKS_DISABLED", "command_safety, custom ")
+
+	cfg := FromEnv()
+	if cfg.Hooks.Enabled {
+		t.Fatalf("expected hooks to be disabled")
+	}
+	if got, want := len(cfg.Hooks.Disabled), 2; got != want {
+		t.Fatalf("unexpected disabled hooks length: got %d want %d", got, want)
+	}
+	if cfg.Hooks.Disabled[0] != "command_safety" || cfg.Hooks.Disabled[1] != "custom" {
+		t.Fatalf("unexpected disabled hooks: %#v", cfg.Hooks.Disabled)
+	}
+}

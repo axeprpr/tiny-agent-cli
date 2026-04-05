@@ -160,6 +160,20 @@ func (a *Agent) ReplaceTodo(items []tools.TodoItem) error {
 	return a.registry.ReplaceTodo(items)
 }
 
+func (a *Agent) AddTool(tool tools.Tool) {
+	if a == nil || a.registry == nil {
+		return
+	}
+	a.registry.AddTool(tool)
+}
+
+func (a *Agent) AddHook(hook tools.ToolHook) {
+	if a == nil || a.registry == nil {
+		return
+	}
+	a.registry.AddHook(hook)
+}
+
 func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	s.messages = append(s.messages, model.Message{
 		Role:    "user",
@@ -275,6 +289,13 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		}
 		s.trackTodoRounds(msg.ToolCalls)
 	}
+}
+
+func (s *Session) Compact() bool {
+	if s == nil {
+		return false
+	}
+	return s.compactForContext()
 }
 
 // RunTaskStreaming is like RunTask but streams assistant tokens via onToken.

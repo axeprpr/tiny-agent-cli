@@ -66,11 +66,18 @@ var messagesEN = map[string]string{
   /exit, /quit          Exit the chat
   /reset                Clear conversation context
   /session [name|new]   Switch or create a session
+  /session save         Save current session state
+  /session restore      Restore current session state
   /status               Show session and config status
+  /plan                 Show docs/plan.md
+  /compact              Compact conversation context now
+  /hooks                Show or change hook configuration
+  /plugin               List or load plugins
+  /skills               List discovered skills
   /scope                Show current project scope key
   /model <name>         Switch model for this session
   /approval <mode>      Set approval mode (confirm|dangerously)
-  /memory               Show saved memory notes
+  /memory               Show or manage saved memory notes
   /remember <text>      Save a project memory note
   /remember-global <t>  Save a global memory note
   /forget <query>       Remove matching project memory
