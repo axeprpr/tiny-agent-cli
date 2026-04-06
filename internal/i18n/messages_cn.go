@@ -66,8 +66,11 @@ var messagesCN = map[string]string{
   /status               显示当前状态
   /plan                 显示 docs/plan.md
   /compact              立即压缩上下文
+  /agents               查看或管理后台子代理
   /hooks                查看或调整 hooks 配置
+  /mcp                  管理 MCP 服务与资源
   /plugin               列出或加载插件
+  /reload-plugins       重新加载已加载插件
   /skills               列出已发现技能
   /scope                显示项目作用域
   /model <name>         切换模型

@@ -14,8 +14,10 @@ import (
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
 	"tiny-agent-cli/internal/i18n"
+	"tiny-agent-cli/internal/mcp"
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/plugins"
 	"tiny-agent-cli/internal/session"
 	"tiny-agent-cli/internal/tools"
 	"tiny-agent-cli/internal/transport"
@@ -470,6 +472,74 @@ func TestBgRoleUsage(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "/bg-role") {
 		t.Fatalf("unexpected usage output: %q", result.output)
+	}
+}
+
+func TestMCPCommandAddAndRemove(t *testing.T) {
+	dir := t.TempDir()
+	r := newMemoryTestRuntime(t)
+	r.cfg.WorkDir = dir
+
+	added := r.executeCommand("/mcp add demo demo-server --flag")
+	if !added.handled {
+		t.Fatalf("expected /mcp add handled")
+	}
+	if !strings.Contains(added.output, "saved MCP server demo") {
+		t.Fatalf("unexpected add output: %q", added.output)
+	}
+
+	state, err := mcp.Load(mcp.Path(filepath.Join(dir, ".tacli")))
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if len(state.Servers) != 1 || state.Servers[0].Name != "demo" {
+		t.Fatalf("unexpected state: %#v", state.Servers)
+	}
+
+	removed := r.executeCommand("/mcp remove demo")
+	if !removed.handled {
+		t.Fatalf("expected /mcp remove handled")
+	}
+	if !strings.Contains(removed.output, "removed MCP server demo") {
+		t.Fatalf("unexpected remove output: %q", removed.output)
+	}
+}
+
+func TestAgentsCommandListsSnapshots(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
+	r.jobs.orchestration.Register(agent.SubagentSnapshot{
+		ID:        "job-001",
+		Status:    "ready",
+		Role:      "explore",
+		Model:     "test-model",
+		TaskCount: 2,
+		Session: agent.SubagentSessionState{
+			MessageCount: 5,
+		},
+	}, nil)
+
+	result := r.executeCommand("/agents")
+	if !result.handled {
+		t.Fatalf("expected /agents handled")
+	}
+	if !strings.Contains(result.output, "job-001  ready") {
+		t.Fatalf("unexpected output: %q", result.output)
+	}
+	if !strings.Contains(result.output, "role=explore") {
+		t.Fatalf("missing role: %q", result.output)
+	}
+}
+
+func TestReloadPluginsCommandWithoutLoadedPlugins(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	manager, err := plugins.NewManager()
+	if err != nil {
+		t.Fatalf("new plugin manager: %v", err)
+	}
+	r.pluginManager = manager
+	if got := r.reloadPluginsCommand(); got != "reloaded 0 plugins" {
+		t.Fatalf("unexpected output: %q", got)
 	}
 }
 

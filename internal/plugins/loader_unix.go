@@ -6,7 +6,9 @@ import (
 	stdplugin "plugin"
 )
 
-func openPlugin(path string) (Plugin, error) {
+var openPlugin = realOpenPlugin
+
+func realOpenPlugin(path string) (Plugin, error) {
 	handle, err := stdplugin.Open(path)
 	if err != nil {
 		return nil, err

@@ -71,8 +71,11 @@ var messagesEN = map[string]string{
   /status               Show session and config status
   /plan                 Show docs/plan.md
   /compact              Compact conversation context now
+  /agents               Inspect or manage background subagents
   /hooks                Show or change hook configuration
+  /mcp                  Manage configured MCP servers and resources
   /plugin               List or load plugins
+  /reload-plugins       Reload already loaded plugins
   /skills               List discovered skills
   /scope                Show current project scope key
   /model <name>         Switch model for this session

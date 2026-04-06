@@ -69,6 +69,8 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 		newFetchURLTool(),
 		newWebSearchTool(),
 		newListMCPServersTool(filepath.Join(workDir, ".tacli")),
+		newListMCPResourcesTool(workDir, filepath.Join(workDir, ".tacli")),
+		newReadMCPResourceTool(workDir, filepath.Join(workDir, ".tacli")),
 	}
 	if len(jobs) > 0 && jobs[0] != nil {
 		toolset = append(toolset,

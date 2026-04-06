@@ -20,6 +20,7 @@ import (
 	"tiny-agent-cli/internal/config"
 	"tiny-agent-cli/internal/harness"
 	"tiny-agent-cli/internal/i18n"
+	"tiny-agent-cli/internal/mcp"
 	"tiny-agent-cli/internal/memory"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/model/openaiapi"
@@ -431,10 +432,16 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: "conversation compacted", exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: "conversation did not need compaction", exitCode: -1}
+	case "/agents":
+		return runtimeCommandResult{handled: true, output: r.agentsCommand(fields), exitCode: -1}
 	case "/hooks":
 		return runtimeCommandResult{handled: true, output: r.hooksCommand(fields), exitCode: -1}
+	case "/mcp":
+		return runtimeCommandResult{handled: true, output: r.mcpCommand(fields, input), exitCode: -1}
 	case "/plugin":
 		return runtimeCommandResult{handled: true, output: r.pluginCommand(fields, input), exitCode: -1}
+	case "/reload-plugins":
+		return runtimeCommandResult{handled: true, output: r.reloadPluginsCommand(), exitCode: -1}
 	case "/skills":
 		return runtimeCommandResult{handled: true, output: r.skillsCommand(), exitCode: -1}
 	case "/audit":
@@ -812,6 +819,239 @@ func (r *chatRuntime) hooksCommand(fields []string) string {
 	return r.hooksCommand([]string{"/hooks"})
 }
 
+func (r *chatRuntime) agentsCommand(fields []string) string {
+	if r.jobs == nil || r.jobs.orchestration == nil {
+		return "no background agents available"
+	}
+	usage := strings.Join([]string{
+		"usage: /agents",
+		"usage: /agents list",
+		"usage: /agents <id>",
+		"usage: /agents cancel <id>",
+	}, "\n")
+	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
+		return formatSubagentList(r.jobs.orchestration.List())
+	}
+	if strings.EqualFold(fields[1], "cancel") {
+		if len(fields) != 3 {
+			return usage
+		}
+		if err := r.jobs.Cancel(fields[2]); err != nil {
+			return err.Error()
+		}
+		return "canceled " + fields[2]
+	}
+	if len(fields) != 2 {
+		return usage
+	}
+	snap, ok := r.jobs.orchestration.Snapshot(fields[1])
+	if !ok {
+		return fmt.Sprintf("unknown agent %q", fields[1])
+	}
+	return formatSubagentSnapshot(snap)
+}
+
+func (r *chatRuntime) mcpCommand(fields []string, input string) string {
+	statePath := mcp.Path(filepath.Join(r.cfg.WorkDir, ".tacli"))
+	state, err := mcp.Load(statePath)
+	if err != nil {
+		return "mcp load error: " + err.Error()
+	}
+	usage := strings.Join([]string{
+		"usage: /mcp list",
+		"usage: /mcp add <name> <command> [args...]",
+		"usage: /mcp remove <name>",
+		"usage: /mcp resources <name> [cursor]",
+		"usage: /mcp read <name> <uri>",
+	}, "\n")
+	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
+		if len(state.Servers) == 0 {
+			return "no MCP servers configured"
+		}
+		lines := make([]string, 0, len(state.Servers))
+		for _, server := range state.Servers {
+			line := fmt.Sprintf("%s transport=%s command=%s", server.Name, firstNonEmpty(server.Transport, "stdio"), server.Command)
+			if len(server.Args) > 0 {
+				line += " args=" + strings.Join(server.Args, " ")
+			}
+			lines = append(lines, line)
+		}
+		return strings.Join(lines, "\n")
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "add":
+		if len(fields) < 4 {
+			return usage
+		}
+		server := mcp.Server{
+			Name:      strings.TrimSpace(fields[2]),
+			Command:   strings.TrimSpace(fields[3]),
+			Args:      append([]string(nil), fields[4:]...),
+			Transport: "stdio",
+		}
+		if strings.TrimSpace(server.Name) == "" || strings.TrimSpace(server.Command) == "" {
+			return usage
+		}
+		state = mcp.Upsert(state, server)
+		if err := mcp.Save(statePath, state); err != nil {
+			return "mcp save error: " + err.Error()
+		}
+		return fmt.Sprintf("saved MCP server %s", server.Name)
+	case "remove", "delete":
+		if len(fields) != 3 {
+			return usage
+		}
+		var removed bool
+		state, removed = mcp.Remove(state, fields[2])
+		if !removed {
+			return fmt.Sprintf("unknown MCP server %q", fields[2])
+		}
+		if err := mcp.Save(statePath, state); err != nil {
+			return "mcp save error: " + err.Error()
+		}
+		return fmt.Sprintf("removed MCP server %s", fields[2])
+	case "resources":
+		if len(fields) < 3 || len(fields) > 4 {
+			return usage
+		}
+		server, ok := resolveNamedMCPServer(state.Servers, fields[2])
+		if !ok {
+			return fmt.Sprintf("unknown MCP server %q", fields[2])
+		}
+		cursor := ""
+		if len(fields) == 4 {
+			cursor = fields[3]
+		}
+		result, err := mcp.ListResources(context.Background(), r.cfg.WorkDir, server, cursor)
+		if err != nil {
+			return "mcp resources error: " + err.Error()
+		}
+		if len(result.Resources) == 0 {
+			return fmt.Sprintf("server=%s resources=0", server.Name)
+		}
+		lines := []string{fmt.Sprintf("server=%s resources=%d", server.Name, len(result.Resources))}
+		for _, resource := range result.Resources {
+			line := resource.URI
+			if strings.TrimSpace(resource.Name) != "" {
+				line += " name=" + resource.Name
+			}
+			if strings.TrimSpace(resource.MIMEType) != "" {
+				line += " mime=" + resource.MIMEType
+			}
+			if strings.TrimSpace(resource.Description) != "" {
+				line += " desc=" + resource.Description
+			}
+			lines = append(lines, line)
+		}
+		if strings.TrimSpace(result.NextCursor) != "" {
+			lines = append(lines, "next_cursor="+result.NextCursor)
+		}
+		return strings.Join(lines, "\n")
+	case "read":
+		if len(fields) < 4 {
+			return usage
+		}
+		server, ok := resolveNamedMCPServer(state.Servers, fields[2])
+		if !ok {
+			return fmt.Sprintf("unknown MCP server %q", fields[2])
+		}
+		uri := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]+" "+fields[2]))
+		result, err := mcp.ReadResource(context.Background(), r.cfg.WorkDir, server, uri)
+		if err != nil {
+			return "mcp read error: " + err.Error()
+		}
+		if len(result.Contents) == 0 {
+			return fmt.Sprintf("server=%s uri=%s contents=0", server.Name, uri)
+		}
+		lines := []string{fmt.Sprintf("server=%s uri=%s contents=%d", server.Name, uri, len(result.Contents))}
+		for _, item := range result.Contents {
+			if strings.TrimSpace(item.Text) != "" {
+				lines = append(lines, item.Text)
+				continue
+			}
+			if strings.TrimSpace(item.Blob) != "" {
+				lines = append(lines, fmt.Sprintf("[base64 blob] mime=%s bytes=%d", firstNonEmpty(item.MIMEType, "application/octet-stream"), len(item.Blob)))
+				continue
+			}
+			lines = append(lines, "[empty content] uri="+item.URI)
+		}
+		return strings.Join(lines, "\n")
+	default:
+		return usage
+	}
+}
+
+func resolveNamedMCPServer(servers []mcp.Server, name string) (mcp.Server, bool) {
+	for _, server := range servers {
+		if strings.EqualFold(server.Name, strings.TrimSpace(name)) {
+			return server, true
+		}
+	}
+	return mcp.Server{}, false
+}
+
+func formatSubagentList(snaps []agent.SubagentSnapshot) string {
+	if len(snaps) == 0 {
+		return "no background agents"
+	}
+	lines := make([]string, 0, len(snaps))
+	for _, snap := range snaps {
+		line := fmt.Sprintf("%s  %s", snap.ID, firstNonEmpty(snap.Status, "unknown"))
+		if strings.TrimSpace(snap.Role) != "" {
+			line += " role=" + snap.Role
+		}
+		if strings.TrimSpace(snap.Model) != "" {
+			line += " model=" + snap.Model
+		}
+		if snap.TaskCount > 0 {
+			line += fmt.Sprintf(" tasks=%d", snap.TaskCount)
+		}
+		if snap.Queued > 0 {
+			line += fmt.Sprintf(" queued=%d", snap.Queued)
+		}
+		if snap.Session.MessageCount > 0 {
+			line += fmt.Sprintf(" messages=%d", snap.Session.MessageCount)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatSubagentSnapshot(snap agent.SubagentSnapshot) string {
+	lines := []string{
+		fmt.Sprintf("id=%s", snap.ID),
+		fmt.Sprintf("status=%s", firstNonEmpty(snap.Status, "unknown")),
+	}
+	if strings.TrimSpace(snap.Role) != "" {
+		lines = append(lines, "role="+snap.Role)
+	}
+	if strings.TrimSpace(snap.Model) != "" {
+		lines = append(lines, "model="+snap.Model)
+	}
+	if snap.TaskCount > 0 {
+		lines = append(lines, fmt.Sprintf("tasks=%d", snap.TaskCount))
+	}
+	if snap.Queued > 0 {
+		lines = append(lines, fmt.Sprintf("queued=%d", snap.Queued))
+	}
+	if snap.Session.MessageCount > 0 {
+		lines = append(lines, fmt.Sprintf("messages=%d", snap.Session.MessageCount))
+	}
+	if strings.TrimSpace(snap.LastPrompt) != "" {
+		lines = append(lines, "last_prompt="+compactJobText(snap.LastPrompt, 180))
+	}
+	if strings.TrimSpace(snap.LastOutput) != "" {
+		lines = append(lines, "last_output="+compactJobText(snap.LastOutput, 180))
+	}
+	if strings.TrimSpace(snap.LastError) != "" {
+		lines = append(lines, "last_error="+compactJobText(snap.LastError, 180))
+	}
+	if strings.TrimSpace(snap.LogTail) != "" {
+		lines = append(lines, "log_tail="+compactJobText(snap.LogTail, 180))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func formatHookCommandList(commands []string) string {
 	if len(commands) == 0 {
 		return "(none)"
@@ -1003,23 +1243,67 @@ func (r *chatRuntime) pluginCommand(fields []string, raw string) string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	if !strings.EqualFold(fields[1], "load") {
-		return "usage: /plugin [list|load <name-or-path>]"
+	switch strings.ToLower(strings.TrimSpace(fields[1])) {
+	case "load":
+		if len(fields) < 3 {
+			return "usage: /plugin load <name-or-path>"
+		}
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), fields[0]+" "+fields[1]))
+		loaded, err := r.pluginManager.Load(target)
+		if err != nil {
+			return "plugin load error: " + err.Error()
+		}
+		r.rebuildLoop()
+		meta := loaded.Plugin.Metadata()
+		if strings.TrimSpace(meta.Name) == "" {
+			meta.Name = loaded.Descriptor.Name
+		}
+		return fmt.Sprintf("loaded plugin %s", meta.Name)
+	case "unload":
+		if len(fields) < 3 {
+			return "usage: /plugin unload <name-or-path>"
+		}
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), fields[0]+" "+fields[1]))
+		loaded, ok, err := r.pluginManager.Unload(target)
+		if err != nil {
+			return "plugin unload error: " + err.Error()
+		}
+		if !ok {
+			return fmt.Sprintf("plugin %q is not loaded", target)
+		}
+		r.rebuildLoop()
+		meta := loaded.Plugin.Metadata()
+		if strings.TrimSpace(meta.Name) == "" {
+			meta.Name = loaded.Descriptor.Name
+		}
+		return fmt.Sprintf("unloaded plugin %s", meta.Name)
+	default:
+		return "usage: /plugin [list|load <name-or-path>|unload <name-or-path>]"
 	}
-	if len(fields) < 3 {
-		return "usage: /plugin load <name-or-path>"
+}
+
+func (r *chatRuntime) reloadPluginsCommand() string {
+	if r.pluginManager == nil {
+		return "plugin manager unavailable"
 	}
-	target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), fields[0]+" "+fields[1]))
-	loaded, err := r.pluginManager.Load(target)
+	reloaded, err := r.pluginManager.ReloadLoaded()
 	if err != nil {
-		return "plugin load error: " + err.Error()
+		return "plugin reload error: " + err.Error()
 	}
 	r.rebuildLoop()
-	meta := loaded.Plugin.Metadata()
-	if strings.TrimSpace(meta.Name) == "" {
-		meta.Name = loaded.Descriptor.Name
+	if len(reloaded) == 0 {
+		return "reloaded 0 plugins"
 	}
-	return fmt.Sprintf("loaded plugin %s", meta.Name)
+	names := make([]string, 0, len(reloaded))
+	for _, item := range reloaded {
+		name := item.Descriptor.Name
+		if meta := item.Plugin.Metadata(); strings.TrimSpace(meta.Name) != "" {
+			name = meta.Name
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("reloaded %d plugins: %s", len(names), strings.Join(names, ", "))
 }
 
 func (r *chatRuntime) runPluginCommand(fields []string, raw string) (string, bool, error) {

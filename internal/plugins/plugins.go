@@ -121,6 +121,46 @@ func (m *Manager) Load(nameOrPath string) (Loaded, error) {
 	return loaded, nil
 }
 
+func (m *Manager) Unload(nameOrPath string) (Loaded, bool, error) {
+	if m == nil {
+		return Loaded{}, false, fmt.Errorf("plugin manager is not initialized")
+	}
+	desc, err := m.resolve(nameOrPath)
+	if err != nil {
+		return Loaded{}, false, err
+	}
+	loaded, ok := m.loaded[desc.Path]
+	if !ok {
+		return Loaded{}, false, nil
+	}
+	delete(m.loaded, desc.Path)
+	return loaded, true, nil
+}
+
+func (m *Manager) ReloadLoaded() ([]Loaded, error) {
+	if m == nil {
+		return nil, fmt.Errorf("plugin manager is not initialized")
+	}
+	targets := make([]string, 0, len(m.loaded))
+	for path := range m.loaded {
+		targets = append(targets, path)
+	}
+	sort.Strings(targets)
+	if _, err := m.Discover(); err != nil {
+		return nil, err
+	}
+	m.loaded = make(map[string]Loaded)
+	out := make([]Loaded, 0, len(targets))
+	for _, target := range targets {
+		loaded, err := m.Load(target)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, loaded)
+	}
+	return out, nil
+}
+
 func (m *Manager) resolve(nameOrPath string) (Descriptor, error) {
 	trimmed := strings.TrimSpace(nameOrPath)
 	if trimmed == "" {
