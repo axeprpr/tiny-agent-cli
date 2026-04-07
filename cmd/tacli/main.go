@@ -1205,20 +1205,83 @@ func parseTaskUpdateFields(fields []string) (tasks.Update, error) {
 }
 
 func (r *chatRuntime) reviewCommand(fields []string) string {
-	base := "HEAD"
-	if len(fields) > 1 {
-		base = strings.TrimSpace(fields[1])
+	opts, err := parseReviewArgs(fields[1:])
+	if err != nil {
+		return "review usage: /review [base] [target] [--staged] [--path <path>]"
 	}
-	prompt := "Review the current git diff"
-	if base != "" {
-		prompt += " against " + base
+	preview, err := tools.ReviewDiff(context.Background(), r.cfg.WorkDir, opts.base, opts.target, opts.path, opts.staged)
+	if err != nil {
+		return "review setup error: " + err.Error()
 	}
-	prompt += ". Use review_diff first. Focus on bugs, regressions, risky assumptions, and missing tests. Present findings first with file references when possible. If there are no findings, say so explicitly."
+	if strings.TrimSpace(preview) == "no diff found" {
+		return "no diff found for the requested review scope"
+	}
+	prompt := buildReviewPrompt(opts)
 	output, err := r.executeTask(context.Background(), prompt)
 	if err != nil {
 		return "review error: " + err.Error()
 	}
 	return output
+}
+
+type reviewOptions struct {
+	base   string
+	target string
+	path   string
+	staged bool
+}
+
+func parseReviewArgs(args []string) (reviewOptions, error) {
+	var opts reviewOptions
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		switch arg {
+		case "":
+			continue
+		case "--staged", "staged":
+			opts.staged = true
+		case "--path", "path":
+			i++
+			if i >= len(args) {
+				return reviewOptions{}, fmt.Errorf("missing path value")
+			}
+			opts.path = strings.TrimSpace(args[i])
+			if opts.path == "" {
+				return reviewOptions{}, fmt.Errorf("missing path value")
+			}
+		default:
+			if opts.base == "" {
+				opts.base = arg
+				continue
+			}
+			if opts.target == "" {
+				opts.target = arg
+				continue
+			}
+			return reviewOptions{}, fmt.Errorf("too many positional args")
+		}
+	}
+	if opts.base == "" {
+		opts.base = "HEAD"
+	}
+	return opts, nil
+}
+
+func buildReviewPrompt(opts reviewOptions) string {
+	scope := []string{"Review the current git diff"}
+	if opts.staged {
+		scope = append(scope, "for staged changes")
+	}
+	if opts.base != "" {
+		scope = append(scope, "against "+opts.base)
+	}
+	if opts.target != "" {
+		scope = append(scope, "to "+opts.target)
+	}
+	if opts.path != "" {
+		scope = append(scope, "scoped to "+opts.path)
+	}
+	return strings.Join(scope, " ") + ". Use review_diff first with the same scope. Focus on bugs, regressions, risky assumptions, and missing tests. Present findings first with file references when possible. If there are no findings, say so explicitly."
 }
 
 func (r *chatRuntime) pluginCommand(fields []string, raw string) string {

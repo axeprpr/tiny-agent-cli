@@ -75,6 +75,8 @@ var messagesCN = map[string]string{
   /scope                显示项目作用域
   /model <name>         切换模型
   /policy ...           查看或调整持久化工具策略
+  /review [base] [target] [--staged] [--path <path>]
+                        审查当前 git diff，可带范围参数
   /approval <mode>      设置审批模式 (confirm|dangerously)
   /memory               查看或管理记忆
   /memory team ...      查看或管理团队记忆

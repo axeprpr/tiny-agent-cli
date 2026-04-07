@@ -422,6 +422,34 @@ func TestOutputCommandDeprecated(t *testing.T) {
 	}
 }
 
+func TestParseReviewArgs(t *testing.T) {
+	opts, err := parseReviewArgs([]string{"main", "feature", "--staged", "--path", "internal/agent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.base != "main" || opts.target != "feature" || !opts.staged || opts.path != "internal/agent" {
+		t.Fatalf("unexpected review opts: %#v", opts)
+	}
+}
+
+func TestBuildReviewPromptIncludesScope(t *testing.T) {
+	prompt := buildReviewPrompt(reviewOptions{
+		base:   "main",
+		target: "feature",
+		path:   "internal/agent",
+		staged: true,
+	})
+	if !strings.Contains(prompt, "for staged changes") {
+		t.Fatalf("expected staged scope, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "against main") || !strings.Contains(prompt, "to feature") {
+		t.Fatalf("expected base/target scope, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "scoped to internal/agent") {
+		t.Fatalf("expected path scope, got %q", prompt)
+	}
+}
+
 func TestAuditCommandStatsAndTail(t *testing.T) {
 	r := newMemoryTestRuntime(t)
 	r.auditPath = tools.AuditPath(r.cfg.StateDir)

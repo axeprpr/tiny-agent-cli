@@ -81,7 +81,8 @@ var messagesEN = map[string]string{
   /model <name>         Switch model for this session
   /policy ...           Show or change persisted tool policy
   /tasks ...            Manage persistent project tasks
-  /review [base]        Review the current git diff
+  /review [base] [target] [--staged] [--path <path>]
+                        Review the current git diff with optional scope
   /approval <mode>      Set approval mode (confirm|dangerously)
   /memory               Show or manage saved memory notes
   /memory team ...      Show or manage team-scoped memory notes
