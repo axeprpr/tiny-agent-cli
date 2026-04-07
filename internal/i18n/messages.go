@@ -100,6 +100,7 @@ var messagesEN = map[string]string{
   /audit stats          Show recent tool-audit summary
   /audit tail [n]       Show latest tool-audit events
   /audit errors [n]     Show latest failed tool-audit events
+  /debug-tool-call      Show details for the latest tool call
 
 Or just type naturally -- no command needed for most tasks.`,
 
@@ -123,6 +124,7 @@ Or just type naturally -- no command needed for most tasks.`,
 	"cmd.audit.usage.stats":  "usage: /audit stats",
 	"cmd.audit.usage.tail":   "usage: /audit tail [n]",
 	"cmd.audit.usage.errors": "usage: /audit errors [n]",
+	"cmd.debugtool.usage":    "usage: /debug-tool-call",
 	"cmd.audit.empty":        "no audit events yet",
 	"cmd.audit.no_errors":    "no failed audit events in the recent window",
 	"cmd.remember.usage":     "usage: /remember <text>",

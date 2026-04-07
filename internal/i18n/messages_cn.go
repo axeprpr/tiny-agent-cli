@@ -93,6 +93,7 @@ var messagesCN = map[string]string{
   /audit stats          显示工具审计摘要
   /audit tail [n]       显示最近工具审计记录
   /audit errors [n]     显示最近失败的审计记录
+  /debug-tool-call      显示最近一次工具调用详情
 
 直接输入自然语言即可，大多数情况不需要命令。`,
 
@@ -116,6 +117,7 @@ var messagesCN = map[string]string{
 	"cmd.audit.usage.stats":  "用法：/audit stats",
 	"cmd.audit.usage.tail":   "用法：/audit tail [n]",
 	"cmd.audit.usage.errors": "用法：/audit errors [n]",
+	"cmd.debugtool.usage":    "用法：/debug-tool-call",
 	"cmd.audit.empty":        "还没有审计记录",
 	"cmd.audit.no_errors":    "最近窗口内没有失败审计记录",
 	"cmd.remember.usage":     "用法：/remember <内容>",

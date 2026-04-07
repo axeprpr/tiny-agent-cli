@@ -463,6 +463,34 @@ func TestAuditCommandStatsAndTail(t *testing.T) {
 	}
 }
 
+func TestDebugToolCallCommand(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.auditPath = tools.AuditPath(r.cfg.StateDir)
+	sink := tools.NewFileAuditSink(r.auditPath)
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:         time.Now(),
+		Tool:         "read_file",
+		Status:       "ok",
+		DurationMs:   12,
+		ArgsPreview:  "{\"path\":\"README.md\"}",
+		OutputSample: "tiny-agent-cli\nREADME snippet",
+	})
+
+	result := r.executeCommand("/debug-tool-call")
+	if !result.handled {
+		t.Fatalf("expected /debug-tool-call handled")
+	}
+	if !strings.Contains(result.output, "tool=read_file") {
+		t.Fatalf("unexpected tool output: %q", result.output)
+	}
+	if !strings.Contains(result.output, "args={\"path\":\"README.md\"}") {
+		t.Fatalf("unexpected args output: %q", result.output)
+	}
+	if !strings.Contains(result.output, "output=tiny-agent-cli") {
+		t.Fatalf("unexpected sample output: %q", result.output)
+	}
+}
+
 func TestBgRoleUsage(t *testing.T) {
 	r := newMemoryTestRuntime(t)
 	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")

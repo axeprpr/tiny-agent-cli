@@ -446,6 +446,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.skillsCommand(), exitCode: -1}
 	case "/audit":
 		return runtimeCommandResult{handled: true, output: r.auditCommand(fields), exitCode: -1}
+	case "/debug-tool-call":
+		return runtimeCommandResult{handled: true, output: r.debugToolCallCommand(fields), exitCode: -1}
 	case "/trace":
 		return runtimeCommandResult{handled: true, output: r.traceCommand(fields), exitCode: -1}
 	case "/session":
@@ -2798,6 +2800,40 @@ func (r *chatRuntime) auditErrors(limit int) string {
 	}
 	if len(lines) == 0 {
 		return i18n.T("cmd.audit.no_errors")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) debugToolCallCommand(fields []string) string {
+	if len(fields) > 1 {
+		return i18n.T("cmd.debugtool.usage")
+	}
+	events, err := tools.ReadAuditTail(r.auditPath, 1)
+	if err != nil {
+		return "audit read error: " + err.Error()
+	}
+	if len(events) == 0 {
+		return i18n.T("cmd.audit.empty")
+	}
+	event := events[len(events)-1]
+	lines := []string{
+		"tool=" + event.Tool,
+		"status=" + firstNonEmpty(event.Status, "unknown"),
+	}
+	if event.DurationMs > 0 {
+		lines = append(lines, fmt.Sprintf("duration_ms=%d", event.DurationMs))
+	}
+	if !event.Time.IsZero() {
+		lines = append(lines, "at="+event.Time.Format("2006-01-02T15:04:05Z07:00"))
+	}
+	if strings.TrimSpace(event.ArgsPreview) != "" {
+		lines = append(lines, "args="+compactJobText(event.ArgsPreview, 400))
+	}
+	if strings.TrimSpace(event.OutputSample) != "" {
+		lines = append(lines, "output="+compactJobText(event.OutputSample, 400))
+	}
+	if strings.TrimSpace(event.Error) != "" {
+		lines = append(lines, "error="+compactJobText(event.Error, 400))
 	}
 	return strings.Join(lines, "\n")
 }
