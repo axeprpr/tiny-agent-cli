@@ -491,6 +491,43 @@ func TestDebugToolCallCommand(t *testing.T) {
 	}
 }
 
+func TestDebugToolCallTailAndErrors(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.auditPath = tools.AuditPath(r.cfg.StateDir)
+	sink := tools.NewFileAuditSink(r.auditPath)
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:         time.Now().Add(-2 * time.Second),
+		Tool:         "read_file",
+		Status:       "ok",
+		ArgsPreview:  "{\"path\":\"a.txt\"}",
+		OutputSample: "alpha",
+	})
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:         time.Now().Add(-1 * time.Second),
+		Tool:         "run_command",
+		Status:       "error",
+		ArgsPreview:  "{\"command\":\"false\"}",
+		OutputSample: "exit status 1",
+		Error:        "command failed",
+	})
+
+	tail := r.executeCommand("/debug-tool-call tail 2")
+	if !tail.handled {
+		t.Fatalf("expected /debug-tool-call tail handled")
+	}
+	if !strings.Contains(tail.output, "tool=read_file") || !strings.Contains(tail.output, "tool=run_command") {
+		t.Fatalf("unexpected tail output: %q", tail.output)
+	}
+
+	errors := r.executeCommand("/debug-tool-call errors 1")
+	if !errors.handled {
+		t.Fatalf("expected /debug-tool-call errors handled")
+	}
+	if !strings.Contains(errors.output, "tool=run_command") || !strings.Contains(errors.output, "error=command failed") {
+		t.Fatalf("unexpected errors output: %q", errors.output)
+	}
+}
+
 func TestBgRoleUsage(t *testing.T) {
 	r := newMemoryTestRuntime(t)
 	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")

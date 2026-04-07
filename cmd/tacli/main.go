@@ -2805,37 +2805,91 @@ func (r *chatRuntime) auditErrors(limit int) string {
 }
 
 func (r *chatRuntime) debugToolCallCommand(fields []string) string {
+	mode := "latest"
+	limit := 1
 	if len(fields) > 1 {
-		return i18n.T("cmd.debugtool.usage")
+		switch fields[1] {
+		case "tail":
+			mode = "tail"
+			limit = 5
+			if len(fields) >= 3 {
+				if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+					limit = min(v, 20)
+				}
+			}
+		case "errors":
+			mode = "errors"
+			limit = 5
+			if len(fields) >= 3 {
+				if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+					limit = min(v, 20)
+				}
+			}
+		default:
+			return i18n.T("cmd.debugtool.usage")
+		}
 	}
-	events, err := tools.ReadAuditTail(r.auditPath, 1)
+	events, err := tools.ReadAuditTail(r.auditPath, max(20, limit*4))
 	if err != nil {
 		return "audit read error: " + err.Error()
 	}
 	if len(events) == 0 {
 		return i18n.T("cmd.audit.empty")
 	}
-	event := events[len(events)-1]
-	lines := []string{
-		"tool=" + event.Tool,
-		"status=" + firstNonEmpty(event.Status, "unknown"),
+
+	selected := make([]tools.ToolAuditEvent, 0, limit)
+	switch mode {
+	case "latest":
+		selected = append(selected, events[len(events)-1])
+	case "tail":
+		if len(events) > limit {
+			events = events[len(events)-limit:]
+		}
+		selected = append(selected, events...)
+	case "errors":
+		for i := len(events) - 1; i >= 0; i-- {
+			event := events[i]
+			if strings.TrimSpace(event.Status) == "" || event.Status == "ok" {
+				continue
+			}
+			selected = append(selected, event)
+			if len(selected) >= limit {
+				break
+			}
+		}
+		if len(selected) == 0 {
+			return i18n.T("cmd.audit.no_errors")
+		}
+		for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
+			selected[i], selected[j] = selected[j], selected[i]
+		}
 	}
-	if event.DurationMs > 0 {
-		lines = append(lines, fmt.Sprintf("duration_ms=%d", event.DurationMs))
+
+	blocks := make([]string, 0, len(selected))
+	for idx, event := range selected {
+		lines := []string{
+			fmt.Sprintf("[%d]", idx+1),
+			"tool=" + event.Tool,
+			"status=" + firstNonEmpty(event.Status, "unknown"),
+		}
+		if event.DurationMs > 0 {
+			lines = append(lines, fmt.Sprintf("duration_ms=%d", event.DurationMs))
+		}
+		if !event.Time.IsZero() {
+			lines = append(lines, "at="+event.Time.Format("2006-01-02T15:04:05Z07:00"))
+		}
+		if strings.TrimSpace(event.ArgsPreview) != "" {
+			lines = append(lines, "args="+compactJobText(event.ArgsPreview, 400))
+		}
+		if strings.TrimSpace(event.OutputSample) != "" {
+			lines = append(lines, "output="+compactJobText(event.OutputSample, 400))
+		}
+		if strings.TrimSpace(event.Error) != "" {
+			lines = append(lines, "error="+compactJobText(event.Error, 400))
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
-	if !event.Time.IsZero() {
-		lines = append(lines, "at="+event.Time.Format("2006-01-02T15:04:05Z07:00"))
-	}
-	if strings.TrimSpace(event.ArgsPreview) != "" {
-		lines = append(lines, "args="+compactJobText(event.ArgsPreview, 400))
-	}
-	if strings.TrimSpace(event.OutputSample) != "" {
-		lines = append(lines, "output="+compactJobText(event.OutputSample, 400))
-	}
-	if strings.TrimSpace(event.Error) != "" {
-		lines = append(lines, "error="+compactJobText(event.Error, 400))
-	}
-	return strings.Join(lines, "\n")
+	return strings.Join(blocks, "\n\n")
 }
 
 func modelContent(content any) string {
