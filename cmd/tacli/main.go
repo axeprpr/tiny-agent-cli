@@ -2825,6 +2825,8 @@ func (r *chatRuntime) debugToolCallCommand(fields []string) string {
 					limit = min(v, 20)
 				}
 			}
+		case "replay":
+			return r.debugToolCallReplay()
 		default:
 			return i18n.T("cmd.debugtool.usage")
 		}
@@ -2890,6 +2892,35 @@ func (r *chatRuntime) debugToolCallCommand(fields []string) string {
 		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+func (r *chatRuntime) debugToolCallReplay() string {
+	events, err := tools.ReadAuditTail(r.auditPath, 1)
+	if err != nil {
+		return "audit read error: " + err.Error()
+	}
+	if len(events) == 0 {
+		return i18n.T("cmd.audit.empty")
+	}
+	event := events[len(events)-1]
+	inputJSON := strings.TrimSpace(event.InputJSON)
+	if inputJSON == "" {
+		return "latest tool call does not have stored input_json"
+	}
+	registry := tools.NewRegistryWithOptions(r.cfg.WorkDir, r.cfg.Shell, r.cfg.CommandTimeout, r.approver, r.cfg.Hooks, r.permissions)
+	registry.SetAuditSink(tools.NewFileAuditSink(r.auditPath))
+	output, callErr := registry.Call(context.Background(), event.Tool, json.RawMessage(inputJSON))
+	lines := []string{
+		"replayed tool=" + event.Tool,
+		"input_json=" + compactJobText(inputJSON, 400),
+	}
+	if strings.TrimSpace(output) != "" {
+		lines = append(lines, "output="+compactJobText(output, 1200))
+	}
+	if callErr != nil {
+		lines = append(lines, "error="+compactJobText(callErr.Error(), 400))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func modelContent(content any) string {

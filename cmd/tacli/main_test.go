@@ -528,6 +528,36 @@ func TestDebugToolCallTailAndErrors(t *testing.T) {
 	}
 }
 
+func TestDebugToolCallReplay(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	dir := t.TempDir()
+	r.cfg.WorkDir = dir
+	r.auditPath = tools.AuditPath(r.cfg.StateDir)
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello replay"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	sink := tools.NewFileAuditSink(r.auditPath)
+	sink.RecordToolEvent(context.Background(), tools.ToolAuditEvent{
+		Time:         time.Now(),
+		Tool:         "read_file",
+		Status:       "ok",
+		InputJSON:    `{"path":"note.txt"}`,
+		ArgsPreview:  `{"path":"note.txt"}`,
+		OutputSample: "hello replay",
+	})
+
+	result := r.executeCommand("/debug-tool-call replay")
+	if !result.handled {
+		t.Fatalf("expected /debug-tool-call replay handled")
+	}
+	if !strings.Contains(result.output, "replayed tool=read_file") {
+		t.Fatalf("unexpected replay output: %q", result.output)
+	}
+	if !strings.Contains(result.output, "hello replay") {
+		t.Fatalf("expected replayed tool output, got %q", result.output)
+	}
+}
+
 func TestBgRoleUsage(t *testing.T) {
 	r := newMemoryTestRuntime(t)
 	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")

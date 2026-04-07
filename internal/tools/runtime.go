@@ -59,6 +59,7 @@ type ToolAuditEvent struct {
 	Tool         string    `json:"tool"`
 	Status       string    `json:"status"`
 	DurationMs   int64     `json:"duration_ms"`
+	InputJSON    string    `json:"input_json,omitempty"`
 	ArgsPreview  string    `json:"args_preview,omitempty"`
 	OutputSample string    `json:"output_sample,omitempty"`
 	Error        string    `json:"error,omitempty"`

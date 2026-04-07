@@ -249,6 +249,7 @@ func (r *Registry) recordAudit(ctx context.Context, inv ToolInvocation, out Tool
 		Tool:         inv.Name,
 		Status:       status,
 		DurationMs:   out.Duration.Milliseconds(),
+		InputJSON:    string(inv.Raw),
 		ArgsPreview:  compactPreviewString(json.RawMessage(inv.Raw), 140),
 		OutputSample: compactAuditSample(out.Output, 200),
 	}
