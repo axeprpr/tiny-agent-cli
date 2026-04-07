@@ -203,6 +203,37 @@ func TestCompactForContextUsesConfiguredWindow(t *testing.T) {
 	}
 }
 
+func TestAnnotateToolResultAppendsReminder(t *testing.T) {
+	got := annotateToolResult("file-a\nfile-b")
+	if !strings.Contains(got, "file-a") {
+		t.Fatalf("expected original tool output, got %q", got)
+	}
+	if !strings.Contains(got, postToolAnswerReminder) {
+		t.Fatalf("expected post-tool reminder, got %q", got)
+	}
+}
+
+func TestShouldRetryEmptyToolAnswerAfterToolResult(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "show the file contents"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("calc.py")},
+	}
+	if !shouldRetryEmptyToolAnswer(messages, model.Message{}) {
+		t.Fatalf("expected empty post-tool answer to retry")
+	}
+}
+
+func TestShouldNotRetryEmptyToolAnswerTwice(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "show the file contents"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("calc.py")},
+		{Role: "user", Content: emptyToolAnswerRetryReminder},
+	}
+	if shouldRetryEmptyToolAnswer(messages, model.Message{}) {
+		t.Fatalf("expected retry reminder to suppress another retry")
+	}
+}
+
 type scriptedChatClient struct {
 	responses []model.Response
 	requests  []model.Request

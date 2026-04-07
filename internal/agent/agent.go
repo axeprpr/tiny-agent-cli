@@ -26,6 +26,8 @@ const (
 
 const syntheticSummaryPrefix = "[compacted summary]"
 const todoNagPrefix = "[todo reminder]"
+const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
+const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
 
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
@@ -234,6 +236,14 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
 		if len(msg.ToolCalls) == 0 {
+			if shouldRetryEmptyToolAnswer(s.messages, msg) {
+				s.messages = append(s.messages, model.Message{
+					Role:    "user",
+					Content: emptyToolAnswerRetryReminder,
+				})
+				s.agent.logf("empty final after tool results, retrying with direct-answer reminder\n")
+				continue
+			}
 			final := finalResponseText(msg)
 			s.messages = append(s.messages, model.Message{
 				Role:    "assistant",
@@ -280,6 +290,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			if err != nil {
 				output = "tool error: " + err.Error()
 			}
+			output = annotateToolResult(output)
 
 			s.messages = append(s.messages, model.Message{
 				Role:       "tool",
@@ -424,6 +435,14 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		})
 
 		if len(toolCalls) == 0 {
+			if shouldRetryEmptyToolAnswer(s.messages, msg) {
+				s.messages = append(s.messages, model.Message{
+					Role:    "user",
+					Content: emptyToolAnswerRetryReminder,
+				})
+				s.agent.logf("empty final after tool results, retrying with direct-answer reminder\n")
+				continue
+			}
 			final := finalResponseText(msg)
 			s.messages = append(s.messages, model.Message{
 				Role:    "assistant",
@@ -464,6 +483,7 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			if err != nil {
 				output = "tool error: " + err.Error()
 			}
+			output = annotateToolResult(output)
 			s.messages = append(s.messages, model.Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -615,6 +635,36 @@ func (s *Session) buildRequest() model.Request {
 	}
 	req.ToolChoice = "auto"
 	return req
+}
+
+func annotateToolResult(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return postToolAnswerReminder
+	}
+	return output + "\n\n" + postToolAnswerReminder
+}
+
+func shouldRetryEmptyToolAnswer(messages []model.Message, msg model.Message) bool {
+	if strings.TrimSpace(model.ContentString(msg.Content)) != "" {
+		return false
+	}
+	if len(msg.ToolCalls) != 0 || len(messages) == 0 {
+		return false
+	}
+	if messages[len(messages)-1].Role != "tool" {
+		return false
+	}
+	for i := len(messages) - 1; i >= 0 && i >= len(messages)-3; i-- {
+		prior := messages[i]
+		if prior.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(model.ContentString(prior.Content)), emptyToolAnswerRetryReminder) {
+			return false
+		}
+	}
+	return true
 }
 
 func finalResponseText(msg model.Message) string {
