@@ -64,6 +64,18 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	}
 }
 
+func TestRerankSearchResultsPrefersGitHubForGitHubQuery(t *testing.T) {
+	results := []ddgResult{
+		{title: "Blog Post", url: "https://example.com/tiny-agent-cli", snippet: "third-party summary"},
+		{title: "GitHub - axeprpr/tiny-agent-cli: Minimal Go single-task agent CLI", url: "https://github.com/axeprpr/tiny-agent-cli", snippet: "official repository"},
+	}
+
+	ranked := rerankSearchResults("tiny-agent-cli github repository", results)
+	if ranked[0].url != "https://github.com/axeprpr/tiny-agent-cli" {
+		t.Fatalf("expected GitHub result first, got %#v", ranked)
+	}
+}
+
 func TestFetchURLRejectsUnsupportedScheme(t *testing.T) {
 	tool := newFetchURLTool()
 	_, err := tool.Call(context.Background(), json.RawMessage(`{"url":"file:///etc/passwd"}`))

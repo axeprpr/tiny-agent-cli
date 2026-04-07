@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"tiny-agent-cli/internal/model"
 )
@@ -196,6 +198,7 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if len(results) == 0 && lastErr != nil {
 		return "", lastErr
 	}
+	results = rerankSearchResults(query, results)
 
 	var lines []string
 	lines = append(lines, "query: "+query)
@@ -344,6 +347,89 @@ func defaultSearchEndpoints(query string) []string {
 		"https://html.duckduckgo.com/html/?q=" + escaped,
 		"https://lite.duckduckgo.com/lite/?q=" + escaped,
 	}
+}
+
+func rerankSearchResults(query string, results []ddgResult) []ddgResult {
+	if len(results) < 2 {
+		return results
+	}
+	type scoredResult struct {
+		result ddgResult
+		score  int
+		index  int
+	}
+	queryTokens := searchTokens(query)
+	wantGitHub := strings.Contains(strings.ToLower(query), "github")
+	scored := make([]scoredResult, 0, len(results))
+	for i, item := range results {
+		score := scoreSearchResult(queryTokens, wantGitHub, item)
+		scored = append(scored, scoredResult{result: item, score: score, index: i})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].index < scored[j].index
+		}
+		return scored[i].score > scored[j].score
+	})
+	out := make([]ddgResult, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, item.result)
+	}
+	return out
+}
+
+func scoreSearchResult(queryTokens []string, wantGitHub bool, item ddgResult) int {
+	combined := strings.ToLower(item.title + " " + item.url + " " + item.snippet)
+	score := 0
+	if strings.Contains(combined, "github.com") {
+		score += 15
+		if wantGitHub {
+			score += 25
+		}
+	}
+	if strings.Contains(combined, "readme") {
+		score += 10
+	}
+	if strings.Contains(combined, "/blob/main/") || strings.Contains(combined, "/tree/main/") {
+		score += 6
+	}
+	matchedTokens := 0
+	for _, token := range queryTokens {
+		if strings.Contains(combined, token) {
+			score += 4
+			matchedTokens++
+		}
+	}
+	if matchedTokens >= 2 {
+		score += 8
+	}
+	if matchedTokens >= 3 {
+		score += 8
+	}
+	return score
+}
+
+func searchTokens(query string) []string {
+	query = strings.ToLower(query)
+	var b strings.Builder
+	for _, r := range query {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte(' ')
+	}
+	parts := strings.Fields(b.String())
+	seen := make(map[string]bool, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if len(part) < 3 || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
 }
 
 func stripTags(s string) string {
