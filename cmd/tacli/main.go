@@ -1216,7 +1216,11 @@ func (r *chatRuntime) reviewCommand(fields []string) string {
 	if strings.TrimSpace(preview) == "no diff found" {
 		return "no diff found for the requested review scope"
 	}
-	prompt := buildReviewPrompt(opts)
+	preflight, err := buildReviewPreflight(context.Background(), r.cfg.WorkDir, opts)
+	if err != nil {
+		return "review preflight error: " + err.Error()
+	}
+	prompt := buildReviewPrompt(opts, preflight)
 	output, err := r.executeTask(context.Background(), prompt)
 	if err != nil {
 		return "review error: " + err.Error()
@@ -1229,6 +1233,12 @@ type reviewOptions struct {
 	target string
 	path   string
 	staged bool
+}
+
+type reviewPreflight struct {
+	changedFiles []string
+	diffStat     string
+	docsOnly     bool
 }
 
 func parseReviewArgs(args []string) (reviewOptions, error) {
@@ -1267,7 +1277,7 @@ func parseReviewArgs(args []string) (reviewOptions, error) {
 	return opts, nil
 }
 
-func buildReviewPrompt(opts reviewOptions) string {
+func buildReviewPrompt(opts reviewOptions, preflight reviewPreflight) string {
 	scope := []string{"Review the current git diff"}
 	if opts.staged {
 		scope = append(scope, "for staged changes")
@@ -1281,7 +1291,109 @@ func buildReviewPrompt(opts reviewOptions) string {
 	if opts.path != "" {
 		scope = append(scope, "scoped to "+opts.path)
 	}
-	return strings.Join(scope, " ") + ". Use review_diff first with the same scope. Focus on bugs, regressions, risky assumptions, and missing tests. Present findings first with file references when possible. If there are no findings, say so explicitly."
+	lines := []string{
+		strings.Join(scope, " ") + ".",
+		"Preflight facts:",
+		fmt.Sprintf("- staged=%t", opts.staged),
+		fmt.Sprintf("- base=%s", firstNonEmpty(opts.base, "(none)")),
+	}
+	if strings.TrimSpace(opts.target) != "" {
+		lines = append(lines, "- target="+opts.target)
+	}
+	if strings.TrimSpace(opts.path) != "" {
+		lines = append(lines, "- path="+opts.path)
+	}
+	if len(preflight.changedFiles) > 0 {
+		lines = append(lines, fmt.Sprintf("- changed_files(%d)=%s", len(preflight.changedFiles), strings.Join(preflight.changedFiles, ", ")))
+	}
+	if strings.TrimSpace(preflight.diffStat) != "" {
+		lines = append(lines, "- diff_stat="+preflight.diffStat)
+	}
+	lines = append(lines, fmt.Sprintf("- docs_only=%t", preflight.docsOnly))
+	lines = append(lines, "- local_verification=not run automatically by /review")
+	lines = append(lines, "Use review_diff first with the same scope. Ground findings in the actual patch. Focus on bugs, regressions, risky assumptions, and missing tests. Present findings first with file references when possible. If there are no findings, say so explicitly.")
+	return strings.Join(lines, "\n")
+}
+
+func buildReviewPreflight(ctx context.Context, workDir string, opts reviewOptions) (reviewPreflight, error) {
+	filesText, err := runReviewGit(ctx, workDir, opts, "--name-only")
+	if err != nil {
+		return reviewPreflight{}, err
+	}
+	files := splitNonEmptyLines(filesText)
+	statText, err := runReviewGit(ctx, workDir, opts, "--stat", "--compact-summary")
+	if err != nil {
+		return reviewPreflight{}, err
+	}
+	return reviewPreflight{
+		changedFiles: files,
+		diffStat:     compactJobText(strings.TrimSpace(statText), 400),
+		docsOnly:     onlyDocLikeFiles(files),
+	}, nil
+}
+
+func runReviewGit(ctx context.Context, workDir string, opts reviewOptions, extraArgs ...string) (string, error) {
+	args := []string{"-C", workDir, "diff", "--no-ext-diff"}
+	args = append(args, extraArgs...)
+	if opts.staged {
+		args = append(args, "--cached")
+	}
+	if opts.target != "" {
+		args = append(args, opts.base, opts.target)
+	} else if !opts.staged {
+		args = append(args, opts.base)
+	}
+	if strings.TrimSpace(opts.path) != "" {
+		args = append(args, "--", opts.path)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	data, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(data))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return "", fmt.Errorf("git diff failed: %s", text)
+	}
+	return text, nil
+}
+
+func splitNonEmptyLines(text string) []string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func onlyDocLikeFiles(files []string) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for _, file := range files {
+		lower := strings.ToLower(strings.TrimSpace(file))
+		switch {
+		case strings.HasSuffix(lower, ".md"),
+			strings.HasSuffix(lower, ".txt"),
+			strings.HasSuffix(lower, ".rst"),
+			strings.HasSuffix(lower, ".adoc"),
+			strings.HasSuffix(lower, ".png"),
+			strings.HasSuffix(lower, ".jpg"),
+			strings.HasSuffix(lower, ".jpeg"),
+			strings.HasSuffix(lower, ".gif"),
+			strings.HasSuffix(lower, ".svg"),
+			strings.Contains(lower, "/docs/"),
+			strings.HasPrefix(lower, "docs/"):
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (r *chatRuntime) pluginCommand(fields []string, raw string) string {

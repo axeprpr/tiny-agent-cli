@@ -438,6 +438,10 @@ func TestBuildReviewPromptIncludesScope(t *testing.T) {
 		target: "feature",
 		path:   "internal/agent",
 		staged: true,
+	}, reviewPreflight{
+		changedFiles: []string{"internal/agent/agent.go", "internal/agent/agent_test.go"},
+		diffStat:     "2 files changed, 10 insertions(+)",
+		docsOnly:     false,
 	})
 	if !strings.Contains(prompt, "for staged changes") {
 		t.Fatalf("expected staged scope, got %q", prompt)
@@ -447,6 +451,18 @@ func TestBuildReviewPromptIncludesScope(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "scoped to internal/agent") {
 		t.Fatalf("expected path scope, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "changed_files(2)=") || !strings.Contains(prompt, "diff_stat=2 files changed") {
+		t.Fatalf("expected preflight facts, got %q", prompt)
+	}
+}
+
+func TestOnlyDocLikeFiles(t *testing.T) {
+	if !onlyDocLikeFiles([]string{"README.md", "docs/usage.txt", "assets/logo.svg"}) {
+		t.Fatalf("expected doc-like files to be true")
+	}
+	if onlyDocLikeFiles([]string{"README.md", "cmd/tacli/main.go"}) {
+		t.Fatalf("expected mixed code/doc files to be false")
 	}
 }
 
