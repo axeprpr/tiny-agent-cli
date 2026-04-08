@@ -236,6 +236,33 @@ func TestShouldNotRetryEmptyToolAnswerTwice(t *testing.T) {
 	}
 }
 
+func TestDecideTurnExecutesToolCalls(t *testing.T) {
+	decision := decideTurn(nil, model.Message{
+		ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "list_files",
+				Arguments: `{"path":"."}`,
+			},
+		}},
+	})
+	if decision.action != turnActionExecuteTools {
+		t.Fatalf("expected execute-tools decision, got %#v", decision)
+	}
+}
+
+func TestDecideTurnRetriesOnEmptyPostToolAnswer(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "show the file contents"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("calc.py")},
+	}
+	decision := decideTurn(messages, model.Message{})
+	if decision.action != turnActionRetry || decision.reminder != emptyToolAnswerRetryReminder {
+		t.Fatalf("expected empty-answer retry decision, got %#v", decision)
+	}
+}
+
 func TestEvidenceRetryReminderRequestsDirectFileRead(t *testing.T) {
 	messages := []model.Message{
 		{Role: "user", Content: "Show me the contents of chat_note.txt."},
@@ -290,6 +317,32 @@ func TestEvidenceRetryReminderSkipsWhenDirectReadAlreadyUsed(t *testing.T) {
 	got := evidenceRetryReminder(messages, model.Message{Content: "The file contains hello-chat."})
 	if got != "" {
 		t.Fatalf("expected no reminder, got %q", got)
+	}
+}
+
+func TestDecideTurnRetriesOnShallowEvidence(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "Show me the contents of chat_note.txt."},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "list_files",
+				Arguments: `{"path":"."}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("chat_note.txt")},
+	}
+	decision := decideTurn(messages, model.Message{Content: "I found chat_note.txt in the directory."})
+	if decision.action != turnActionRetry || decision.reminder != fileEvidenceRetryReminder {
+		t.Fatalf("expected shallow-evidence retry decision, got %#v", decision)
+	}
+}
+
+func TestDecideTurnFinishesWithFinalText(t *testing.T) {
+	decision := decideTurn(nil, model.Message{Content: "final answer"})
+	if decision.action != turnActionFinish || decision.final != "final answer" {
+		t.Fatalf("expected finish decision, got %#v", decision)
 	}
 }
 

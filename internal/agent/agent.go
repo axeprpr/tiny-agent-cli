@@ -31,6 +31,21 @@ const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the us
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
 const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
 
+type turnAction int
+
+const (
+	turnActionFinish turnAction = iota
+	turnActionRetry
+	turnActionExecuteTools
+)
+
+type turnDecision struct {
+	action   turnAction
+	reminder string
+	final    string
+	logLine  string
+}
+
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
 }
@@ -237,78 +252,9 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			"tool_calls": len(msg.ToolCalls),
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
-		if len(msg.ToolCalls) == 0 {
-			if reminder := evidenceRetryReminder(s.messages, msg); reminder != "" {
-				s.messages = append(s.messages, model.Message{
-					Role:    "user",
-					Content: reminder,
-				})
-				s.agent.logf("tool evidence looked shallow, retrying with a more specific-tool reminder\n")
-				continue
-			}
-			if shouldRetryEmptyToolAnswer(s.messages, msg) {
-				s.messages = append(s.messages, model.Message{
-					Role:    "user",
-					Content: emptyToolAnswerRetryReminder,
-				})
-				s.agent.logf("empty final after tool results, retrying with direct-answer reminder\n")
-				continue
-			}
-			final := finalResponseText(msg)
-			s.messages = append(s.messages, model.Message{
-				Role:    "assistant",
-				Content: msg.Content,
-			})
-			return Result{Final: final}, nil
+		if result, shouldContinue := s.handleTurnResult(ctx, turn, msg); !shouldContinue {
+			return *result, nil
 		}
-
-		s.messages = append(s.messages, model.Message{
-			Role:      "assistant",
-			Content:   msg.Content,
-			ToolCalls: msg.ToolCalls,
-		})
-
-		s.agent.logf("executing %d tool(s)\n", len(msg.ToolCalls))
-
-		for i, call := range msg.ToolCalls {
-			args := json.RawMessage(call.Function.Arguments)
-			s.agent.logToolStart(i+1, len(msg.ToolCalls), call.Function.Name, call.ID, args)
-			s.agent.emitEvent(ctx, "tool_start", map[string]any{
-				"turn":    turn,
-				"index":   i + 1,
-				"total":   len(msg.ToolCalls),
-				"name":    call.Function.Name,
-				"call_id": call.ID,
-				"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
-			})
-
-			started := time.Now()
-			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
-			output = truncateToolMessage(output, maxToolMessageChars)
-			s.agent.logToolFinish(time.Since(started), output, err)
-			s.agent.emitEvent(ctx, "tool_finish", map[string]any{
-				"turn":        turn,
-				"index":       i + 1,
-				"total":       len(msg.ToolCalls),
-				"name":        call.Function.Name,
-				"call_id":     call.ID,
-				"duration_ms": time.Since(started).Milliseconds(),
-				"status":      toolEventStatus(err),
-				"summary":     firstOutputSummary(output),
-				"error":       toolEventError(err),
-			})
-			if err != nil {
-				output = "tool error: " + err.Error()
-			}
-			output = annotateToolResult(output)
-
-			s.messages = append(s.messages, model.Message{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				Content:    output,
-			})
-		}
-		s.trackTodoRounds(msg.ToolCalls)
 	}
 }
 
@@ -443,72 +389,106 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			"tool_calls": len(msg.ToolCalls),
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
-
-		if len(toolCalls) == 0 {
-			if reminder := evidenceRetryReminder(s.messages, msg); reminder != "" {
-				s.messages = append(s.messages, model.Message{
-					Role:    "user",
-					Content: reminder,
-				})
-				s.agent.logf("tool evidence looked shallow, retrying with a more specific-tool reminder\n")
-				continue
-			}
-			if shouldRetryEmptyToolAnswer(s.messages, msg) {
-				s.messages = append(s.messages, model.Message{
-					Role:    "user",
-					Content: emptyToolAnswerRetryReminder,
-				})
-				s.agent.logf("empty final after tool results, retrying with direct-answer reminder\n")
-				continue
-			}
-			final := finalResponseText(msg)
-			s.messages = append(s.messages, model.Message{
-				Role:    "assistant",
-				Content: msg.Content,
-			})
-			return Result{Final: final}, nil
+		if result, shouldContinue := s.handleTurnResult(ctx, turn, msg); !shouldContinue {
+			return *result, nil
 		}
+	}
+}
 
-		s.messages = append(s.messages, msg)
-		s.agent.logf("executing %d tool(s)\n", len(toolCalls))
-
-		for i, call := range toolCalls {
-			args := json.RawMessage(call.Function.Arguments)
-			s.agent.logToolStart(i+1, len(toolCalls), call.Function.Name, call.ID, args)
-			s.agent.emitEvent(ctx, "tool_start", map[string]any{
-				"turn":    turn,
-				"index":   i + 1,
-				"total":   len(toolCalls),
-				"name":    call.Function.Name,
-				"call_id": call.ID,
-				"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
-			})
-			started := time.Now()
-			output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
-			output = truncateToolMessage(output, maxToolMessageChars)
-			s.agent.logToolFinish(time.Since(started), output, err)
-			s.agent.emitEvent(ctx, "tool_finish", map[string]any{
-				"turn":        turn,
-				"index":       i + 1,
-				"total":       len(toolCalls),
-				"name":        call.Function.Name,
-				"call_id":     call.ID,
-				"duration_ms": time.Since(started).Milliseconds(),
-				"status":      toolEventStatus(err),
-				"summary":     firstOutputSummary(output),
-				"error":       toolEventError(err),
-			})
-			if err != nil {
-				output = "tool error: " + err.Error()
-			}
-			output = annotateToolResult(output)
-			s.messages = append(s.messages, model.Message{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				Content:    output,
-			})
+func (s *Session) handleTurnResult(ctx context.Context, turn int, msg model.Message) (*Result, bool) {
+	decision := decideTurn(s.messages, msg)
+	switch decision.action {
+	case turnActionRetry:
+		s.messages = append(s.messages, model.Message{
+			Role:    "user",
+			Content: decision.reminder,
+		})
+		if decision.logLine != "" {
+			s.agent.logf("%s\n", decision.logLine)
 		}
-		s.trackTodoRounds(toolCalls)
+		return nil, true
+	case turnActionExecuteTools:
+		s.messages = append(s.messages, model.Message{
+			Role:      "assistant",
+			Content:   msg.Content,
+			ToolCalls: msg.ToolCalls,
+		})
+		s.executeToolCalls(ctx, turn, msg.ToolCalls)
+		s.trackTodoRounds(msg.ToolCalls)
+		return nil, true
+	default:
+		s.messages = append(s.messages, model.Message{
+			Role:    "assistant",
+			Content: msg.Content,
+		})
+		result := Result{Final: decision.final}
+		return &result, false
+	}
+}
+
+func (s *Session) executeToolCalls(ctx context.Context, turn int, calls []model.ToolCall) {
+	s.agent.logf("executing %d tool(s)\n", len(calls))
+	for i, call := range calls {
+		args := json.RawMessage(call.Function.Arguments)
+		s.agent.logToolStart(i+1, len(calls), call.Function.Name, call.ID, args)
+		s.agent.emitEvent(ctx, "tool_start", map[string]any{
+			"turn":    turn,
+			"index":   i + 1,
+			"total":   len(calls),
+			"name":    call.Function.Name,
+			"call_id": call.ID,
+			"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
+		})
+
+		started := time.Now()
+		output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
+		output = truncateToolMessage(output, maxToolMessageChars)
+		s.agent.logToolFinish(time.Since(started), output, err)
+		s.agent.emitEvent(ctx, "tool_finish", map[string]any{
+			"turn":        turn,
+			"index":       i + 1,
+			"total":       len(calls),
+			"name":        call.Function.Name,
+			"call_id":     call.ID,
+			"duration_ms": time.Since(started).Milliseconds(),
+			"status":      toolEventStatus(err),
+			"summary":     firstOutputSummary(output),
+			"error":       toolEventError(err),
+		})
+		if err != nil {
+			output = "tool error: " + err.Error()
+		}
+		output = annotateToolResult(output)
+
+		s.messages = append(s.messages, model.Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Content:    output,
+		})
+	}
+}
+
+func decideTurn(messages []model.Message, msg model.Message) turnDecision {
+	if len(msg.ToolCalls) > 0 {
+		return turnDecision{action: turnActionExecuteTools}
+	}
+	if reminder := evidenceRetryReminder(messages, msg); reminder != "" {
+		return turnDecision{
+			action:   turnActionRetry,
+			reminder: reminder,
+			logLine:  "tool evidence looked shallow, retrying with a more specific-tool reminder",
+		}
+	}
+	if shouldRetryEmptyToolAnswer(messages, msg) {
+		return turnDecision{
+			action:   turnActionRetry,
+			reminder: emptyToolAnswerRetryReminder,
+			logLine:  "empty final after tool results, retrying with direct-answer reminder",
+		}
+	}
+	return turnDecision{
+		action: turnActionFinish,
+		final:  finalResponseText(msg),
 	}
 }
 
