@@ -46,6 +46,17 @@ type turnDecision struct {
 	logLine  string
 }
 
+func (a turnAction) String() string {
+	switch a {
+	case turnActionRetry:
+		return "retry"
+	case turnActionExecuteTools:
+		return "execute_tools"
+	default:
+		return "finish"
+	}
+}
+
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
 }
@@ -53,6 +64,15 @@ type chatClient interface {
 type Result struct {
 	Final string
 	Steps int
+}
+
+type TurnSummary struct {
+	Turn        int
+	Decision    string
+	Assistant   model.Message
+	ToolResults []model.Message
+	Reminder    string
+	Final       string
 }
 
 type StreamClient interface {
@@ -74,6 +94,7 @@ type Agent struct {
 	streamClient  StreamClient
 	registry      *tools.Registry
 	executor      toolExecutor
+	permission    tools.ToolPermissionDecider
 	contextWindow int
 	log           io.Writer
 	eventSink     EventSink
@@ -82,6 +103,7 @@ type Agent struct {
 type Session struct {
 	agent                *Agent
 	messages             []model.Message
+	turns                []TurnSummary
 	roundsSinceTodoPatch int
 }
 
@@ -120,6 +142,13 @@ func (a *Agent) SetToolExecutor(exec toolExecutor) {
 		return
 	}
 	a.executor = exec
+}
+
+func (a *Agent) SetToolPermissionDecider(decider tools.ToolPermissionDecider) {
+	if a == nil {
+		return
+	}
+	a.permission = decider
 }
 
 func (a *Agent) CanStream() bool {
@@ -167,6 +196,26 @@ func (a *Agent) ToolNames() []string {
 func (s *Session) Messages() []model.Message {
 	out := make([]model.Message, len(s.messages))
 	copy(out, s.messages)
+	return out
+}
+
+func (s *Session) TurnSummaries() []TurnSummary {
+	out := make([]TurnSummary, len(s.turns))
+	for i, turn := range s.turns {
+		out[i] = TurnSummary{
+			Turn:      turn.Turn,
+			Decision:  turn.Decision,
+			Assistant: copyMessage(turn.Assistant),
+			Reminder:  turn.Reminder,
+			Final:     turn.Final,
+		}
+		if len(turn.ToolResults) > 0 {
+			out[i].ToolResults = make([]model.Message, len(turn.ToolResults))
+			for j, msg := range turn.ToolResults {
+				out[i].ToolResults[j] = copyMessage(msg)
+			}
+		}
+	}
 	return out
 }
 
@@ -220,7 +269,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
-			return Result{Final: reason}, nil
+			return Result{Final: reason, Steps: len(s.turns)}, nil
 		}
 
 		req := s.buildRequest()
@@ -267,6 +316,7 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
 		if result, shouldContinue := s.handleTurnResult(ctx, turn, msg); !shouldContinue {
+			result.Steps = len(s.turns)
 			return *result, nil
 		}
 	}
@@ -308,7 +358,7 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
 			s.agent.logf("stopping early: %s\n", reason)
-			return Result{Final: reason}, nil
+			return Result{Final: reason, Steps: len(s.turns)}, nil
 		}
 
 		req := s.buildRequest()
@@ -404,6 +454,7 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
 		if result, shouldContinue := s.handleTurnResult(ctx, turn, msg); !shouldContinue {
+			result.Steps = len(s.turns)
 			return *result, nil
 		}
 	}
@@ -411,12 +462,20 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 
 func (s *Session) handleTurnResult(ctx context.Context, turn int, msg model.Message) (*Result, bool) {
 	decision := decideTurn(s.messages, msg)
+	summary := TurnSummary{
+		Turn:      turn,
+		Decision:  decision.action.String(),
+		Assistant: copyMessage(model.Message{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls}),
+		Reminder:  decision.reminder,
+		Final:     decision.final,
+	}
 	switch decision.action {
 	case turnActionRetry:
 		s.messages = append(s.messages, model.Message{
 			Role:    "user",
 			Content: decision.reminder,
 		})
+		s.turns = append(s.turns, summary)
 		if decision.logLine != "" {
 			s.agent.logf("%s\n", decision.logLine)
 		}
@@ -427,7 +486,8 @@ func (s *Session) handleTurnResult(ctx context.Context, turn int, msg model.Mess
 			Content:   msg.Content,
 			ToolCalls: msg.ToolCalls,
 		})
-		s.executeToolCalls(ctx, turn, msg.ToolCalls)
+		summary.ToolResults = s.executeToolCalls(ctx, turn, msg.ToolCalls)
+		s.turns = append(s.turns, summary)
 		s.trackTodoRounds(msg.ToolCalls)
 		return nil, true
 	default:
@@ -435,20 +495,25 @@ func (s *Session) handleTurnResult(ctx context.Context, turn int, msg model.Mess
 			Role:    "assistant",
 			Content: msg.Content,
 		})
+		s.turns = append(s.turns, summary)
 		result := Result{Final: decision.final}
 		return &result, false
 	}
 }
 
-func (s *Session) executeToolCalls(ctx context.Context, turn int, calls []model.ToolCall) {
+func (s *Session) executeToolCalls(ctx context.Context, turn int, calls []model.ToolCall) []model.Message {
 	s.agent.logf("executing %d tool(s)\n", len(calls))
 	exec := s.agent.executor
 	if exec == nil {
 		exec = registryToolExecutor{agent: s.agent}
 	}
+	results := make([]model.Message, 0, len(calls))
 	for i, call := range calls {
-		s.messages = append(s.messages, exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call))
+		msg := exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call)
+		s.messages = append(s.messages, msg)
+		results = append(results, copyMessage(msg))
 	}
+	return results
 }
 
 func decideTurn(messages []model.Message, msg model.Message) turnDecision {
@@ -768,6 +833,15 @@ func finalResponseText(msg model.Message) string {
 		return final
 	}
 	return "(empty response)"
+}
+
+func copyMessage(msg model.Message) model.Message {
+	out := msg
+	if len(msg.ToolCalls) > 0 {
+		out.ToolCalls = make([]model.ToolCall, len(msg.ToolCalls))
+		copy(out.ToolCalls, msg.ToolCalls)
+	}
+	return out
 }
 
 func (s *Session) compactForContext() bool {

@@ -118,7 +118,7 @@ func (r *Registry) Definitions() []model.Tool {
 }
 
 func (r *Registry) Call(ctx context.Context, name string, raw json.RawMessage) (string, error) {
-	result, err := r.callInternal(ctx, name, raw)
+	result, err := r.callInternal(ctx, name, raw, true)
 	if err != nil {
 		return result.Output, err
 	}
@@ -129,10 +129,14 @@ func (r *Registry) Call(ctx context.Context, name string, raw json.RawMessage) (
 }
 
 func (r *Registry) CallStructured(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
-	return r.callInternal(ctx, name, raw)
+	return r.callInternal(ctx, name, raw, true)
 }
 
-func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
+func (r *Registry) CallStructuredWithoutPermission(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
+	return r.callInternal(ctx, name, raw, false)
+}
+
+func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMessage, decidePermission bool) (ToolResult, error) {
 	tool, ok := r.tools[name]
 	if !ok {
 		err := fmt.Errorf("unknown tool %q", name)
@@ -156,7 +160,7 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 		r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "validation_error")
 		return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
 	}
-	if r.permission != nil {
+	if decidePermission && r.permission != nil {
 		if err := r.permission.Decide(ctx, inv); err != nil {
 			r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "permission_denied")
 			return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
@@ -224,6 +228,20 @@ func (r *Registry) AddHook(hook ToolHook) {
 	r.hooks = append(r.hooks, hook)
 }
 
+func (r *Registry) PermissionDecider() ToolPermissionDecider {
+	if r == nil {
+		return nil
+	}
+	return r.permission
+}
+
+func (r *Registry) SetPermissionDecider(decider ToolPermissionDecider) {
+	if r == nil {
+		return
+	}
+	r.permission = decider
+}
+
 func (r *Registry) AddTool(tool Tool) {
 	if r == nil || tool == nil {
 		return
@@ -234,6 +252,10 @@ func (r *Registry) AddTool(tool Tool) {
 		return
 	}
 	r.tools[name] = tool
+}
+
+func (r *Registry) RecordToolAudit(ctx context.Context, inv ToolInvocation, out ToolOutcome, status string) {
+	r.recordAudit(ctx, inv, out, status)
 }
 
 func (r *Registry) SetAuditSink(audit ToolAuditSink) {

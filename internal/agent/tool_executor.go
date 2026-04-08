@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 type toolExecutor interface {
@@ -37,28 +38,59 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 		"preview": strings.TrimSpace(e.agent.registry.Preview(call.Function.Name, args)),
 	})
 
-	started := time.Now()
-	output, err := e.agent.registry.Call(ctx, call.Function.Name, args)
-	output = truncateToolMessage(output, maxToolMessageChars)
-	e.agent.logToolFinish(time.Since(started), output, err)
+	inv := tools.ToolInvocation{Name: call.Function.Name, Raw: args}
+	if e.agent.permission != nil {
+		if err := e.agent.permission.Decide(ctx, inv); err != nil {
+			e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "permission_denied")
+			output := truncateToolMessage("tool error: "+err.Error(), maxToolMessageChars)
+			e.agent.logToolFinish(0, output, err)
+			e.agent.emitEvent(ctx, "tool_finish", map[string]any{
+				"turn":        turn,
+				"index":       index,
+				"total":       total,
+				"name":        call.Function.Name,
+				"call_id":     call.ID,
+				"duration_ms": int64(0),
+				"status":      toolEventStatus(err),
+				"summary":     firstOutputSummary(output),
+				"error":       toolEventError(err),
+			})
+			return model.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				Content:    annotateToolResult(output),
+			}
+		}
+	}
+
+	result, err := e.agent.registry.CallStructuredWithoutPermission(ctx, call.Function.Name, args)
+	output := truncateToolMessage(result.Output, maxToolMessageChars)
+	if err != nil && strings.TrimSpace(output) == "" {
+		output = "tool error: " + err.Error()
+	}
+	e.agent.logToolFinish(resultDuration(result), output, err)
 	e.agent.emitEvent(ctx, "tool_finish", map[string]any{
 		"turn":        turn,
 		"index":       index,
 		"total":       total,
 		"name":        call.Function.Name,
 		"call_id":     call.ID,
-		"duration_ms": time.Since(started).Milliseconds(),
+		"duration_ms": result.DurationMs,
 		"status":      toolEventStatus(err),
 		"summary":     firstOutputSummary(output),
 		"error":       toolEventError(err),
 	})
-	if err != nil {
-		output = "tool error: " + err.Error()
-	}
 
 	return model.Message{
 		Role:       "tool",
 		ToolCallID: call.ID,
 		Content:    annotateToolResult(output),
 	}
+}
+
+func resultDuration(result tools.ToolResult) time.Duration {
+	if result.DurationMs <= 0 {
+		return 0
+	}
+	return time.Duration(result.DurationMs) * time.Millisecond
 }

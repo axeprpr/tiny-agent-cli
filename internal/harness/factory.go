@@ -38,12 +38,15 @@ func (f Factory) NewApprover(reader *bufio.Reader, output io.Writer, interactive
 func (f Factory) NewAgent(approver tools.Approver, log io.Writer, jobs tools.JobControl, policy *tools.PermissionStore, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
 	client := f.NewModelClient()
 	registry := tools.NewRegistryWithOptions(f.cfg.WorkDir, f.cfg.Shell, f.cfg.CommandTimeout, approver, f.cfg.Hooks, policy, jobs)
+	permission := registry.PermissionDecider()
+	registry.SetPermissionDecider(nil)
 	fileSink := tools.NewFileAuditSink(tools.AuditPath(f.cfg.StateDir))
 	allSinks := append([]tools.ToolAuditSink{fileSink}, extraAuditSinks...)
 	registry.SetAuditSink(tools.NewFanoutAuditSink(allSinks...))
 
 	a := agent.New(client, registry, f.cfg.ContextWindow, log)
 	a.SetStreamClient(client)
+	a.SetToolPermissionDecider(permission)
 	return a
 }
 

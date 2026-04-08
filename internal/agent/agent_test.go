@@ -372,6 +372,16 @@ func (e *scriptedToolExecutor) ExecuteToolCall(_ context.Context, _ int, _ int, 
 	return msg
 }
 
+type stubPermissionDecider struct {
+	calls []tools.ToolInvocation
+	err   error
+}
+
+func (d *stubPermissionDecider) Decide(_ context.Context, inv tools.ToolInvocation) error {
+	d.calls = append(d.calls, inv)
+	return d.err
+}
+
 type scriptedChatClient struct {
 	responses []model.Response
 	requests  []model.Request
@@ -768,6 +778,68 @@ func TestRunTaskUsesConfiguredToolExecutor(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected session to keep tool message from configured executor")
+	}
+}
+
+func TestRunTaskUsesAgentPermissionDeciderAndRecordsTurnSummaries(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "run_command",
+									Arguments: `{"command":"printf denied"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	perm := &stubPermissionDecider{err: fmt.Errorf("denied by test policy")}
+	a.SetToolPermissionDecider(perm)
+
+	session := a.NewSession()
+	result, err := session.RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(perm.calls) != 1 || perm.calls[0].Name != "run_command" {
+		t.Fatalf("expected permission decider to receive tool invocation, got %#v", perm.calls)
+	}
+	turns := session.TurnSummaries()
+	if len(turns) != 2 {
+		t.Fatalf("expected two turn summaries, got %#v", turns)
+	}
+	if turns[0].Decision != "execute_tools" {
+		t.Fatalf("unexpected first turn decision: %#v", turns[0])
+	}
+	if len(turns[0].ToolResults) != 1 || !strings.Contains(model.ContentString(turns[0].ToolResults[0].Content), "denied by test policy") {
+		t.Fatalf("expected denied tool result in first turn summary, got %#v", turns[0])
+	}
+	if turns[1].Decision != "finish" || turns[1].Final != "done" {
+		t.Fatalf("unexpected final turn summary: %#v", turns[1])
+	}
+	if result.Steps != 2 {
+		t.Fatalf("expected result steps to track turn summaries, got %d", result.Steps)
 	}
 }
 
