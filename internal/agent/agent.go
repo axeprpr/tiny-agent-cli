@@ -28,6 +28,8 @@ const syntheticSummaryPrefix = "[compacted summary]"
 const todoNagPrefix = "[todo reminder]"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
+const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
+const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
 
 type chatClient interface {
 	Complete(ctx context.Context, req model.Request) (model.Response, error)
@@ -236,6 +238,14 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 			"tool_names": toolCallNames(msg.ToolCalls, 8),
 		})
 		if len(msg.ToolCalls) == 0 {
+			if reminder := evidenceRetryReminder(s.messages, msg); reminder != "" {
+				s.messages = append(s.messages, model.Message{
+					Role:    "user",
+					Content: reminder,
+				})
+				s.agent.logf("tool evidence looked shallow, retrying with a more specific-tool reminder\n")
+				continue
+			}
 			if shouldRetryEmptyToolAnswer(s.messages, msg) {
 				s.messages = append(s.messages, model.Message{
 					Role:    "user",
@@ -435,6 +445,14 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 		})
 
 		if len(toolCalls) == 0 {
+			if reminder := evidenceRetryReminder(s.messages, msg); reminder != "" {
+				s.messages = append(s.messages, model.Message{
+					Role:    "user",
+					Content: reminder,
+				})
+				s.agent.logf("tool evidence looked shallow, retrying with a more specific-tool reminder\n")
+				continue
+			}
 			if shouldRetryEmptyToolAnswer(s.messages, msg) {
 				s.messages = append(s.messages, model.Message{
 					Role:    "user",
@@ -665,6 +683,120 @@ func shouldRetryEmptyToolAnswer(messages []model.Message, msg model.Message) boo
 		}
 	}
 	return true
+}
+
+func evidenceRetryReminder(messages []model.Message, msg model.Message) string {
+	finalText := strings.TrimSpace(model.ContentString(msg.Content))
+	userText := latestRealUserRequest(messages)
+	if userText == "" {
+		return ""
+	}
+	toolNames := latestTrailingToolNames(messages)
+	if len(toolNames) == 0 {
+		return ""
+	}
+	if wantsOfficialURL(userText) && !strings.Contains(finalText, "http://") && !strings.Contains(finalText, "https://") {
+		if hasAnyTool(toolNames, "web_search", "list_files", "glob_search", "grep") && !hasAnyTool(toolNames, "fetch_url", "read_file") {
+			if !hasRecentReminder(messages, urlEvidenceRetryReminder) {
+				return urlEvidenceRetryReminder
+			}
+		}
+	}
+	if wantsDirectContent(userText) {
+		if hasAnyTool(toolNames, "list_files", "glob_search", "grep", "web_search") && !hasAnyTool(toolNames, "read_file", "fetch_url") {
+			if !hasRecentReminder(messages, fileEvidenceRetryReminder) {
+				return fileEvidenceRetryReminder
+			}
+		}
+	}
+	return ""
+}
+
+func latestRealUserRequest(messages []model.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		text := strings.TrimSpace(model.ContentString(msg.Content))
+		if text == "" || strings.HasPrefix(text, "<system-reminder>") {
+			continue
+		}
+		return text
+	}
+	return ""
+}
+
+func latestTrailingToolNames(messages []model.Message) []string {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
+		return nil
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			names := make([]string, 0, len(msg.ToolCalls))
+			for _, call := range msg.ToolCalls {
+				name := strings.TrimSpace(call.Function.Name)
+				if name != "" {
+					names = append(names, name)
+				}
+			}
+			return names
+		}
+	}
+	return nil
+}
+
+func wantsDirectContent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	keywords := []string{
+		"contents", "content of", "show me the contents", "read ", "open ", "cat ", "file contents",
+		"内容", "读取", "读一下", "查看内容", "打开文件",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func wantsOfficialURL(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	keywords := []string{
+		"github", "official", "readme", "docs", "documentation", "url", "link",
+		"仓库", "官网", "官方", "链接", "地址", "文档",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyTool(names []string, wanted ...string) bool {
+	for _, name := range names {
+		for _, item := range wanted {
+			if name == item {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasRecentReminder(messages []model.Message, reminder string) bool {
+	for i := len(messages) - 1; i >= 0 && i >= len(messages)-4; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), reminder) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalResponseText(msg model.Message) string {

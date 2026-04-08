@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +233,63 @@ func TestShouldNotRetryEmptyToolAnswerTwice(t *testing.T) {
 	}
 	if shouldRetryEmptyToolAnswer(messages, model.Message{}) {
 		t.Fatalf("expected retry reminder to suppress another retry")
+	}
+}
+
+func TestEvidenceRetryReminderRequestsDirectFileRead(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "Show me the contents of chat_note.txt."},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "list_files",
+				Arguments: `{"path":"."}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("chat_note.txt")},
+	}
+	got := evidenceRetryReminder(messages, model.Message{Content: "I found chat_note.txt in the directory."})
+	if got != fileEvidenceRetryReminder {
+		t.Fatalf("expected direct-content reminder, got %q", got)
+	}
+}
+
+func TestEvidenceRetryReminderRequestsOfficialURL(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "Find the GitHub repository URL for tiny-agent-cli."},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "web_search",
+				Arguments: `{"query":"tiny-agent-cli"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("query: tiny-agent-cli")},
+	}
+	got := evidenceRetryReminder(messages, model.Message{Content: "I found some search results."})
+	if got != urlEvidenceRetryReminder {
+		t.Fatalf("expected official-url reminder, got %q", got)
+	}
+}
+
+func TestEvidenceRetryReminderSkipsWhenDirectReadAlreadyUsed(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "Show me the contents of chat_note.txt."},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"chat_note.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("hello-chat")},
+	}
+	got := evidenceRetryReminder(messages, model.Message{Content: "The file contains hello-chat."})
+	if got != "" {
+		t.Fatalf("expected no reminder, got %q", got)
 	}
 }
 
@@ -503,6 +562,73 @@ func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 	}
 	if len(client.requests[1].Tools) == 0 || client.requests[1].ToolChoice != "auto" {
 		t.Fatalf("expected follow-up request to keep tools enabled, got %#v", client.requests[1])
+	}
+}
+
+func TestRunTaskRetriesWhenToolEvidenceIsTooShallow(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "chat_note.txt"), []byte("hello-chat"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{
+								{
+									ID:   "call-1",
+									Type: "function",
+									Function: model.ToolFunction{
+										Name:      "list_files",
+										Arguments: `{"path":"."}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							Content: "I found chat_note.txt in the directory.",
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							Content: "The contents are hello-chat.",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	agent := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	result, err := agent.NewSession().RunTask(context.Background(), "Show me the contents of chat_note.txt.")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "The contents are hello-chat." {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected a retry request, got %d requests", len(client.requests))
+	}
+	lastReq := client.requests[2]
+	if len(lastReq.Messages) == 0 {
+		t.Fatalf("expected retry request messages")
+	}
+	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
+	if lastMsg.Role != "user" || !strings.HasPrefix(model.ContentString(lastMsg.Content), fileEvidenceRetryReminder) {
+		t.Fatalf("expected direct-content reminder, got %#v", lastMsg)
 	}
 }
 
