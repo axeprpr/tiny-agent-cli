@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -346,6 +347,31 @@ func TestDecideTurnFinishesWithFinalText(t *testing.T) {
 	}
 }
 
+type scriptedToolExecutor struct {
+	messages []model.Message
+	calls    []model.ToolCall
+}
+
+func (e *scriptedToolExecutor) ExecuteToolCall(_ context.Context, _ int, _ int, _ int, call model.ToolCall) model.Message {
+	e.calls = append(e.calls, call)
+	if len(e.messages) == 0 {
+		return model.Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Content:    annotateToolResult(fmt.Sprintf("tool error: no scripted tool result for %s", call.Function.Name)),
+		}
+	}
+	msg := e.messages[0]
+	e.messages = e.messages[1:]
+	if strings.TrimSpace(msg.ToolCallID) == "" {
+		msg.ToolCallID = call.ID
+	}
+	if strings.TrimSpace(model.ContentString(msg.Content)) == "" {
+		msg.Content = annotateToolResult("(empty tool result)")
+	}
+	return msg
+}
+
 type scriptedChatClient struct {
 	responses []model.Response
 	requests  []model.Request
@@ -682,6 +708,66 @@ func TestRunTaskRetriesWhenToolEvidenceIsTooShallow(t *testing.T) {
 	lastMsg := lastReq.Messages[len(lastReq.Messages)-1]
 	if lastMsg.Role != "user" || !strings.HasPrefix(model.ContentString(lastMsg.Content), fileEvidenceRetryReminder) {
 		t.Fatalf("expected direct-content reminder, got %#v", lastMsg)
+	}
+}
+
+func TestRunTaskUsesConfiguredToolExecutor(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "list_files",
+									Arguments: `{"path":"."}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	exec := &scriptedToolExecutor{
+		messages: []model.Message{
+			{Role: "tool", Content: annotateToolResult("custom executor output")},
+		},
+	}
+	a.SetToolExecutor(exec)
+
+	session := a.NewSession()
+	result, err := session.RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].Function.Name != "list_files" {
+		t.Fatalf("expected configured tool executor to receive the tool call, got %#v", exec.calls)
+	}
+	found := false
+	for _, msg := range session.Messages() {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "custom executor output") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected session to keep tool message from configured executor")
 	}
 }
 

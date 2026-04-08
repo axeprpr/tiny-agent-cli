@@ -73,6 +73,7 @@ type Agent struct {
 	client        chatClient
 	streamClient  StreamClient
 	registry      *tools.Registry
+	executor      toolExecutor
 	contextWindow int
 	log           io.Writer
 	eventSink     EventSink
@@ -88,12 +89,14 @@ func New(client chatClient, registry *tools.Registry, contextWindow int, log io.
 	if contextWindow <= 0 {
 		contextWindow = 32768
 	}
-	return &Agent{
+	a := &Agent{
 		client:        client,
 		registry:      registry,
 		contextWindow: contextWindow,
 		log:           log,
 	}
+	a.executor = registryToolExecutor{agent: a}
+	return a
 }
 
 func (a *Agent) Run(ctx context.Context, task string) (Result, error) {
@@ -106,6 +109,17 @@ func (a *Agent) SetStreamClient(sc StreamClient) {
 
 func (a *Agent) SetEventSink(sink EventSink) {
 	a.eventSink = sink
+}
+
+func (a *Agent) SetToolExecutor(exec toolExecutor) {
+	if a == nil {
+		return
+	}
+	if exec == nil {
+		a.executor = registryToolExecutor{agent: a}
+		return
+	}
+	a.executor = exec
 }
 
 func (a *Agent) CanStream() bool {
@@ -428,43 +442,12 @@ func (s *Session) handleTurnResult(ctx context.Context, turn int, msg model.Mess
 
 func (s *Session) executeToolCalls(ctx context.Context, turn int, calls []model.ToolCall) {
 	s.agent.logf("executing %d tool(s)\n", len(calls))
+	exec := s.agent.executor
+	if exec == nil {
+		exec = registryToolExecutor{agent: s.agent}
+	}
 	for i, call := range calls {
-		args := json.RawMessage(call.Function.Arguments)
-		s.agent.logToolStart(i+1, len(calls), call.Function.Name, call.ID, args)
-		s.agent.emitEvent(ctx, "tool_start", map[string]any{
-			"turn":    turn,
-			"index":   i + 1,
-			"total":   len(calls),
-			"name":    call.Function.Name,
-			"call_id": call.ID,
-			"preview": strings.TrimSpace(s.agent.registry.Preview(call.Function.Name, args)),
-		})
-
-		started := time.Now()
-		output, err := s.agent.registry.Call(ctx, call.Function.Name, args)
-		output = truncateToolMessage(output, maxToolMessageChars)
-		s.agent.logToolFinish(time.Since(started), output, err)
-		s.agent.emitEvent(ctx, "tool_finish", map[string]any{
-			"turn":        turn,
-			"index":       i + 1,
-			"total":       len(calls),
-			"name":        call.Function.Name,
-			"call_id":     call.ID,
-			"duration_ms": time.Since(started).Milliseconds(),
-			"status":      toolEventStatus(err),
-			"summary":     firstOutputSummary(output),
-			"error":       toolEventError(err),
-		})
-		if err != nil {
-			output = "tool error: " + err.Error()
-		}
-		output = annotateToolResult(output)
-
-		s.messages = append(s.messages, model.Message{
-			Role:       "tool",
-			ToolCallID: call.ID,
-			Content:    output,
-		})
+		s.messages = append(s.messages, exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call))
 	}
 }
 
