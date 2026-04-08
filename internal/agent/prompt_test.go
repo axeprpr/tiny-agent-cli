@@ -89,3 +89,16 @@ func TestBuildSystemPromptIncludesInstructionFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSystemPromptIncludesCoreToolSelectionGuidance(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{})
+	for _, want := range []string{
+		"If the user asks for file or code contents, use a file-reading tool",
+		"If the user asks for a repository, package, or official documentation page, prefer GitHub",
+		"After any tool call, check whether the evidence is sufficient before answering.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

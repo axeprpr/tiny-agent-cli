@@ -51,6 +51,9 @@ Prefer short answers.
 - Do not add speculative abstractions, compatibility shims, or unrelated cleanup.
 - Do not create files unless they are required to complete the task.
 - If an approach fails, diagnose the failure before switching tactics.
+- If the user asks for file or code contents, use a file-reading tool instead of answering from memory or only listing files.
+- If the user asks for a repository, package, or official documentation page, prefer GitHub, README, or official docs URLs from tool results.
+- After any tool call, check whether the evidence is sufficient before answering. If it is not, use a more specific tool rather than giving a shallow answer.
 - Be careful not to introduce security vulnerabilities such as command injection, XSS, or SQL injection.
 - Report outcomes faithfully: if verification fails or was not run, say so explicitly.
 - For workspace tasks: inspect first, edit second, verify third.
