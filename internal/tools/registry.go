@@ -30,6 +30,12 @@ type Registry struct {
 	audit      ToolAuditSink
 }
 
+type callInternalOptions struct {
+	decidePermission bool
+	runHookRunner    bool
+	recordAudit      bool
+}
+
 func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver Approver, jobs ...JobControl) *Registry {
 	return NewRegistryWithOptions(workDir, shell, commandTimeout, approver, DefaultHookConfig(), nil, jobs...)
 }
@@ -118,7 +124,11 @@ func (r *Registry) Definitions() []model.Tool {
 }
 
 func (r *Registry) Call(ctx context.Context, name string, raw json.RawMessage) (string, error) {
-	result, err := r.callInternal(ctx, name, raw, true)
+	result, err := r.callInternal(ctx, name, raw, callInternalOptions{
+		decidePermission: true,
+		runHookRunner:    true,
+		recordAudit:      true,
+	})
 	if err != nil {
 		return result.Output, err
 	}
@@ -129,18 +139,39 @@ func (r *Registry) Call(ctx context.Context, name string, raw json.RawMessage) (
 }
 
 func (r *Registry) CallStructured(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
-	return r.callInternal(ctx, name, raw, true)
+	return r.callInternal(ctx, name, raw, callInternalOptions{
+		decidePermission: true,
+		runHookRunner:    true,
+		recordAudit:      true,
+	})
 }
 
 func (r *Registry) CallStructuredWithoutPermission(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
-	return r.callInternal(ctx, name, raw, false)
+	return r.callInternal(ctx, name, raw, callInternalOptions{
+		decidePermission: false,
+		runHookRunner:    true,
+		recordAudit:      true,
+	})
 }
 
-func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMessage, decidePermission bool) (ToolResult, error) {
+func (r *Registry) CallStructuredForRuntime(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
+	return r.callInternal(ctx, name, raw, callInternalOptions{
+		decidePermission: false,
+		runHookRunner:    false,
+		recordAudit:      false,
+	})
+}
+
+func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMessage, opts callInternalOptions) (ToolResult, error) {
 	tool, ok := r.tools[name]
 	if !ok {
 		err := fmt.Errorf("unknown tool %q", name)
 		return ToolResult{Tool: name, Status: "error", Error: err.Error()}, err
+	}
+	record := func(inv ToolInvocation, out ToolOutcome, status string) {
+		if opts.recordAudit {
+			r.recordAudit(ctx, inv, out, status)
+		}
 	}
 	cleanRaw, outputFormat, err := extractToolOutputFormat(raw)
 	if err != nil {
@@ -152,28 +183,31 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 			continue
 		}
 		if err := hook.BeforeTool(ctx, &inv); err != nil {
-			r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "pre_hook_error")
+			record(inv, ToolOutcome{Err: err}, "pre_hook_error")
 			return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
 		}
 	}
 	if err := validateToolInput(inv.Raw, tool.Definition().Function.Parameters); err != nil {
-		r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "validation_error")
+		record(inv, ToolOutcome{Err: err}, "validation_error")
 		return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
 	}
-	if decidePermission && r.permission != nil {
+	if opts.decidePermission && r.permission != nil {
 		if err := r.permission.Decide(ctx, inv); err != nil {
-			r.recordAudit(ctx, inv, ToolOutcome{Err: err}, "permission_denied")
+			record(inv, ToolOutcome{Err: err}, "permission_denied")
 			return r.structuredResult(name, ToolOutcome{Err: err}, outputFormat), err
 		}
 	}
-	preHookResult := r.hookRunner.RunPreToolUse(name, string(inv.Raw))
+	preHookResult := AllowHook(nil)
+	if opts.runHookRunner {
+		preHookResult = r.hookRunner.RunPreToolUse(name, string(inv.Raw))
+	}
 	if preHookResult.IsDenied() {
 		err := errors.New(formatHookMessage(preHookResult, fmt.Sprintf("PreToolUse hook denied tool `%s`", name)))
 		out := ToolOutcome{
 			Output: mergeHookFeedback(preHookResult.Messages(), "", true),
 			Err:    err,
 		}
-		r.recordAudit(ctx, inv, out, "pre_hook_denied")
+		record(inv, out, "pre_hook_denied")
 		return r.structuredResult(name, out, outputFormat), err
 	}
 
@@ -184,7 +218,10 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 		Err:      err,
 		Duration: time.Since(started),
 	}
-	postHookResult := r.hookRunner.RunPostToolUse(name, string(inv.Raw), out.Output, out.Err != nil)
+	postHookResult := AllowHook(nil)
+	if opts.runHookRunner {
+		postHookResult = r.hookRunner.RunPostToolUse(name, string(inv.Raw), out.Output, out.Err != nil)
+	}
 	if postHookResult.IsDenied() {
 		out.Err = errors.New(formatHookMessage(postHookResult, fmt.Sprintf("PostToolUse hook denied tool `%s`", name)))
 	}
@@ -196,15 +233,15 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 			}
 			if hookErr := hook.OnToolError(ctx, &inv, &out); hookErr != nil {
 				out.Err = hookErr
-				r.recordAudit(ctx, inv, out, "error_hook_error")
+				record(inv, out, "error_hook_error")
 				return r.structuredResult(name, out, outputFormat), out.Err
 			}
 		}
 		if out.Err != nil {
-			r.recordAudit(ctx, inv, out, "error")
+			record(inv, out, "error")
 			return r.structuredResult(name, out, outputFormat), out.Err
 		}
-		r.recordAudit(ctx, inv, out, "error_handled")
+		record(inv, out, "error_handled")
 		return r.structuredResult(name, out, outputFormat), nil
 	}
 	for _, hook := range r.hooks {
@@ -213,11 +250,11 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 		}
 		if hookErr := hook.AfterTool(ctx, &inv, &out); hookErr != nil {
 			out.Err = hookErr
-			r.recordAudit(ctx, inv, out, "post_hook_error")
+			record(inv, out, "post_hook_error")
 			return r.structuredResult(name, out, outputFormat), out.Err
 		}
 	}
-	r.recordAudit(ctx, inv, out, "ok")
+	record(inv, out, "ok")
 	return r.structuredResult(name, out, outputFormat), nil
 }
 

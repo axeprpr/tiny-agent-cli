@@ -95,6 +95,7 @@ type Agent struct {
 	registry      *tools.Registry
 	executor      toolExecutor
 	permission    tools.ToolPermissionDecider
+	hookRunner    tools.HookRunner
 	contextWindow int
 	log           io.Writer
 	eventSink     EventSink
@@ -149,6 +150,13 @@ func (a *Agent) SetToolPermissionDecider(decider tools.ToolPermissionDecider) {
 		return
 	}
 	a.permission = decider
+}
+
+func (a *Agent) SetToolHookRunner(runner tools.HookRunner) {
+	if a == nil {
+		return
+	}
+	a.hookRunner = runner
 }
 
 func (a *Agent) CanStream() bool {

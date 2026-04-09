@@ -47,6 +47,7 @@ func (f Factory) NewAgent(approver tools.Approver, log io.Writer, jobs tools.Job
 	a := agent.New(client, registry, f.cfg.ContextWindow, log)
 	a.SetStreamClient(client)
 	a.SetToolPermissionDecider(permission)
+	a.SetToolHookRunner(tools.NewHookRunner(f.cfg.Hooks))
 	return a
 }
 

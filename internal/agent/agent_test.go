@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -370,6 +371,13 @@ func (e *scriptedToolExecutor) ExecuteToolCall(_ context.Context, _ int, _ int, 
 		msg.Content = annotateToolResult("(empty tool result)")
 	}
 	return msg
+}
+
+func testHookShellSnippet(script string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(script, "'", "\"")
+	}
+	return script
 }
 
 type stubPermissionDecider struct {
@@ -840,6 +848,64 @@ func TestRunTaskUsesAgentPermissionDeciderAndRecordsTurnSummaries(t *testing.T) 
 	}
 	if result.Steps != 2 {
 		t.Fatalf("expected result steps to track turn summaries, got %d", result.Steps)
+	}
+}
+
+func TestRunTaskUsesAgentHookRunnerAroundToolExecution(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "read_file",
+									Arguments: `{"path":"note.txt"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	a.SetToolHookRunner(tools.NewHookRunner(tools.HookConfig{
+		PreToolUse:  []string{testHookShellSnippet("printf 'pre hook ran'")},
+		PostToolUse: []string{testHookShellSnippet("printf 'post hook ran'")},
+	}))
+
+	session := a.NewSession()
+	result, err := session.RunTask(context.Background(), "read note.txt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	turns := session.TurnSummaries()
+	if len(turns) == 0 || len(turns[0].ToolResults) != 1 {
+		t.Fatalf("expected tool results in turn summary, got %#v", turns)
+	}
+	output := model.ContentString(turns[0].ToolResults[0].Content)
+	if !strings.Contains(output, "pre hook ran") || !strings.Contains(output, "post hook ran") {
+		t.Fatalf("expected hook feedback in tool result, got %q", output)
 	}
 }
 

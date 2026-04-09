@@ -325,6 +325,14 @@ func mergeHookFeedback(messages []string, output string, denied bool) string {
 	return strings.Join(sections, "\n\n")
 }
 
+func FormatHookMessage(result HookRunResult, fallback string) string {
+	return formatHookMessage(result, fallback)
+}
+
+func MergeHookFeedback(messages []string, output string, denied bool) string {
+	return mergeHookFeedback(messages, output, denied)
+}
+
 type approvalPermissionDecider struct {
 	workDir  string
 	approver Approver

@@ -263,6 +263,33 @@ func TestRegistryCallAppendsPreAndPostHookFeedback(t *testing.T) {
 	}
 }
 
+func TestRegistryCallStructuredForRuntimeSkipsPermissionAndHookRunner(t *testing.T) {
+	called := false
+	r := &Registry{
+		tools: map[string]Tool{
+			"fake": &stubTool{
+				output: "tool output",
+				onCall: func() { called = true },
+			},
+		},
+		permission: recordPermission{err: errors.New("denied")},
+		hookRunner: NewHookRunner(HookConfig{
+			PreToolUse: []string{hookShellSnippet("printf 'blocked by hook'; exit 2")},
+		}),
+	}
+
+	out, err := r.CallStructuredForRuntime(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected tool to execute without registry-side permission/hook gate")
+	}
+	if out.Status != "ok" || out.Output != "tool output" {
+		t.Fatalf("unexpected runtime call result: %#v", out)
+	}
+}
+
 type mutationHook struct {
 	events *[]string
 }
