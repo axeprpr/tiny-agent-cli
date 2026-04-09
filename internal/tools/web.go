@@ -163,36 +163,43 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if args.Limit <= 0 {
 		args.Limit = 5
 	}
+	hints := buildSearchQueryHints(query)
+
+	results := []ddgResult{}
+	var lastErr error
+	if hints.wantGitHub && len(hints.repoTerms) > 0 {
+		results, lastErr = t.searchGitHubRepositories(ctx, hints, args.Limit)
+	}
 
 	endpoints := defaultSearchEndpoints(query)
 	if t.searchEndpoints != nil {
 		endpoints = t.searchEndpoints(query)
 	}
-	results := []ddgResult{}
-	var lastErr error
-	for _, endpoint := range endpoints {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
+	if len(results) == 0 {
+		for _, endpoint := range endpoints {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
 
-		resp, err := t.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
+			resp, err := t.client.Do(req)
+			if err != nil {
+				lastErr = err
+				continue
+			}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		results = parseDDGResults(string(body))
-		if len(results) > 0 {
-			break
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+			resp.Body.Close()
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			results = parseDDGResults(string(body))
+			if len(results) > 0 {
+				break
+			}
 		}
 	}
 	if len(results) == 0 && lastErr != nil {
@@ -221,6 +228,67 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		}
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func (t *webSearchTool) searchGitHubRepositories(ctx context.Context, hints searchQueryHints, limit int) ([]ddgResult, error) {
+	repoTerm := hints.repoTerms[0]
+	if repoTerm == "" {
+		return nil, nil
+	}
+	perPage := limit
+	if perPage <= 0 {
+		perPage = 1
+	}
+	if perPage > 10 {
+		perPage = 10
+	}
+	endpoint := "https://api.github.com/search/repositories?q=" + url.QueryEscape(repoTerm+" in:name") + "&per_page=" + fmt.Sprintf("%d", perPage)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "tiny-agent-cli/0.1")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github search: %s", resp.Status)
+	}
+
+	var payload struct {
+		Items []struct {
+			FullName    string `json:"full_name"`
+			HTMLURL     string `json:"html_url"`
+			Description string `json:"description"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode github search: %w", err)
+	}
+	results := make([]ddgResult, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		if strings.TrimSpace(item.HTMLURL) == "" {
+			continue
+		}
+		title := strings.TrimSpace(item.FullName)
+		if title == "" {
+			title = item.HTMLURL
+		}
+		results = append(results, ddgResult{
+			title:   "GitHub - " + title,
+			url:     strings.TrimSpace(item.HTMLURL),
+			snippet: strings.TrimSpace(item.Description),
+		})
+	}
+	return results, nil
 }
 
 type ddgResult struct {
@@ -342,11 +410,15 @@ func normalizeDDGURL(raw string) string {
 }
 
 func defaultSearchEndpoints(query string) []string {
-	escaped := url.QueryEscape(query)
-	return []string{
-		"https://html.duckduckgo.com/html/?q=" + escaped,
-		"https://lite.duckduckgo.com/lite/?q=" + escaped,
+	endpoints := make([]string, 0, 8)
+	for _, variant := range searchQueryVariants(query) {
+		escaped := url.QueryEscape(variant)
+		endpoints = append(endpoints,
+			"https://html.duckduckgo.com/html/?q="+escaped,
+			"https://lite.duckduckgo.com/lite/?q="+escaped,
+		)
 	}
+	return endpoints
 }
 
 func rerankSearchResults(query string, results []ddgResult) []ddgResult {
@@ -358,11 +430,10 @@ func rerankSearchResults(query string, results []ddgResult) []ddgResult {
 		score  int
 		index  int
 	}
-	queryTokens := searchTokens(query)
-	wantGitHub := strings.Contains(strings.ToLower(query), "github")
+	hints := buildSearchQueryHints(query)
 	scored := make([]scoredResult, 0, len(results))
 	for i, item := range results {
-		score := scoreSearchResult(queryTokens, wantGitHub, item)
+		score := scoreSearchResult(hints, item)
 		scored = append(scored, scoredResult{result: item, score: score, index: i})
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
@@ -378,12 +449,112 @@ func rerankSearchResults(query string, results []ddgResult) []ddgResult {
 	return out
 }
 
-func scoreSearchResult(queryTokens []string, wantGitHub bool, item ddgResult) int {
+type searchQueryHints struct {
+	tokens         []string
+	wantGitHub     bool
+	repoTerms      []string
+	ownerRepoTerms []string
+}
+
+func buildSearchQueryHints(query string) searchQueryHints {
+	lower := strings.ToLower(strings.TrimSpace(query))
+	hints := searchQueryHints{
+		tokens:     searchTokens(lower),
+		wantGitHub: strings.Contains(lower, "github"),
+	}
+	var b strings.Builder
+	for _, r := range lower {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '/':
+			b.WriteRune(r)
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	seenRepo := map[string]bool{}
+	seenOwnerRepo := map[string]bool{}
+	for _, part := range strings.Fields(b.String()) {
+		if len(part) < 3 {
+			continue
+		}
+		if strings.Contains(part, "/") {
+			if !seenOwnerRepo[part] {
+				seenOwnerRepo[part] = true
+				hints.ownerRepoTerms = append(hints.ownerRepoTerms, part)
+			}
+			if repo := repoNameFromCandidate(part); len(repo) >= 3 && !seenRepo[repo] {
+				seenRepo[repo] = true
+				hints.repoTerms = append(hints.repoTerms, repo)
+			}
+			continue
+		}
+		if strings.ContainsAny(part, "-_") && !seenRepo[part] {
+			seenRepo[part] = true
+			hints.repoTerms = append(hints.repoTerms, part)
+		}
+	}
+	return hints
+}
+
+func searchQueryVariants(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	hints := buildSearchQueryHints(query)
+	var variants []string
+	if hints.wantGitHub {
+		for _, ownerRepo := range hints.ownerRepoTerms {
+			variants = append(variants, `site:github.com "`+ownerRepo+`"`)
+		}
+		for _, repoTerm := range hints.repoTerms {
+			variants = append(variants,
+				`site:github.com "`+repoTerm+`"`,
+				`site:github.com `+repoTerm+` repository`,
+			)
+		}
+	}
+	variants = append(variants, query)
+	seen := make(map[string]bool, len(variants))
+	out := make([]string, 0, len(variants))
+	for _, variant := range variants {
+		variant = strings.TrimSpace(variant)
+		if variant == "" || seen[variant] {
+			continue
+		}
+		seen[variant] = true
+		out = append(out, variant)
+	}
+	return out
+}
+
+func scoreSearchResult(hints searchQueryHints, item ddgResult) int {
 	combined := strings.ToLower(item.title + " " + item.url + " " + item.snippet)
+	normalizedCombined := normalizeSearchComparable(combined)
 	score := 0
 	if strings.Contains(combined, "github.com") {
 		score += 15
-		if wantGitHub {
+		if hints.wantGitHub {
+			score += 25
+		}
+	}
+	repoOwner, repoName := githubRepoSegments(item.url)
+	for _, ownerRepo := range hints.ownerRepoTerms {
+		if strings.Contains(combined, "github.com/"+ownerRepo) {
+			score += 60
+		}
+	}
+	for _, repoTerm := range hints.repoTerms {
+		if strings.Contains(combined, repoTerm) {
+			score += 18
+		}
+		if normalized := normalizeSearchComparable(repoTerm); normalized != "" && strings.Contains(normalizedCombined, normalized) {
+			score += 10
+		}
+		if repoName == repoTerm {
+			score += 50
+		}
+		if repoOwner != "" && strings.Contains(combined, "github.com/"+repoOwner+"/"+repoTerm) {
 			score += 25
 		}
 	}
@@ -394,7 +565,7 @@ func scoreSearchResult(queryTokens []string, wantGitHub bool, item ddgResult) in
 		score += 6
 	}
 	matchedTokens := 0
-	for _, token := range queryTokens {
+	for _, token := range hints.tokens {
 		if strings.Contains(combined, token) {
 			score += 4
 			matchedTokens++
@@ -407,6 +578,40 @@ func scoreSearchResult(queryTokens []string, wantGitHub bool, item ddgResult) in
 		score += 8
 	}
 	return score
+}
+
+func repoNameFromCandidate(value string) string {
+	value = strings.Trim(strings.ToLower(value), "/")
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "/")
+	return parts[len(parts)-1]
+}
+
+func githubRepoSegments(rawURL string) (string, string) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", ""
+	}
+	if !strings.EqualFold(parsed.Host, "github.com") {
+		return "", ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return strings.ToLower(parts[0]), strings.ToLower(parts[1])
+}
+
+func normalizeSearchComparable(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func searchTokens(query string) []string {

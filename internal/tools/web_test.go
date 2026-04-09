@@ -64,15 +64,55 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	}
 }
 
+func TestWebSearchPrefersGitHubRepositorySearchForRepoQueries(t *testing.T) {
+	tool := &webSearchTool{
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body := `{"items":[{"full_name":"axeprpr/tiny-agent-cli","html_url":"https://github.com/axeprpr/tiny-agent-cli","description":"official repository"}]}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"query":"tiny-agent-cli github repository"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "https://github.com/axeprpr/tiny-agent-cli") {
+		t.Fatalf("expected GitHub repository result in output, got: %q", out)
+	}
+}
+
 func TestRerankSearchResultsPrefersGitHubForGitHubQuery(t *testing.T) {
 	results := []ddgResult{
 		{title: "Blog Post", url: "https://example.com/tiny-agent-cli", snippet: "third-party summary"},
+		{title: "GitHub - tinyagents/cli: Load connectors, invoke LLM with function calling", url: "https://github.com/tinyagents/cli", snippet: "similar but wrong repository"},
 		{title: "GitHub - axeprpr/tiny-agent-cli: Minimal Go single-task agent CLI", url: "https://github.com/axeprpr/tiny-agent-cli", snippet: "official repository"},
 	}
 
 	ranked := rerankSearchResults("tiny-agent-cli github repository", results)
 	if ranked[0].url != "https://github.com/axeprpr/tiny-agent-cli" {
 		t.Fatalf("expected GitHub result first, got %#v", ranked)
+	}
+}
+
+func TestSearchQueryVariantsPreferExactGitHubRepoSearch(t *testing.T) {
+	variants := searchQueryVariants("tiny-agent-cli github repository")
+	if len(variants) < 2 {
+		t.Fatalf("expected multiple query variants, got %#v", variants)
+	}
+	if variants[0] != `site:github.com "tiny-agent-cli"` {
+		t.Fatalf("expected exact GitHub repo query first, got %#v", variants)
+	}
+	if variants[len(variants)-1] != "tiny-agent-cli github repository" {
+		t.Fatalf("expected original query to remain as fallback, got %#v", variants)
 	}
 }
 
