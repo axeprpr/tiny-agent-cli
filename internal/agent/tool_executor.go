@@ -42,6 +42,15 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 	inv := tools.ToolInvocation{Name: call.Function.Name, Raw: args}
 	if e.agent.permissionPolicy != nil {
 		decision := e.agent.permissionPolicy.Evaluate(ctx, inv)
+		e.agent.emitEvent(ctx, "permission_decision", map[string]any{
+			"turn":          turn,
+			"index":         index,
+			"total":         total,
+			"tool":          call.Function.Name,
+			"call_id":       call.ID,
+			"required_mode": tools.RequiredPermissionMode(call.Function.Name),
+			"decision":      decision,
+		})
 		if !decision.Allowed {
 			reason := strings.TrimSpace(decision.Reason)
 			if reason == "" {
@@ -69,7 +78,20 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 			}
 		}
 	} else if e.agent.permission != nil {
-		if err := e.agent.permission.Decide(ctx, inv); err != nil {
+		err := e.agent.permission.Decide(ctx, inv)
+		e.agent.emitEvent(ctx, "permission_decision", map[string]any{
+			"turn":          turn,
+			"index":         index,
+			"total":         total,
+			"tool":          call.Function.Name,
+			"call_id":       call.ID,
+			"required_mode": tools.RequiredPermissionMode(call.Function.Name),
+			"decision": tools.PermissionDecision{
+				Allowed: err == nil,
+				Reason:  strings.TrimSpace(toolEventError(err)),
+			},
+		})
+		if err != nil {
 			e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "permission_denied")
 			output := truncateToolMessage("tool error: "+err.Error(), maxToolMessageChars)
 			e.agent.logToolFinish(0, output, err)

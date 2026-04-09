@@ -67,12 +67,12 @@ type Result struct {
 }
 
 type TurnSummary struct {
-	Turn        int
-	Decision    string
-	Assistant   model.Message
-	ToolResults []model.Message
-	Reminder    string
-	Final       string
+	Turn        int             `json:"turn"`
+	Decision    string          `json:"decision"`
+	Assistant   model.Message   `json:"assistant"`
+	ToolResults []model.Message `json:"tool_results,omitempty"`
+	Reminder    string          `json:"reminder,omitempty"`
+	Final       string          `json:"final,omitempty"`
 }
 
 type StreamClient interface {
@@ -227,12 +227,7 @@ func (s *Session) TurnSummaries() []TurnSummary {
 			Reminder:  turn.Reminder,
 			Final:     turn.Final,
 		}
-		if len(turn.ToolResults) > 0 {
-			out[i].ToolResults = make([]model.Message, len(turn.ToolResults))
-			for j, msg := range turn.ToolResults {
-				out[i].ToolResults[j] = copyMessage(msg)
-			}
-		}
+		out[i].ToolResults = copyMessages(turn.ToolResults)
 	}
 	return out
 }
@@ -614,6 +609,17 @@ func copyMessage(msg model.Message) model.Message {
 	if len(msg.ToolCalls) > 0 {
 		out.ToolCalls = make([]model.ToolCall, len(msg.ToolCalls))
 		copy(out.ToolCalls, msg.ToolCalls)
+	}
+	return out
+}
+
+func copyMessages(messages []model.Message) []model.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]model.Message, len(messages))
+	for i, msg := range messages {
+		out[i] = copyMessage(msg)
 	}
 	return out
 }
@@ -1172,6 +1178,20 @@ func (a *Agent) emitEvent(ctx context.Context, typ string, data map[string]any) 
 		Time: time.Now(),
 		Type: typ,
 		Data: data,
+	})
+}
+
+func (a *Agent) emitTurnSummaryEvent(ctx context.Context, summary TurnSummary) {
+	if a == nil {
+		return
+	}
+	a.emitEvent(ctx, "turn_summary", map[string]any{
+		"turn":         summary.Turn,
+		"decision":     summary.Decision,
+		"assistant":    copyMessage(summary.Assistant),
+		"tool_results": copyMessages(summary.ToolResults),
+		"reminder":     summary.Reminder,
+		"final":        summary.Final,
 	})
 }
 

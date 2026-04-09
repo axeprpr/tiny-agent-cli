@@ -51,9 +51,9 @@ func DefaultHookConfig() HookConfig {
 }
 
 type PermissionDecision struct {
-	Allowed bool
-	Reason  string
-	Mode    string
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 type ToolPermissionPolicy interface {
@@ -518,6 +518,10 @@ func requiredPermissionMode(toolName string) string {
 	default:
 		return PermissionModeReadOnly
 	}
+}
+
+func RequiredPermissionMode(toolName string) string {
+	return requiredPermissionMode(toolName)
 }
 
 func shouldPromptForPermission(activeMode, requiredMode string) bool {

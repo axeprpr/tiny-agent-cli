@@ -390,6 +390,24 @@ func (d *stubPermissionDecider) Decide(_ context.Context, inv tools.ToolInvocati
 	return d.err
 }
 
+type stubPermissionPolicy struct {
+	calls    []tools.ToolInvocation
+	decision tools.PermissionDecision
+}
+
+func (p *stubPermissionPolicy) Evaluate(_ context.Context, inv tools.ToolInvocation) tools.PermissionDecision {
+	p.calls = append(p.calls, inv)
+	return p.decision
+}
+
+type recordedEventSink struct {
+	events []AgentEvent
+}
+
+func (s *recordedEventSink) RecordAgentEvent(_ context.Context, event AgentEvent) {
+	s.events = append(s.events, event)
+}
+
 type scriptedChatClient struct {
 	responses []model.Response
 	requests  []model.Request
@@ -879,6 +897,116 @@ func TestRunTaskUsesAgentPermissionDeciderAndRecordsTurnSummaries(t *testing.T) 
 	}
 	if result.Steps != 2 {
 		t.Fatalf("expected result steps to track turn summaries, got %d", result.Steps)
+	}
+}
+
+func TestRunTaskEmitsPermissionDecisionAndTurnSummaryEvents(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "run_command",
+									Arguments: `{"command":"printf denied"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	policy := &stubPermissionPolicy{
+		decision: tools.PermissionDecision{
+			Allowed: false,
+			Mode:    tools.PermissionModeReadOnly,
+			Reason:  "denied by structured test policy",
+		},
+	}
+	sink := &recordedEventSink{}
+	a.SetToolPermissionPolicy(policy)
+	a.SetEventSink(sink)
+
+	session := a.NewSession()
+	result, err := session.RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(policy.calls) != 1 || policy.calls[0].Name != "run_command" {
+		t.Fatalf("expected policy to receive tool invocation, got %#v", policy.calls)
+	}
+
+	var permissionEvents []AgentEvent
+	var turnEvents []AgentEvent
+	for _, event := range sink.events {
+		switch event.Type {
+		case "permission_decision":
+			permissionEvents = append(permissionEvents, event)
+		case "turn_summary":
+			turnEvents = append(turnEvents, event)
+		}
+	}
+	if len(permissionEvents) != 1 {
+		t.Fatalf("expected one permission_decision event, got %#v", sink.events)
+	}
+	if len(turnEvents) != 2 {
+		t.Fatalf("expected two turn_summary events, got %#v", sink.events)
+	}
+
+	permission := permissionEvents[0]
+	if permission.Data["tool"] != "run_command" {
+		t.Fatalf("unexpected permission tool: %#v", permission.Data)
+	}
+	if permission.Data["required_mode"] != tools.PermissionModeDangerFullAccess {
+		t.Fatalf("unexpected required mode: %#v", permission.Data)
+	}
+	decision, ok := permission.Data["decision"].(tools.PermissionDecision)
+	if !ok {
+		t.Fatalf("expected structured decision payload, got %#v", permission.Data["decision"])
+	}
+	if decision.Allowed || decision.Mode != tools.PermissionModeReadOnly || decision.Reason != "denied by structured test policy" {
+		t.Fatalf("unexpected decision payload: %#v", decision)
+	}
+
+	firstTurn := turnEvents[0]
+	if firstTurn.Data["decision"] != "execute_tools" {
+		t.Fatalf("unexpected first turn decision payload: %#v", firstTurn.Data)
+	}
+	assistant, ok := firstTurn.Data["assistant"].(model.Message)
+	if !ok {
+		t.Fatalf("expected assistant message payload, got %#v", firstTurn.Data["assistant"])
+	}
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Function.Name != "run_command" {
+		t.Fatalf("unexpected assistant payload: %#v", assistant)
+	}
+	toolResults, ok := firstTurn.Data["tool_results"].([]model.Message)
+	if !ok {
+		t.Fatalf("expected tool results payload, got %#v", firstTurn.Data["tool_results"])
+	}
+	if len(toolResults) != 1 || !strings.Contains(model.ContentString(toolResults[0].Content), "denied by structured test policy") {
+		t.Fatalf("unexpected tool results payload: %#v", toolResults)
+	}
+
+	secondTurn := turnEvents[1]
+	if secondTurn.Data["decision"] != "finish" || secondTurn.Data["final"] != "done" {
+		t.Fatalf("unexpected final turn event: %#v", secondTurn.Data)
 	}
 }
 

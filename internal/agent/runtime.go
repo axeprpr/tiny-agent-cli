@@ -255,6 +255,7 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 			Content: decision.reminder,
 		})
 		s.turns = append(s.turns, summary)
+		s.agent.emitTurnSummaryEvent(ctx, summary)
 		if decision.logLine != "" {
 			s.agent.logf("%s\n", decision.logLine)
 		}
@@ -267,6 +268,7 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 		})
 		summary.ToolResults = r.executeToolCalls(ctx, turn, msg.ToolCalls)
 		s.turns = append(s.turns, summary)
+		s.agent.emitTurnSummaryEvent(ctx, summary)
 		s.trackTodoRounds(msg.ToolCalls)
 		return nil, true
 	default:
@@ -275,6 +277,7 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 			Content: msg.Content,
 		})
 		s.turns = append(s.turns, summary)
+		s.agent.emitTurnSummaryEvent(ctx, summary)
 		result := Result{Final: decision.final}
 		return &result, false
 	}
