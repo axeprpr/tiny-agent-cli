@@ -102,6 +102,9 @@ var messagesCN = map[string]string{
                         显示最近失败工具调用的详细信息
   /debug-tool-call replay
                         重放最近一次已审计的工具调用
+  /debug-turn           显示最近一次对话回合摘要
+  /debug-turn tail [n]
+                        显示最近几次对话回合摘要
 
 直接输入自然语言即可，大多数情况不需要命令。`,
 
@@ -126,6 +129,7 @@ var messagesCN = map[string]string{
 	"cmd.audit.usage.tail":   "用法：/audit tail [n]",
 	"cmd.audit.usage.errors": "用法：/audit errors [n]",
 	"cmd.debugtool.usage":    "用法：/debug-tool-call [tail|errors [n]|replay]",
+	"cmd.debugturn.usage":    "用法：/debug-turn [tail [n]]",
 	"cmd.audit.empty":        "还没有审计记录",
 	"cmd.audit.no_errors":    "最近窗口内没有失败审计记录",
 	"cmd.remember.usage":     "用法：/remember <内容>",

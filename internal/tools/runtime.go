@@ -50,6 +50,16 @@ func DefaultHookConfig() HookConfig {
 	return HookConfig{}
 }
 
+type PermissionDecision struct {
+	Allowed bool
+	Reason  string
+	Mode    string
+}
+
+type ToolPermissionPolicy interface {
+	Evaluate(ctx context.Context, inv ToolInvocation) PermissionDecision
+}
+
 type ToolPermissionDecider interface {
 	Decide(ctx context.Context, inv ToolInvocation) error
 }
@@ -334,38 +344,76 @@ func MergeHookFeedback(messages []string, output string, denied bool) string {
 }
 
 type approvalPermissionDecider struct {
+	policy ToolPermissionPolicy
+}
+
+type approvalPermissionPolicy struct {
 	workDir  string
 	approver Approver
 	policy   *PermissionStore
 }
 
-func newApprovalPermissionDecider(workDir string, approver Approver, policy *PermissionStore) ToolPermissionDecider {
+type permissionPolicyDecider struct {
+	policy ToolPermissionPolicy
+}
+
+func NewApprovalPermissionPolicy(workDir string, approver Approver, policy *PermissionStore) ToolPermissionPolicy {
 	if approver == nil && policy == nil {
 		return nil
 	}
-	return &approvalPermissionDecider{
+	return &approvalPermissionPolicy{
 		workDir:  workDir,
 		approver: approver,
 		policy:   policy,
 	}
 }
 
-func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocation) error {
+func NewPermissionDecider(policy ToolPermissionPolicy) ToolPermissionDecider {
+	if policy == nil {
+		return nil
+	}
+	return &permissionPolicyDecider{policy: policy}
+}
+
+func newApprovalPermissionDecider(workDir string, approver Approver, policy *PermissionStore) ToolPermissionDecider {
+	return NewPermissionDecider(NewApprovalPermissionPolicy(workDir, approver, policy))
+}
+
+func (d *permissionPolicyDecider) Decide(ctx context.Context, inv ToolInvocation) error {
 	if d == nil {
 		return nil
+	}
+	decision := d.policy.Evaluate(ctx, inv)
+	if decision.Allowed {
+		return nil
+	}
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = fmt.Sprintf("tool %q is denied by permission policy", inv.Name)
+	}
+	return fmt.Errorf("%s", reason)
+}
+
+func (d *approvalPermissionPolicy) Evaluate(ctx context.Context, inv ToolInvocation) PermissionDecision {
+	if d == nil {
+		return PermissionDecision{Allowed: true}
 	}
 	mode := PermissionModeConfirm
 	if d.policy != nil {
 		mode = d.policy.ModeForTool(inv.Name)
 	}
 	if mode == PermissionModeDeny {
-		return fmt.Errorf("tool %q is denied by permission policy", inv.Name)
+		return PermissionDecision{
+			Allowed: false,
+			Mode:    mode,
+			Reason:  fmt.Sprintf("tool %q is denied by permission policy", inv.Name),
+		}
 	}
 	if mode == PermissionModeAllow {
-		return nil
+		return PermissionDecision{Allowed: true, Mode: mode}
 	}
 	if d.approver == nil {
-		return nil
+		return PermissionDecision{Allowed: true, Mode: mode}
 	}
 	switch inv.Name {
 	case "run_command":
@@ -373,18 +421,18 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 			Command string `json:"command"`
 		}
 		if err := json.Unmarshal(inv.Raw, &args); err != nil {
-			return fmt.Errorf("decode args: %w", err)
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: fmt.Sprintf("decode args: %v", err)}
 		}
 		command := strings.TrimSpace(args.Command)
 		if command == "" {
-			return fmt.Errorf("command is required")
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "command is required"}
 		}
 		approved, err := d.approver.ApproveCommand(ctx, command)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		if !approved {
-			return fmt.Errorf("command rejected by user")
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "command rejected by user"}
 		}
 	case "write_file":
 		var args struct {
@@ -392,18 +440,18 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 			Content string `json:"content"`
 		}
 		if err := json.Unmarshal(inv.Raw, &args); err != nil {
-			return fmt.Errorf("decode args: %w", err)
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: fmt.Sprintf("decode args: %v", err)}
 		}
 		path, err := securePath(d.workDir, args.Path)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		approved, err := d.approver.ApproveWrite(ctx, path, args.Content)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		if !approved {
-			return fmt.Errorf("file write rejected by user")
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "file write rejected by user"}
 		}
 	case "edit_file":
 		var args struct {
@@ -412,31 +460,31 @@ func (d *approvalPermissionDecider) Decide(ctx context.Context, inv ToolInvocati
 			NewText string `json:"new_text"`
 		}
 		if err := json.Unmarshal(inv.Raw, &args); err != nil {
-			return fmt.Errorf("decode args: %w", err)
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: fmt.Sprintf("decode args: %v", err)}
 		}
 		path, err := securePath(d.workDir, args.Path)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		if looksBinary(data) {
-			return fmt.Errorf("edit_file only supports text files")
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "edit_file only supports text files"}
 		}
 		updated := strings.Replace(string(data), args.OldText, args.NewText, 1)
 		approved, err := d.approver.ApproveWrite(ctx, path, updated)
 		if err != nil {
-			return err
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: err.Error()}
 		}
 		if !approved {
-			return fmt.Errorf("file write rejected by user")
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "file write rejected by user"}
 		}
 	case "start_background_job", "delegate_subagent":
 		// Background jobs enforce internal command limits; allow and rely on audit trail.
 	}
-	return nil
+	return PermissionDecision{Allowed: true, Mode: mode}
 }
 
 func extractToolOutputFormat(raw json.RawMessage) (json.RawMessage, string, error) {

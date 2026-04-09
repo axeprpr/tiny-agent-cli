@@ -108,6 +108,9 @@ var messagesEN = map[string]string{
                         Show detailed history for recent failed tool calls
   /debug-tool-call replay
                         Replay the latest audited tool call
+  /debug-turn           Show the latest conversation turn summary
+  /debug-turn tail [n]
+                        Show recent conversation turn summaries
 
 Or just type naturally -- no command needed for most tasks.`,
 
@@ -132,6 +135,7 @@ Or just type naturally -- no command needed for most tasks.`,
 	"cmd.audit.usage.tail":   "usage: /audit tail [n]",
 	"cmd.audit.usage.errors": "usage: /audit errors [n]",
 	"cmd.debugtool.usage":    "usage: /debug-tool-call [tail|errors [n]|replay]",
+	"cmd.debugturn.usage":    "usage: /debug-turn [tail [n]]",
 	"cmd.audit.empty":        "no audit events yet",
 	"cmd.audit.no_errors":    "no failed audit events in the recent window",
 	"cmd.remember.usage":     "usage: /remember <text>",

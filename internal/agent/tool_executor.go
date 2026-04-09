@@ -40,7 +40,35 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 	})
 
 	inv := tools.ToolInvocation{Name: call.Function.Name, Raw: args}
-	if e.agent.permission != nil {
+	if e.agent.permissionPolicy != nil {
+		decision := e.agent.permissionPolicy.Evaluate(ctx, inv)
+		if !decision.Allowed {
+			reason := strings.TrimSpace(decision.Reason)
+			if reason == "" {
+				reason = "tool is denied by permission policy"
+			}
+			err := errors.New(reason)
+			e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "permission_denied")
+			output := truncateToolMessage("tool error: "+err.Error(), maxToolMessageChars)
+			e.agent.logToolFinish(0, output, err)
+			e.agent.emitEvent(ctx, "tool_finish", map[string]any{
+				"turn":        turn,
+				"index":       index,
+				"total":       total,
+				"name":        call.Function.Name,
+				"call_id":     call.ID,
+				"duration_ms": int64(0),
+				"status":      toolEventStatus(err),
+				"summary":     firstOutputSummary(output),
+				"error":       toolEventError(err),
+			})
+			return model.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				Content:    annotateToolResult(output),
+			}
+		}
+	} else if e.agent.permission != nil {
 		if err := e.agent.permission.Decide(ctx, inv); err != nil {
 			e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "permission_denied")
 			output := truncateToolMessage("tool error: "+err.Error(), maxToolMessageChars)

@@ -119,6 +119,29 @@ func TestApprovalPermissionDeciderChecksEditFileWrites(t *testing.T) {
 	}
 }
 
+func TestApprovalPermissionPolicyReturnsStructuredDecision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	policy := NewApprovalPermissionPolicy(dir, mockApprover{writeAllowed: false}, nil)
+	decision := policy.Evaluate(context.Background(), ToolInvocation{
+		Name: "edit_file",
+		Raw:  json.RawMessage(`{"path":"note.txt","old_text":"beta","new_text":"BETA"}`),
+	})
+	if decision.Allowed {
+		t.Fatalf("expected structured policy denial")
+	}
+	if decision.Reason != "file write rejected by user" {
+		t.Fatalf("unexpected reason: %q", decision.Reason)
+	}
+	if decision.Mode != PermissionModeConfirm {
+		t.Fatalf("unexpected mode: %q", decision.Mode)
+	}
+}
+
 func hookShellSnippet(script string) string {
 	if runtime.GOOS == "windows" {
 		return strings.ReplaceAll(script, "'", "\"")

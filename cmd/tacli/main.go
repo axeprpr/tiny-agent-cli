@@ -448,6 +448,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.auditCommand(fields), exitCode: -1}
 	case "/debug-tool-call":
 		return runtimeCommandResult{handled: true, output: r.debugToolCallCommand(fields), exitCode: -1}
+	case "/debug-turn":
+		return runtimeCommandResult{handled: true, output: r.debugTurnCommand(fields), exitCode: -1}
 	case "/trace":
 		return runtimeCommandResult{handled: true, output: r.traceCommand(fields), exitCode: -1}
 	case "/session":
@@ -3096,6 +3098,87 @@ func (r *chatRuntime) debugToolCallReplay() string {
 		lines = append(lines, "error="+compactJobText(callErr.Error(), 400))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) debugTurnCommand(fields []string) string {
+	mode := "latest"
+	limit := 1
+	if len(fields) > 1 {
+		switch fields[1] {
+		case "tail":
+			mode = "tail"
+			limit = 5
+			if len(fields) >= 3 {
+				if v, err := strconv.Atoi(fields[2]); err == nil && v > 0 {
+					limit = min(v, 20)
+				}
+			}
+		default:
+			return i18n.T("cmd.debugturn.usage")
+		}
+	}
+	if r == nil || r.session == nil {
+		return "turn summary unavailable"
+	}
+	turns := r.session.TurnSummaries()
+	if len(turns) == 0 {
+		return "no turn summaries yet"
+	}
+	selected := turns
+	if mode == "latest" {
+		selected = turns[len(turns)-1:]
+	} else if len(turns) > limit {
+		selected = turns[len(turns)-limit:]
+	}
+	blocks := make([]string, 0, len(selected))
+	for idx, turn := range selected {
+		lines := []string{
+			fmt.Sprintf("[%d]", idx+1),
+			fmt.Sprintf("turn=%d", turn.Turn),
+			"decision=" + firstNonEmpty(turn.Decision, "unknown"),
+		}
+		if names := turnToolNames(turn.Assistant.ToolCalls); len(names) > 0 {
+			lines = append(lines, "tools="+strings.Join(names, ","))
+		}
+		if text := strings.TrimSpace(agent.FormatTerminalOutput(modelContent(turn.Assistant.Content))); text != "" {
+			lines = append(lines, "assistant="+compactJobText(text, 400))
+		}
+		if len(turn.ToolResults) > 0 {
+			lines = append(lines, fmt.Sprintf("tool_results=%d", len(turn.ToolResults)))
+			for i, msg := range turn.ToolResults {
+				text := strings.TrimSpace(agent.FormatTerminalOutput(modelContent(msg.Content)))
+				if text == "" {
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("tool_output_%d=%s", i+1, compactJobText(text, 300)))
+			}
+		}
+		if strings.TrimSpace(turn.Reminder) != "" {
+			lines = append(lines, "reminder="+compactJobText(turn.Reminder, 240))
+		}
+		if strings.TrimSpace(turn.Final) != "" {
+			lines = append(lines, "final="+compactJobText(turn.Final, 240))
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func turnToolNames(calls []model.ToolCall) []string {
+	if len(calls) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(calls))
+	seen := make(map[string]bool, len(calls))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Function.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
 }
 
 func modelContent(content any) string {

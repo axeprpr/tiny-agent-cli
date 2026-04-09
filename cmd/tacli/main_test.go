@@ -408,6 +408,20 @@ func (chatClientStub) Complete(_ context.Context, _ model.Request) (model.Respon
 	return model.Response{}, nil
 }
 
+type scriptedChatClient struct {
+	responses []model.Response
+	requests  int
+}
+
+func (s *scriptedChatClient) Complete(_ context.Context, _ model.Request) (model.Response, error) {
+	if s.requests >= len(s.responses) {
+		return model.Response{}, nil
+	}
+	resp := s.responses[s.requests]
+	s.requests++
+	return resp, nil
+}
+
 func TestOutputCommandDeprecated(t *testing.T) {
 	r := &chatRuntime{outputMode: "terminal"}
 	result := r.executeCommand("/output raw")
@@ -599,6 +613,63 @@ func TestDebugToolCallReplay(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "hello replay") {
 		t.Fatalf("expected replayed tool output, got %q", result.output)
+	}
+}
+
+func TestDebugTurnCommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello turn"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "read_file",
+									Arguments: `{"path":"note.txt"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+	loop := agent.New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	session := loop.NewSession()
+	if _, err := session.RunTask(context.Background(), "read note"); err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+
+	r := newMemoryTestRuntime(t)
+	r.loop = loop
+	r.session = session
+
+	result := r.executeCommand("/debug-turn tail 2")
+	if !result.handled {
+		t.Fatalf("expected /debug-turn handled")
+	}
+	if !strings.Contains(result.output, "decision=execute_tools") {
+		t.Fatalf("unexpected debug turn output: %q", result.output)
+	}
+	if !strings.Contains(result.output, "tools=read_file") {
+		t.Fatalf("unexpected debug turn tools: %q", result.output)
+	}
+	if !strings.Contains(result.output, "decision=finish") {
+		t.Fatalf("expected final turn summary, got %q", result.output)
 	}
 }
 

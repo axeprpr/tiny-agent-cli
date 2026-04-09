@@ -90,15 +90,16 @@ type AgentEvent struct {
 }
 
 type Agent struct {
-	client        chatClient
-	streamClient  StreamClient
-	registry      *tools.Registry
-	executor      toolExecutor
-	permission    tools.ToolPermissionDecider
-	hookRunner    tools.HookRunner
-	contextWindow int
-	log           io.Writer
-	eventSink     EventSink
+	client           chatClient
+	streamClient     StreamClient
+	registry         *tools.Registry
+	executor         toolExecutor
+	permissionPolicy tools.ToolPermissionPolicy
+	permission       tools.ToolPermissionDecider
+	hookRunner       tools.HookRunner
+	contextWindow    int
+	log              io.Writer
+	eventSink        EventSink
 }
 
 type Session struct {
@@ -149,7 +150,16 @@ func (a *Agent) SetToolPermissionDecider(decider tools.ToolPermissionDecider) {
 	if a == nil {
 		return
 	}
+	a.permissionPolicy = nil
 	a.permission = decider
+}
+
+func (a *Agent) SetToolPermissionPolicy(policy tools.ToolPermissionPolicy) {
+	if a == nil {
+		return
+	}
+	a.permissionPolicy = policy
+	a.permission = tools.NewPermissionDecider(policy)
 }
 
 func (a *Agent) SetToolHookRunner(runner tools.HookRunner) {
