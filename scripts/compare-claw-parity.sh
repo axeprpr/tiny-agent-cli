@@ -413,7 +413,24 @@ const cases = [
     artifacts: [{ path: 'calc.py', kind: 'exists' }],
     tiny_tools_required: ['write_file', 'run_command'],
   },
+  {
+    id: 'recover',
+    prompt: 'Create calc.py that prints the result of 2 + 3. First run it with the shell command "python calc.py". If that fails because python is unavailable, run "python3 calc.py" instead. Reply with exactly: 5.',
+    kind: 'exact',
+    expected: '5',
+    artifacts: [{ path: 'calc.py', kind: 'exists' }],
+    tiny_tools_required: ['write_file', 'run_command'],
+    tiny_tool_counts_required: { run_command: 2 },
+  },
   { id: 'web', prompt: 'Find the GitHub repository URL for tiny-agent-cli and reply with just the URL.', kind: 'repo-url', expected: '', tiny_tools_required: ['web_search'] },
+  {
+    id: 'webwrite',
+    prompt: 'Find the GitHub repository URL for tiny-agent-cli, write it to repo.txt, and reply with exactly: saved.',
+    kind: 'contains-text',
+    expected: 'saved',
+    artifacts: [{ path: 'repo.txt', kind: 'exact-file', expected: 'https://github.com/axeprpr/tiny-agent-cli\n' }],
+    tiny_tools_required: ['web_search', 'write_file'],
+  },
 ];
 
 function readStatus(path) {
@@ -426,30 +443,38 @@ function readIfExists(path) {
 
 function parseTiny(path) {
   if (!fs.existsSync(path) || !fs.readFileSync(path, 'utf8').trim()) {
-    return { final: '', tools: [] };
+    return { final: '', tools: [], toolCounts: {} };
   }
   let lines = [];
   try {
     lines = fs.readFileSync(path, 'utf8').trim().split(/\n+/).filter(Boolean).map(line => JSON.parse(line));
   } catch {
-    return { final: '', tools: [] };
+    return { final: '', tools: [], toolCounts: {} };
   }
   const result = lines.find(event => event.type === 'result');
-  const tools = [...new Set(lines.filter(event => event.type === 'tool_start').map(event => event.data?.name).filter(Boolean))];
-  return { final: result?.data?.final || '', tools };
+  const toolCounts = {};
+  for (const name of lines.filter(event => event.type === 'tool_start').map(event => event.data?.name).filter(Boolean)) {
+    toolCounts[name] = (toolCounts[name] || 0) + 1;
+  }
+  const tools = Object.keys(toolCounts);
+  return { final: result?.data?.final || '', tools, toolCounts };
 }
 
 function parseClaw(path) {
   if (!fs.existsSync(path) || !fs.readFileSync(path, 'utf8').trim()) {
-    return { final: '', tools: [] };
+    return { final: '', tools: [], toolCounts: {} };
   }
   let payload = {};
   try {
     payload = JSON.parse(fs.readFileSync(path, 'utf8'));
   } catch {
-    return { final: '', tools: [] };
+    return { final: '', tools: [], toolCounts: {} };
   }
-  return { final: payload.final_text || '', tools: payload.tool_names || [] };
+  const toolCounts = {};
+  for (const name of payload.tool_names || []) {
+    toolCounts[name] = (toolCounts[name] || 0) + 1;
+  }
+  return { final: payload.final_text || '', tools: Object.keys(toolCounts), toolCounts };
 }
 
 function normalize(value) {
@@ -479,6 +504,11 @@ function hasRequiredTools(tools, requiredTools) {
   return requiredTools.every((toolName) => tools.includes(toolName));
 }
 
+function hasRequiredToolCounts(toolCounts, requiredToolCounts) {
+  if (!requiredToolCounts) return true;
+  return Object.entries(requiredToolCounts).every(([toolName, minCount]) => (toolCounts[toolName] || 0) >= minCount);
+}
+
 function checkArtifacts(caseId, side, artifacts) {
   if (!artifacts || artifacts.length === 0) return true;
   return artifacts.every((artifact) => {
@@ -502,8 +532,10 @@ const summary = cases.map((entry) => {
   const tinyArtifactsPass = checkArtifacts(entry.id, 'tiny', entry.artifacts || []);
   const clawToolsPass = hasRequiredTools(claw.tools, entry.claw_tools_required || []);
   const tinyToolsPass = hasRequiredTools(tiny.tools, entry.tiny_tools_required || []);
-  const clawPass = clawStatus === 0 && !clawStderr && checkExpected(entry.kind, claw.final, entry.expected) && clawArtifactsPass && clawToolsPass;
-  const tinyPass = tinyStatus === 0 && !tinyStderr && checkExpected(entry.kind, tiny.final, entry.expected) && tinyArtifactsPass && tinyToolsPass;
+  const clawToolCountsPass = hasRequiredToolCounts(claw.toolCounts, entry.claw_tool_counts_required);
+  const tinyToolCountsPass = hasRequiredToolCounts(tiny.toolCounts, entry.tiny_tool_counts_required);
+  const clawPass = clawStatus === 0 && !clawStderr && checkExpected(entry.kind, claw.final, entry.expected) && clawArtifactsPass && clawToolsPass && clawToolCountsPass;
+  const tinyPass = tinyStatus === 0 && !tinyStderr && checkExpected(entry.kind, tiny.final, entry.expected) && tinyArtifactsPass && tinyToolsPass && tinyToolCountsPass;
   const pairMatch = normalize(claw.final) === normalize(tiny.final);
   return {
     id: entry.id,
@@ -517,6 +549,7 @@ const summary = cases.map((entry) => {
       claw_pass: clawPass,
       claw_artifacts_pass: clawArtifactsPass,
       claw_tools_pass: clawToolsPass,
+      claw_tool_counts_pass: clawToolCountsPass,
       tiny_status: tinyStatus,
       tiny_final: tiny.final,
       tiny_tools: tiny.tools,
@@ -524,13 +557,14 @@ const summary = cases.map((entry) => {
       tiny_pass: tinyPass,
       tiny_artifacts_pass: tinyArtifactsPass,
       tiny_tools_pass: tinyToolsPass,
+      tiny_tool_counts_pass: tinyToolCountsPass,
       pair_match: pairMatch,
   };
 });
 
 fs.writeFileSync(`${outdir}/summary.json`, JSON.stringify(summary, null, 2));
 
-const lines = ['id\tclaw_pass\tclaw_status\tclaw_final\tclaw_tools\tclaw_artifacts_pass\tclaw_tools_pass\ttiny_pass\ttiny_status\ttiny_final\ttiny_tools\ttiny_artifacts_pass\ttiny_tools_pass\tpair_match'];
+const lines = ['id\tclaw_pass\tclaw_status\tclaw_final\tclaw_tools\tclaw_artifacts_pass\tclaw_tools_pass\tclaw_tool_counts_pass\ttiny_pass\ttiny_status\ttiny_final\ttiny_tools\ttiny_artifacts_pass\ttiny_tools_pass\ttiny_tool_counts_pass\tpair_match'];
 for (const row of summary) {
   lines.push([
     row.id,
@@ -540,12 +574,14 @@ for (const row of summary) {
     row.claw_tools.join(','),
     row.claw_artifacts_pass,
     row.claw_tools_pass,
+    row.claw_tool_counts_pass,
     row.tiny_pass,
     row.tiny_status,
     row.tiny_final.replace(/\s+/g, ' '),
     row.tiny_tools.join(','),
     row.tiny_artifacts_pass,
     row.tiny_tools_pass,
+    row.tiny_tool_counts_pass,
     row.pair_match,
   ].join('\t'));
 }
@@ -568,7 +604,9 @@ main() {
   run_case "${claw_bin}" "${tiny_bin}" "write" "Create hello.py that prints hi-parity and then reply with exactly: file-created."
   run_case "${claw_bin}" "${tiny_bin}" "rewrite" "Update todo.md so it contains exactly two lines: \"# parity checklist\" and \"- done\". Reply with exactly: rewrite-done."
   run_case "${claw_bin}" "${tiny_bin}" "codegen" "Create calc.py that prints the result of 2 + 3, run it with the shell command \"python3 calc.py\", and reply with exactly: 5."
+  run_case "${claw_bin}" "${tiny_bin}" "recover" "Create calc.py that prints the result of 2 + 3. First run it with the shell command \"python calc.py\". If that fails because python is unavailable, run \"python3 calc.py\" instead. Reply with exactly: 5."
   run_case "${claw_bin}" "${tiny_bin}" "web" "Find the GitHub repository URL for tiny-agent-cli and reply with just the URL."
+  run_case "${claw_bin}" "${tiny_bin}" "webwrite" "Find the GitHub repository URL for tiny-agent-cli, write it to repo.txt, and reply with exactly: saved."
 
   write_summary
   echo "summary: ${OUTDIR}/summary.json"

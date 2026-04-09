@@ -28,6 +28,7 @@ const syntheticSummaryPrefix = "[compacted summary]"
 const todoNagPrefix = "[todo reminder]"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
+const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
 const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
 
@@ -296,6 +297,13 @@ func decideTurn(messages []model.Message, msg model.Message) turnDecision {
 			logLine:  "tool evidence looked shallow, retrying with a more specific-tool reminder",
 		}
 	}
+	if shouldRetryFailedCommand(messages, msg) {
+		return turnDecision{
+			action:   turnActionRetry,
+			reminder: failedCommandRetryReminder,
+			logLine:  "empty final after failed shell command, retrying with recovery reminder",
+		}
+	}
 	if shouldRetryEmptyToolAnswer(messages, msg) {
 		return turnDecision{
 			action:   turnActionRetry,
@@ -320,7 +328,7 @@ func (s *Session) maybeInjectTodoReminder() {
 		return
 	}
 	s.messages = append(s.messages, model.Message{
-		Role: "system",
+		Role: "user",
 		Content: todoNagPrefix + "\n" +
 			"You have been doing multi-step work for several rounds without updating the plan. " +
 			"Call update_todo to reflect progress (completed/in_progress/pending) before continuing.",
@@ -361,7 +369,7 @@ func hasRecentToolActivity(messages []model.Message, rounds int) bool {
 func hasRecentTodoReminder(messages []model.Message) bool {
 	for i := len(messages) - 1; i >= 0 && i >= len(messages)-4; i-- {
 		msg := messages[i]
-		if msg.Role != "system" {
+		if msg.Role != "system" && msg.Role != "user" {
 			continue
 		}
 		if strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), todoNagPrefix) {
@@ -458,6 +466,58 @@ func annotateToolResult(output string) string {
 		return postToolAnswerReminder
 	}
 	return output + "\n\n" + postToolAnswerReminder
+}
+
+func latestToolOutput(messages []model.Message) string {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
+		return ""
+	}
+	output := model.ContentString(messages[len(messages)-1].Content)
+	if marker := strings.Index(output, "\n\n<system-reminder>"); marker >= 0 {
+		output = output[:marker]
+	}
+	return strings.TrimSpace(output)
+}
+
+func latestToolLooksLikeCommandFailure(messages []model.Message) bool {
+	if !hasAnyTool(latestTrailingToolNames(messages), "run_command") {
+		return false
+	}
+	lower := strings.ToLower(latestToolOutput(messages))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"not found",
+		"command failed",
+		"no such file",
+		"is not recognized",
+		"permission denied",
+		"timed out",
+		"cannot open",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldRetryFailedCommand(messages []model.Message, msg model.Message) bool {
+	if strings.TrimSpace(model.ContentString(msg.Content)) != "" {
+		return false
+	}
+	if len(msg.ToolCalls) != 0 || len(messages) == 0 {
+		return false
+	}
+	if messages[len(messages)-1].Role != "tool" {
+		return false
+	}
+	if hasRecentReminder(messages, failedCommandRetryReminder) {
+		return false
+	}
+	return latestToolLooksLikeCommandFailure(messages)
 }
 
 func shouldRetryEmptyToolAnswer(messages []model.Message, msg model.Message) bool {

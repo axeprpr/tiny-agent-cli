@@ -238,6 +238,43 @@ func TestShouldNotRetryEmptyToolAnswerTwice(t *testing.T) {
 	}
 }
 
+func TestShouldRetryFailedCommandAfterEmptyAnswer(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "run calc.py and tell me the result"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"python calc.py"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("bash: line 1: python: command not found")},
+	}
+	if !shouldRetryFailedCommand(messages, model.Message{}) {
+		t.Fatalf("expected failed command to trigger retry")
+	}
+}
+
+func TestShouldNotRetryFailedCommandTwice(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "run calc.py and tell me the result"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"python calc.py"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("bash: line 1: python: command not found")},
+		{Role: "user", Content: failedCommandRetryReminder},
+	}
+	if shouldRetryFailedCommand(messages, model.Message{}) {
+		t.Fatalf("expected failed-command reminder to suppress another retry")
+	}
+}
+
 func TestDecideTurnExecutesToolCalls(t *testing.T) {
 	decision := decideTurn(nil, model.Message{
 		ToolCalls: []model.ToolCall{{
@@ -262,6 +299,25 @@ func TestDecideTurnRetriesOnEmptyPostToolAnswer(t *testing.T) {
 	decision := decideTurn(messages, model.Message{})
 	if decision.action != turnActionRetry || decision.reminder != emptyToolAnswerRetryReminder {
 		t.Fatalf("expected empty-answer retry decision, got %#v", decision)
+	}
+}
+
+func TestDecideTurnRetriesOnFailedCommandRecovery(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "run calc.py and tell me the result"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"python calc.py"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("bash: line 1: python: command not found")},
+	}
+	decision := decideTurn(messages, model.Message{})
+	if decision.action != turnActionRetry || decision.reminder != failedCommandRetryReminder {
+		t.Fatalf("expected failed-command retry decision, got %#v", decision)
 	}
 }
 
@@ -1171,7 +1227,7 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	fourth := client.requests[3]
 	found := false
 	for _, msg := range fourth.Messages {
-		if msg.Role == "system" && strings.Contains(model.ContentString(msg.Content), todoNagPrefix) {
+		if msg.Role == "user" && strings.Contains(model.ContentString(msg.Content), todoNagPrefix) {
 			found = true
 			break
 		}
