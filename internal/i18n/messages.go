@@ -83,7 +83,7 @@ var messagesEN = map[string]string{
   /tasks ...            Manage persistent project tasks
   /review [base] [target] [--staged] [--path <path>]
                         Review the current git diff with optional scope
-  /approval <mode>      Set approval mode (confirm|dangerously)
+  /approval <mode>      Set approval mode (prompt|read-only|workspace-write|danger-full-access|allow)
   /memory               Show or manage saved memory notes
   /memory team ...      Show or manage team-scoped memory notes
   /remember <text>      Save a project memory note
@@ -116,7 +116,7 @@ Or just type naturally -- no command needed for most tasks.`,
 
 	// Commands
 	"cmd.reset":              "context reset",
-	"cmd.approval.usage":     "usage: /approval confirm|dangerously",
+	"cmd.approval.usage":     "usage: /approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "approval mode set to %s",
 	"cmd.output.deprecated":  "output mode command is deprecated in chat; terminal rendering is now the default",
 	"cmd.model.usage":        "usage: /model <name>",

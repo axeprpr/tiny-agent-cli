@@ -11,9 +11,15 @@ import (
 )
 
 const (
-	PermissionModeConfirm = "confirm"
-	PermissionModeAllow   = "allow"
-	PermissionModeDeny    = "deny"
+	PermissionModeReadOnly         = "read-only"
+	PermissionModeWorkspaceWrite   = "workspace-write"
+	PermissionModeDangerFullAccess = "danger-full-access"
+	PermissionModePrompt           = "prompt"
+	PermissionModeAllow            = "allow"
+	PermissionModeDeny             = "deny"
+
+	PermissionModeConfirm     = "confirm"
+	PermissionModeDangerously = "dangerously"
 )
 
 type PermissionState struct {
@@ -35,7 +41,7 @@ func PermissionPath(stateDir string) string {
 func LoadPermissionStore(path string) (*PermissionStore, error) {
 	store := &PermissionStore{
 		path: path,
-		data: PermissionState{Default: PermissionModeConfirm},
+		data: PermissionState{Default: PermissionModePrompt},
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -59,15 +65,37 @@ func LoadPermissionStore(path string) (*PermissionStore, error) {
 
 func (s *PermissionStore) ModeForTool(name string) string {
 	if s == nil {
-		return PermissionModeConfirm
+		return PermissionModePrompt
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	name = strings.TrimSpace(name)
-	if mode := normalizePermissionMode(s.data.Tools[name]); mode != "" && mode != PermissionModeConfirm {
+	if mode := normalizePermissionMode(s.data.Tools[name]); mode != "" && mode != PermissionModePrompt {
 		return mode
 	}
 	return normalizePermissionMode(s.data.Default)
+}
+
+func (s *PermissionStore) DefaultMode() string {
+	if s == nil {
+		return PermissionModePrompt
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizePermissionMode(s.data.Default)
+}
+
+func (s *PermissionStore) ToolMode(name string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	value, ok := s.data.Tools[strings.TrimSpace(name)]
+	if !ok {
+		return ""
+	}
+	return normalizePermissionMode(value)
 }
 
 func (s *PermissionStore) SetDefault(mode string) {
@@ -87,7 +115,7 @@ func (s *PermissionStore) SetToolMode(name, mode string) {
 	if name == "" {
 		return
 	}
-	if mode == PermissionModeConfirm {
+	if mode == PermissionModePrompt {
 		delete(s.data.Tools, name)
 		return
 	}
@@ -122,7 +150,7 @@ func (s *PermissionStore) Replace(state PermissionState) {
 			continue
 		}
 		mode := normalizePermissionMode(value)
-		if mode == PermissionModeConfirm {
+		if mode == PermissionModePrompt {
 			continue
 		}
 		s.data.Tools[name] = mode
@@ -170,13 +198,53 @@ func FormatPermissionState(state PermissionState) string {
 
 func normalizePermissionMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", PermissionModeConfirm:
-		return PermissionModeConfirm
+	case "", PermissionModePrompt, PermissionModeConfirm:
+		return PermissionModePrompt
+	case PermissionModeReadOnly:
+		return PermissionModeReadOnly
+	case PermissionModeWorkspaceWrite:
+		return PermissionModeWorkspaceWrite
+	case PermissionModeDangerFullAccess, PermissionModeDangerously:
+		return PermissionModeDangerFullAccess
 	case PermissionModeAllow:
 		return PermissionModeAllow
 	case PermissionModeDeny:
 		return PermissionModeDeny
 	default:
-		return PermissionModeConfirm
+		return PermissionModePrompt
 	}
+}
+
+func NormalizePermissionMode(mode string) string {
+	return normalizePermissionMode(mode)
+}
+
+func PermissionModeRank(mode string) int {
+	switch normalizePermissionMode(mode) {
+	case PermissionModeReadOnly:
+		return 0
+	case PermissionModeWorkspaceWrite:
+		return 1
+	case PermissionModeDangerFullAccess:
+		return 2
+	case PermissionModeAllow:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func PermissionModeAllows(activeMode, requiredMode string) bool {
+	active := normalizePermissionMode(activeMode)
+	required := normalizePermissionMode(requiredMode)
+	if active == PermissionModeAllow {
+		return true
+	}
+	if active == PermissionModeDeny {
+		return false
+	}
+	if active == PermissionModePrompt {
+		return required == PermissionModeReadOnly
+	}
+	return PermissionModeRank(active) >= PermissionModeRank(required)
 }

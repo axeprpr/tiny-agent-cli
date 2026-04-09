@@ -57,7 +57,7 @@ func (a *TerminalApprover) SetMode(mode string) error {
 	defer a.mu.Unlock()
 	mode = normalizeApprovalMode(mode)
 	switch mode {
-	case ApprovalConfirm, ApprovalDangerously:
+	case PermissionModePrompt, PermissionModeReadOnly, PermissionModeWorkspaceWrite, PermissionModeDangerFullAccess, PermissionModeAllow:
 		a.mode = mode
 		return nil
 	default:
@@ -68,7 +68,7 @@ func (a *TerminalApprover) SetMode(mode string) error {
 func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bool, error) {
 	command = strings.TrimSpace(command)
 	a.mu.Lock()
-	if a.mode == ApprovalDangerously || a.allowedCmds[command] {
+	if a.mode == PermissionModeDangerFullAccess || a.mode == PermissionModeAllow || a.allowedCmds[command] {
 		a.mu.Unlock()
 		return true, nil
 	}
@@ -102,7 +102,7 @@ func (a *TerminalApprover) ApproveCommand(_ context.Context, command string) (bo
 			return false, nil
 		case "a", "always", "dangerously":
 			a.mu.Lock()
-			a.mode = ApprovalDangerously
+			a.mode = PermissionModeDangerFullAccess
 			a.mu.Unlock()
 			fmt.Fprintln(writer, i18n.T("approval.switched"))
 			return true, nil
@@ -120,7 +120,7 @@ func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string)
 	path = strings.TrimSpace(path)
 	opKey := WriteApprovalKey(path, content)
 	a.mu.Lock()
-	if a.mode == ApprovalDangerously || a.allowedOps[opKey] {
+	if a.mode == PermissionModeDangerFullAccess || a.mode == PermissionModeAllow || a.allowedOps[opKey] {
 		a.mu.Unlock()
 		return true, nil
 	}
@@ -165,7 +165,7 @@ func (a *TerminalApprover) ApproveWrite(_ context.Context, path, content string)
 			return false, nil
 		case "a", "always", "dangerously":
 			a.mu.Lock()
-			a.mode = ApprovalDangerously
+			a.mode = PermissionModeDangerFullAccess
 			a.mu.Unlock()
 			fmt.Fprintln(writer, i18n.T("approval.switched"))
 			return true, nil
@@ -186,10 +186,16 @@ func WriteApprovalKey(path, content string) string {
 
 func normalizeApprovalMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", ApprovalConfirm:
-		return ApprovalConfirm
-	case ApprovalDangerously:
-		return ApprovalDangerously
+	case "", ApprovalConfirm, PermissionModePrompt:
+		return PermissionModePrompt
+	case PermissionModeReadOnly:
+		return PermissionModeReadOnly
+	case PermissionModeWorkspaceWrite:
+		return PermissionModeWorkspaceWrite
+	case ApprovalDangerously, PermissionModeDangerFullAccess:
+		return PermissionModeDangerFullAccess
+	case PermissionModeAllow:
+		return PermissionModeAllow
 	default:
 		return mode
 	}

@@ -137,9 +137,61 @@ func TestApprovalPermissionPolicyReturnsStructuredDecision(t *testing.T) {
 	if decision.Reason != "file write rejected by user" {
 		t.Fatalf("unexpected reason: %q", decision.Reason)
 	}
-	if decision.Mode != PermissionModeConfirm {
+	if decision.Mode != PermissionModePrompt {
 		t.Fatalf("unexpected mode: %q", decision.Mode)
 	}
+}
+
+func TestApprovalPermissionPolicyReadOnlyDeniesWrites(t *testing.T) {
+	dir := t.TempDir()
+	policy := NewApprovalPermissionPolicy(dir, modeApprover{mode: PermissionModeReadOnly, writeAllowed: true, commandAllowed: true}, nil)
+	decision := policy.Evaluate(context.Background(), ToolInvocation{
+		Name: "write_file",
+		Raw:  json.RawMessage(`{"path":"note.txt","content":"hello"}`),
+	})
+	if decision.Allowed {
+		t.Fatalf("expected read-only mode to deny writes")
+	}
+	if !strings.Contains(decision.Reason, "requires workspace-write permission") {
+		t.Fatalf("unexpected reason: %q", decision.Reason)
+	}
+}
+
+func TestApprovalPermissionPolicyWorkspaceWritePromptsCommands(t *testing.T) {
+	dir := t.TempDir()
+	policy := NewApprovalPermissionPolicy(dir, modeApprover{mode: PermissionModeWorkspaceWrite, commandAllowed: false, writeAllowed: true}, nil)
+	decision := policy.Evaluate(context.Background(), ToolInvocation{
+		Name: "run_command",
+		Raw:  json.RawMessage(`{"command":"pwd"}`),
+	})
+	if decision.Allowed {
+		t.Fatalf("expected workspace-write mode to require command approval")
+	}
+	if decision.Reason != "command rejected by user" {
+		t.Fatalf("unexpected reason: %q", decision.Reason)
+	}
+}
+
+type modeApprover struct {
+	mode           string
+	writeAllowed   bool
+	commandAllowed bool
+}
+
+func (m modeApprover) ApproveCommand(context.Context, string) (bool, error) {
+	return m.commandAllowed, nil
+}
+
+func (m modeApprover) ApproveWrite(context.Context, string, string) (bool, error) {
+	return m.writeAllowed, nil
+}
+
+func (m modeApprover) Mode() string {
+	return m.mode
+}
+
+func (m modeApprover) SetMode(string) error {
+	return nil
 }
 
 func hookShellSnippet(script string) string {

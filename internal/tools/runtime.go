@@ -398,9 +398,16 @@ func (d *approvalPermissionPolicy) Evaluate(ctx context.Context, inv ToolInvocat
 	if d == nil {
 		return PermissionDecision{Allowed: true}
 	}
-	mode := PermissionModeConfirm
+	mode := PermissionModePrompt
+	if d.approver != nil {
+		mode = NormalizePermissionMode(d.approver.Mode())
+	}
 	if d.policy != nil {
-		mode = d.policy.ModeForTool(inv.Name)
+		if override := d.policy.ToolMode(inv.Name); override != "" {
+			mode = override
+		} else if strings.TrimSpace(mode) == "" {
+			mode = d.policy.DefaultMode()
+		}
 	}
 	if mode == PermissionModeDeny {
 		return PermissionDecision{
@@ -412,8 +419,23 @@ func (d *approvalPermissionPolicy) Evaluate(ctx context.Context, inv ToolInvocat
 	if mode == PermissionModeAllow {
 		return PermissionDecision{Allowed: true, Mode: mode}
 	}
-	if d.approver == nil {
+	requiredMode := requiredPermissionMode(inv.Name)
+	if PermissionModeAllows(mode, requiredMode) {
 		return PermissionDecision{Allowed: true, Mode: mode}
+	}
+	if d.approver == nil {
+		return PermissionDecision{
+			Allowed: false,
+			Mode:    mode,
+			Reason:  fmt.Sprintf("tool %q requires %s permission; current mode is %s", inv.Name, requiredMode, mode),
+		}
+	}
+	if !shouldPromptForPermission(mode, requiredMode) {
+		return PermissionDecision{
+			Allowed: false,
+			Mode:    mode,
+			Reason:  fmt.Sprintf("tool %q requires %s permission; current mode is %s", inv.Name, requiredMode, mode),
+		}
 	}
 	switch inv.Name {
 	case "run_command":
@@ -482,9 +504,33 @@ func (d *approvalPermissionPolicy) Evaluate(ctx context.Context, inv ToolInvocat
 			return PermissionDecision{Allowed: false, Mode: mode, Reason: "file write rejected by user"}
 		}
 	case "start_background_job", "delegate_subagent":
-		// Background jobs enforce internal command limits; allow and rely on audit trail.
+		return PermissionDecision{Allowed: false, Mode: mode, Reason: fmt.Sprintf("tool %q requires %s permission; current mode is %s", inv.Name, requiredMode, mode)}
 	}
 	return PermissionDecision{Allowed: true, Mode: mode}
+}
+
+func requiredPermissionMode(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "update_todo", "create_task", "update_task", "delete_task":
+		return PermissionModeWorkspaceWrite
+	case "run_command", "start_background_job", "delegate_subagent", "send_background_job":
+		return PermissionModeDangerFullAccess
+	default:
+		return PermissionModeReadOnly
+	}
+}
+
+func shouldPromptForPermission(activeMode, requiredMode string) bool {
+	activeMode = NormalizePermissionMode(activeMode)
+	requiredMode = NormalizePermissionMode(requiredMode)
+	switch activeMode {
+	case PermissionModePrompt:
+		return requiredMode != PermissionModeReadOnly
+	case PermissionModeWorkspaceWrite:
+		return requiredMode == PermissionModeDangerFullAccess
+	default:
+		return false
+	}
 }
 
 func extractToolOutputFormat(raw json.RawMessage) (json.RawMessage, string, error) {

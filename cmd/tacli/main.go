@@ -1076,8 +1076,8 @@ func (r *chatRuntime) policyCommand(fields []string) string {
 	}
 	usage := strings.Join([]string{
 		"usage: /policy",
-		"usage: /policy default <confirm|allow|deny>",
-		"usage: /policy tool <name> <confirm|allow|deny>",
+		"usage: /policy default <prompt|read-only|workspace-write|danger-full-access|allow|deny>",
+		"usage: /policy tool <name> <prompt|read-only|workspace-write|danger-full-access|allow|deny>",
 		"usage: /policy reload",
 		"usage: /policy save",
 	}, "\n")
@@ -1090,6 +1090,10 @@ func (r *chatRuntime) policyCommand(fields []string) string {
 			return usage
 		}
 		r.permissions.SetDefault(fields[2])
+		r.cfg.ApprovalMode = tools.NormalizePermissionMode(fields[2])
+		if r.approver != nil {
+			_ = r.approver.SetMode(r.cfg.ApprovalMode)
+		}
 	case "tool":
 		if len(fields) != 4 {
 			return usage
@@ -2025,7 +2029,8 @@ func inferMemoryScope(note string) string {
 
 func shouldAutoStartExplore(task string, cfg config.Config, jobs *jobManager) bool {
 	task = strings.TrimSpace(task)
-	if jobs == nil || cfg.ApprovalMode != tools.ApprovalDangerously {
+	mode := tools.NormalizePermissionMode(cfg.ApprovalMode)
+	if jobs == nil || (mode != tools.PermissionModeDangerFullAccess && mode != tools.PermissionModeAllow) {
 		return false
 	}
 	if len(task) < autoExploreMinChars {
@@ -2680,17 +2685,15 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 		return cfg, runtimeOptions{}, nil, nil, err
 	}
 	if dangerously {
-		cfg.ApprovalMode = tools.ApprovalDangerously
+		cfg.ApprovalMode = tools.PermissionModeDangerFullAccess
 	}
 	if err := cfg.Validate(); err != nil {
 		return cfg, runtimeOptions{}, nil, nil, err
 	}
 
-	cfg.ApprovalMode = strings.ToLower(strings.TrimSpace(cfg.ApprovalMode))
+	cfg.ApprovalMode = tools.NormalizePermissionMode(cfg.ApprovalMode)
 	switch cfg.ApprovalMode {
-	case "", tools.ApprovalConfirm:
-		cfg.ApprovalMode = tools.ApprovalConfirm
-	case tools.ApprovalDangerously:
+	case tools.PermissionModePrompt, tools.PermissionModeReadOnly, tools.PermissionModeWorkspaceWrite, tools.PermissionModeDangerFullAccess, tools.PermissionModeAllow, tools.PermissionModeDeny:
 	default:
 		return cfg, runtimeOptions{}, nil, nil, fmt.Errorf("invalid approval mode %q", cfg.ApprovalMode)
 	}

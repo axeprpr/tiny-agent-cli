@@ -77,7 +77,7 @@ var messagesCN = map[string]string{
   /policy ...           查看或调整持久化工具策略
   /review [base] [target] [--staged] [--path <path>]
                         审查当前 git diff，可带范围参数
-  /approval <mode>      设置审批模式 (confirm|dangerously)
+  /approval <mode>      设置审批模式 (prompt|read-only|workspace-write|danger-full-access|allow)
   /memory               查看或管理记忆
   /memory team ...      查看或管理团队记忆
   /remember <text>      保存项目记忆
@@ -110,7 +110,7 @@ var messagesCN = map[string]string{
 
 	// Commands
 	"cmd.reset":              "上下文已重置",
-	"cmd.approval.usage":     "用法：/approval confirm|dangerously",
+	"cmd.approval.usage":     "用法：/approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "审批模式已设为 %s",
 	"cmd.output.deprecated":  "output 命令已弃用；chat 默认使用终端渲染",
 	"cmd.model.usage":        "用法：/model <名称>",
