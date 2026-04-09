@@ -315,8 +315,20 @@ build_tiny() {
 
 prepare_workspace() {
   rm -rf "${WORKDIR}"
-  mkdir -p "${WORKDIR}"
+  mkdir -p "${WORKDIR}/nested"
   printf 'hello parity\n' > "${WORKDIR}/note.txt"
+  cat >"${WORKDIR}/config.json" <<'EOF'
+{
+  "mode": "safe",
+  "retries": 3,
+  "feature": "parity"
+}
+EOF
+  cat >"${WORKDIR}/todo.md" <<'EOF'
+# draft
+- pending
+EOF
+  printf 'nested clue\n' > "${WORKDIR}/nested/info.txt"
 }
 
 run_case() {
@@ -324,15 +336,20 @@ run_case() {
   local tiny_bin="$2"
   local case_id="$3"
   local prompt="$4"
+  local claw_workdir="${OUTDIR}/${case_id}.claw.workspace"
+  local tiny_workdir="${OUTDIR}/${case_id}.tiny.workspace"
 
-  rm -f "${WORKDIR}/hello.py"
+  prepare_workspace
+  rm -rf "${claw_workdir}" "${tiny_workdir}"
+  cp -R "${WORKDIR}" "${claw_workdir}"
+  cp -R "${WORKDIR}" "${tiny_workdir}"
 
   local claw_status=0
   local tiny_status=0
 
   set +e
   (
-    cd "${WORKDIR}" &&
+    cd "${claw_workdir}" &&
       env HOME="${HOME:-/root}" \
         OPENAI_API_KEY="${MODEL_API_KEY}" \
         OPENAI_BASE_URL="${MODEL_BASE_URL}" \
@@ -342,7 +359,7 @@ run_case() {
   claw_status=$?
 
   (
-    cd "${WORKDIR}" &&
+    cd "${tiny_workdir}" &&
       env HOME="${HOME:-/root}" \
         MODEL_BASE_URL="${MODEL_BASE_URL}" \
         MODEL_NAME="${MODEL_NAME}" \
@@ -356,10 +373,6 @@ run_case() {
   tiny_status=$?
   set -e
 
-  if [[ -f "${WORKDIR}/hello.py" ]]; then
-    cp "${WORKDIR}/hello.py" "${OUTDIR}/${case_id}.hello.py"
-  fi
-
   printf '%s\n' "${claw_status}" > "${OUTDIR}/${case_id}.claw.status"
   printf '%s\n' "${tiny_status}" > "${OUTDIR}/${case_id}.tiny.status"
 }
@@ -367,14 +380,40 @@ run_case() {
 write_summary() {
   env OUTDIR="${OUTDIR}" WORKDIR="${WORKDIR}" "${NODE_BIN}" <<'EOF'
 const fs = require('fs');
+const path = require('path');
 const outdir = process.env.OUTDIR;
 const workdir = process.env.WORKDIR || '';
 const cases = [
   { id: 'qa', prompt: 'Reply with exactly: parity-qa-ok', kind: 'exact', expected: 'parity-qa-ok' },
-  { id: 'read', prompt: 'Read note.txt and reply with exactly its contents.', kind: 'exact', expected: 'hello parity' },
-  { id: 'shell', prompt: 'Use a shell command to print the current working directory, then reply with exactly the path.', kind: 'exact', expected: workdir },
-  { id: 'write', prompt: 'Create hello.py that prints hi-parity and then reply with exactly: file-created.', kind: 'exact', expected: 'file-created' },
-  { id: 'web', prompt: 'Find the GitHub repository URL for tiny-agent-cli and reply with just the URL.', kind: 'repo-url', expected: '' },
+  { id: 'read', prompt: 'Read note.txt and reply with exactly its contents.', kind: 'contains-text', expected: 'hello parity', claw_tools_required: ['read_file'], tiny_tools_required: ['read_file'] },
+  { id: 'shell', prompt: 'Use a shell command to print the current working directory, then reply with exactly the path.', kind: 'workspace-path', expected: workdir, claw_tools_required: ['bash'], tiny_tools_required: ['run_command'] },
+  { id: 'extract', prompt: 'Read config.json and reply with exactly: safe:3', kind: 'exact', expected: 'safe:3', claw_tools_required: ['read_file'], tiny_tools_required: ['read_file'] },
+  {
+    id: 'write',
+    prompt: 'Create hello.py that prints hi-parity and then reply with exactly: file-created.',
+    kind: 'exact',
+    expected: 'file-created',
+    artifacts: [{ path: 'hello.py', kind: 'contains', expected: 'hi-parity' }],
+    claw_tools_required: ['write_file'],
+    tiny_tools_required: ['write_file'],
+  },
+  {
+    id: 'rewrite',
+    prompt: 'Update todo.md so it contains exactly two lines: "# parity checklist" and "- done". Reply with exactly: rewrite-done.',
+    kind: 'exact',
+    expected: 'rewrite-done',
+    artifacts: [{ path: 'todo.md', kind: 'exact-file', expected: '# parity checklist\n- done\n' }],
+    tiny_tools_required: ['read_file', 'write_file'],
+  },
+  {
+    id: 'codegen',
+    prompt: 'Create calc.py that prints the result of 2 + 3, run it with the shell command "python3 calc.py", and reply with exactly: 5.',
+    kind: 'exact',
+    expected: '5',
+    artifacts: [{ path: 'calc.py', kind: 'exists' }],
+    tiny_tools_required: ['write_file', 'run_command'],
+  },
+  { id: 'web', prompt: 'Find the GitHub repository URL for tiny-agent-cli and reply with just the URL.', kind: 'repo-url', expected: '', tiny_tools_required: ['web_search'] },
 ];
 
 function readStatus(path) {
@@ -417,11 +456,39 @@ function normalize(value) {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
+function normalizeFileContent(value) {
+  return String(value || '').replace(/\r\n/g, '\n').replace(/\n$/, '');
+}
+
+function readWorkspaceFile(caseId, side, relativePath) {
+  const absolutePath = path.join(outdir, `${caseId}.${side}.workspace`, relativePath);
+  return fs.existsSync(absolutePath) ? fs.readFileSync(absolutePath, 'utf8') : null;
+}
+
 function checkExpected(kind, actual, expected) {
   const normalized = normalize(actual);
   if (kind === 'exact') return normalized === normalize(expected);
+  if (kind === 'contains-text') return normalized.includes(normalize(expected));
+  if (kind === 'workspace-path') return /^\/.+\.workspace$/i.test(normalized);
   if (kind === 'repo-url') return /^https?:\/\/github\.com\/[^/\s]+\/tiny-agent-cli\/?$/i.test(normalized);
   return false;
+}
+
+function hasRequiredTools(tools, requiredTools) {
+  if (!requiredTools || requiredTools.length === 0) return true;
+  return requiredTools.every((toolName) => tools.includes(toolName));
+}
+
+function checkArtifacts(caseId, side, artifacts) {
+  if (!artifacts || artifacts.length === 0) return true;
+  return artifacts.every((artifact) => {
+    const content = readWorkspaceFile(caseId, side, artifact.path);
+    if (artifact.kind === 'exists') return content !== null;
+    if (content === null) return false;
+    if (artifact.kind === 'contains') return content.includes(artifact.expected);
+    if (artifact.kind === 'exact-file') return normalizeFileContent(content) === normalizeFileContent(artifact.expected);
+    return false;
+  });
 }
 
 const summary = cases.map((entry) => {
@@ -431,8 +498,12 @@ const summary = cases.map((entry) => {
   const tiny = parseTiny(`${outdir}/${entry.id}.tiny.jsonl`);
   const clawStderr = readIfExists(`${outdir}/${entry.id}.claw.stderr`).trim();
   const tinyStderr = readIfExists(`${outdir}/${entry.id}.tiny.stderr`).trim();
-  const clawPass = clawStatus === 0 && !clawStderr && checkExpected(entry.kind, claw.final, entry.expected);
-  const tinyPass = tinyStatus === 0 && !tinyStderr && checkExpected(entry.kind, tiny.final, entry.expected);
+  const clawArtifactsPass = checkArtifacts(entry.id, 'claw', entry.artifacts || []);
+  const tinyArtifactsPass = checkArtifacts(entry.id, 'tiny', entry.artifacts || []);
+  const clawToolsPass = hasRequiredTools(claw.tools, entry.claw_tools_required || []);
+  const tinyToolsPass = hasRequiredTools(tiny.tools, entry.tiny_tools_required || []);
+  const clawPass = clawStatus === 0 && !clawStderr && checkExpected(entry.kind, claw.final, entry.expected) && clawArtifactsPass && clawToolsPass;
+  const tinyPass = tinyStatus === 0 && !tinyStderr && checkExpected(entry.kind, tiny.final, entry.expected) && tinyArtifactsPass && tinyToolsPass;
   const pairMatch = normalize(claw.final) === normalize(tiny.final);
   return {
     id: entry.id,
@@ -442,20 +513,24 @@ const summary = cases.map((entry) => {
     claw_status: clawStatus,
     claw_final: claw.final,
     claw_tools: claw.tools,
-    claw_stderr: clawStderr,
-    claw_pass: clawPass,
-    tiny_status: tinyStatus,
-    tiny_final: tiny.final,
-    tiny_tools: tiny.tools,
-    tiny_stderr: tinyStderr,
-    tiny_pass: tinyPass,
-    pair_match: pairMatch,
+      claw_stderr: clawStderr,
+      claw_pass: clawPass,
+      claw_artifacts_pass: clawArtifactsPass,
+      claw_tools_pass: clawToolsPass,
+      tiny_status: tinyStatus,
+      tiny_final: tiny.final,
+      tiny_tools: tiny.tools,
+      tiny_stderr: tinyStderr,
+      tiny_pass: tinyPass,
+      tiny_artifacts_pass: tinyArtifactsPass,
+      tiny_tools_pass: tinyToolsPass,
+      pair_match: pairMatch,
   };
 });
 
 fs.writeFileSync(`${outdir}/summary.json`, JSON.stringify(summary, null, 2));
 
-const lines = ['id\tclaw_pass\tclaw_status\tclaw_final\tclaw_tools\ttiny_pass\ttiny_status\ttiny_final\ttiny_tools\tpair_match'];
+const lines = ['id\tclaw_pass\tclaw_status\tclaw_final\tclaw_tools\tclaw_artifacts_pass\tclaw_tools_pass\ttiny_pass\ttiny_status\ttiny_final\ttiny_tools\ttiny_artifacts_pass\ttiny_tools_pass\tpair_match'];
 for (const row of summary) {
   lines.push([
     row.id,
@@ -463,10 +538,14 @@ for (const row of summary) {
     row.claw_status,
     row.claw_final.replace(/\s+/g, ' '),
     row.claw_tools.join(','),
+    row.claw_artifacts_pass,
+    row.claw_tools_pass,
     row.tiny_pass,
     row.tiny_status,
     row.tiny_final.replace(/\s+/g, ' '),
     row.tiny_tools.join(','),
+    row.tiny_artifacts_pass,
+    row.tiny_tools_pass,
     row.pair_match,
   ].join('\t'));
 }
@@ -481,12 +560,14 @@ main() {
 
   claw_bin="$(build_probe)"
   tiny_bin="$(build_tiny)"
-  prepare_workspace
 
   run_case "${claw_bin}" "${tiny_bin}" "qa" "Reply with exactly: parity-qa-ok"
   run_case "${claw_bin}" "${tiny_bin}" "read" "Read note.txt and reply with exactly its contents."
   run_case "${claw_bin}" "${tiny_bin}" "shell" "Use a shell command to print the current working directory, then reply with exactly the path."
+  run_case "${claw_bin}" "${tiny_bin}" "extract" "Read config.json and reply with exactly: safe:3"
   run_case "${claw_bin}" "${tiny_bin}" "write" "Create hello.py that prints hi-parity and then reply with exactly: file-created."
+  run_case "${claw_bin}" "${tiny_bin}" "rewrite" "Update todo.md so it contains exactly two lines: \"# parity checklist\" and \"- done\". Reply with exactly: rewrite-done."
+  run_case "${claw_bin}" "${tiny_bin}" "codegen" "Create calc.py that prints the result of 2 + 3, run it with the shell command \"python3 calc.py\", and reply with exactly: 5."
   run_case "${claw_bin}" "${tiny_bin}" "web" "Find the GitHub repository URL for tiny-agent-cli and reply with just the URL."
 
   write_summary
