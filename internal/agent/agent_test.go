@@ -662,6 +662,37 @@ func TestRunTaskUsesFinalStepToForceAnswer(t *testing.T) {
 	}
 }
 
+func TestConversationRuntimeRunsAgainstSessionState(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "done"},
+					},
+				},
+			},
+		},
+	}
+
+	session := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession()
+	runtime := session.Runtime()
+	if runtime.Session() != session {
+		t.Fatalf("expected runtime to expose the original session")
+	}
+
+	result, err := runtime.RunTask(context.Background(), "inspect repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final answer: %q", result.Final)
+	}
+	if len(session.Messages()) < 3 {
+		t.Fatalf("expected runtime to mutate session state, got %#v", session.Messages())
+	}
+}
+
 func TestRunTaskRetriesWhenToolEvidenceIsTooShallow(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "chat_note.txt"), []byte("hello-chat"), 0o644); err != nil {
