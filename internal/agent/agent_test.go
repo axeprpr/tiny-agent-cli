@@ -79,10 +79,10 @@ func TestCompactConversationAddsSyntheticSummaryForOlderTurns(t *testing.T) {
 	}
 
 	got := compactConversation(messages, 220)
-	if len(got) < 4 {
+	if len(got) < 3 {
 		t.Fatalf("expected summarized history plus recent messages, got %#v", got)
 	}
-	if got[1].Role != "system" || !strings.Contains(model.ContentString(got[1].Content), syntheticSummaryPrefix) {
+	if got[0].Role != "system" || !strings.Contains(model.ContentString(got[0].Content), syntheticSummaryPrefix) {
 		t.Fatalf("expected synthetic summary message, got %#v", got)
 	}
 	if model.ContentString(got[len(got)-2].Content) != "recent user" {
@@ -119,6 +119,180 @@ func TestCompactConversationAggressiveLayerStillKeepsLatestTurn(t *testing.T) {
 	}
 	if model.ContentString(got[len(got)-1].Content) != "latest answer" {
 		t.Fatalf("expected latest assistant answer to remain, got %#v", got)
+	}
+}
+
+func TestPruneConversationKeepsLatestUserTurnWithToolResult(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "earlier user"},
+		{Role: "assistant", Content: "earlier answer"},
+		{Role: "user", Content: "read bigmemo.txt and remember the passphrase"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult(strings.Repeat("chunk ", 200) + "PASSPHRASE=cedar-omega")},
+	}
+
+	got := pruneConversation(messages, 1200)
+	var sawLatestUser, sawTool bool
+	for _, msg := range got {
+		if msg.Role == "user" && strings.Contains(model.ContentString(msg.Content), "remember the passphrase") {
+			sawLatestUser = true
+		}
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "PASSPHRASE=cedar-omega") {
+			sawTool = true
+		}
+	}
+	if !sawLatestUser || !sawTool {
+		t.Fatalf("expected latest user turn and tool result to remain, got %#v", got)
+	}
+}
+
+func TestCompactConversationKeepsLatestTurnWhenLimitIsTight(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: strings.Repeat("system ", 200)},
+		{Role: "user", Content: "read bigmemo.txt and remember the passphrase"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult(strings.Repeat("chunk ", 300) + "PASSPHRASE=cedar-omega")},
+	}
+
+	got := compactConversation(messages, 1200)
+	var sawLatestUser, sawTool bool
+	for _, msg := range got {
+		if msg.Role == "user" && strings.Contains(model.ContentString(msg.Content), "remember the passphrase") {
+			sawLatestUser = true
+		}
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "PASSPHRASE=cedar-omega") {
+			sawTool = true
+		}
+	}
+	if !sawLatestUser || !sawTool {
+		t.Fatalf("expected compacted conversation to preserve latest turn, got %#v", got)
+	}
+}
+
+func TestCompactConversationAggressiveToolCompactionKeepsTailFacts(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: strings.Repeat("system ", 400)},
+		{Role: "user", Content: "read bigmemo.txt and remember the passphrase"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult(strings.Repeat("memory chunk retains background detail\n", 200) + "PASSPHRASE=cedar-omega")},
+		{Role: "user", Content: "what is the passphrase"},
+	}
+
+	got := compactConversation(messages, 240)
+	var sawTailFact bool
+	for _, msg := range got {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "PASSPHRASE=cedar-omega") {
+			sawTailFact = true
+		}
+	}
+	if !sawTailFact {
+		t.Fatalf("expected compacted tool output to retain tail fact, got %#v", got)
+	}
+}
+
+func TestCompactConversationSummaryCarriesOlderToolFacts(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "read bigmemo.txt and remember the passphrase"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult(strings.Repeat("memory chunk retains background detail\n", 60) + "PASSPHRASE=cedar-omega")},
+		{Role: "assistant", Content: "noted."},
+		{Role: "user", Content: "filler-one"},
+		{Role: "assistant", Content: "filler-one"},
+		{Role: "user", Content: "filler-two"},
+		{Role: "assistant", Content: "filler-two"},
+	}
+
+	got := compactConversation(messages, 220)
+	var summary string
+	for _, msg := range got {
+		if msg.Role == "system" && strings.Contains(model.ContentString(msg.Content), syntheticSummaryPrefix) {
+			summary = model.ContentString(msg.Content)
+			break
+		}
+	}
+	if !strings.Contains(summary, "PASSPHRASE=cedar-omega") {
+		t.Fatalf("expected synthetic summary to preserve older tool fact, got %#v", got)
+	}
+}
+
+func TestExtractStructuredToolFactsFindsKeyValueFacts(t *testing.T) {
+	got := extractStructuredToolFacts("noise line\nowner: regression-bot\nPASSPHRASE=cedar-omega\n\n<system-reminder>ignore</system-reminder>", 3)
+	want := []string{"owner: regression-bot", "PASSPHRASE=cedar-omega"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected facts: %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected fact %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCompactConversationFallbackSummaryStillKeepsLatestTurn(t *testing.T) {
+	messages := []model.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "read bigmemo.txt and remember the passphrase"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult(strings.Repeat("memory chunk retains background detail\n", 80) + "PASSPHRASE=cedar-omega")},
+		{Role: "assistant", Content: "noted"},
+		{Role: "user", Content: "what is the passphrase?"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"bigmemo.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-2", Content: annotateToolResult(strings.Repeat("memory chunk retains background detail\n", 120) + "PASSPHRASE=cedar-omega")},
+	}
+
+	got := compactConversation(messages, 180)
+	var sawLatestUser bool
+	for _, msg := range got {
+		if msg.Role == "user" && strings.Contains(strings.ToLower(model.ContentString(msg.Content)), "what is the passphrase") {
+			sawLatestUser = true
+		}
+	}
+	if !sawLatestUser {
+		t.Fatalf("expected fallback summary path to keep latest user turn, got %#v", got)
 	}
 }
 

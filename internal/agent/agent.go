@@ -731,6 +731,9 @@ func normalizeContextWindow(window int) int {
 
 func truncateToolMessage(text string, limit int) string {
 	text = strings.TrimSpace(text)
+	if marker := strings.Index(text, "\n\n<system-reminder>"); marker >= 0 {
+		text = strings.TrimSpace(text[:marker])
+	}
 	if text == "" || limit <= 0 || len(text) <= limit {
 		return text
 	}
@@ -778,7 +781,7 @@ func compactConversationAggressive(messages []model.Message, limit int) []model.
 				aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 320)
 			}
 		case "tool":
-			aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 220)
+			aggressive[i].Content = truncateToolMessage(model.ContentString(aggressive[i].Content), 220)
 		case "user":
 			aggressive[i].Content = compactSummaryText(model.ContentString(aggressive[i].Content), 240)
 		}
@@ -788,21 +791,48 @@ func compactConversationAggressive(messages []model.Message, limit int) []model.
 		return pruned
 	}
 
-	if len(pruned) == 0 {
-		return pruned
+	return preserveLatestTurnCompacted(pruned, limit)
+}
+
+func preserveLatestTurnCompacted(messages []model.Message, limit int) []model.Message {
+	if len(messages) == 0 {
+		return messages
 	}
-	if len(pruned) == 1 {
-		pruned[0].Content = compactSummaryText(model.ContentString(pruned[0].Content), max(80, limit/2))
-		return pruned
+	if len(messages) == 1 {
+		messages[0].Content = compactSummaryText(model.ContentString(messages[0].Content), max(80, limit/2))
+		return messages
 	}
 
-	out := []model.Message{pruned[0], pruned[len(pruned)-1]}
+	start := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			start = i
+			break
+		}
+	}
+
+	out := make([]model.Message, 0, len(messages))
+	if messages[0].Role == "system" && start > 0 {
+		out = append(out, messages[0])
+	}
+	out = append(out, messages[start:]...)
 	if conversationSize(out) <= limit {
 		return out
 	}
-	budget := max(80, limit/3)
-	out[0].Content = compactSummaryText(model.ContentString(out[0].Content), budget)
-	out[1].Content = compactSummaryText(model.ContentString(out[1].Content), budget)
+
+	budget := max(80, limit/max(2, len(out)))
+	for i := range out {
+		if i == 0 && out[i].Role == "system" {
+			out[i].Content = compactSummaryText(model.ContentString(out[i].Content), max(120, budget))
+			continue
+		}
+		switch out[i].Role {
+		case "tool":
+			out[i].Content = truncateToolMessage(model.ContentString(out[i].Content), max(120, budget))
+		default:
+			out[i].Content = compactSummaryText(model.ContentString(out[i].Content), budget)
+		}
+	}
 	return out
 }
 
@@ -827,10 +857,19 @@ func preprocessConversation(messages []model.Message) []model.Message {
 
 func stripSyntheticSummaries(messages []model.Message) []model.Message {
 	if len(messages) <= 1 {
+		if len(messages) == 1 && messages[0].Role == "system" {
+			cleaned := messages[0]
+			cleaned.Content = stripSyntheticSummaryBlock(model.ContentString(cleaned.Content))
+			return []model.Message{cleaned}
+		}
 		return messages
 	}
 	out := make([]model.Message, 0, len(messages))
-	out = append(out, messages[0])
+	first := messages[0]
+	if first.Role == "system" {
+		first.Content = stripSyntheticSummaryBlock(model.ContentString(first.Content))
+	}
+	out = append(out, first)
 	for _, msg := range messages[1:] {
 		if msg.Role == "system" && strings.HasPrefix(model.ContentString(msg.Content), syntheticSummaryPrefix) {
 			continue
@@ -869,20 +908,52 @@ func pruneConversation(messages []model.Message, limit int) []model.Message {
 		groups = append(groups, current)
 	}
 
-	kept := make([]model.Message, 0, len(messages))
-	kept = append(kept, groups[0].msgs...)
-	total := groups[0].size
-
-	var tail []group
+	latestUserGroup := -1
 	for i := len(groups) - 1; i >= 1; i-- {
+		if len(groups[i].msgs) > 0 && groups[i].msgs[0].Role == "user" {
+			latestUserGroup = i
+			break
+		}
+	}
+	if latestUserGroup == -1 {
+		latestUserGroup = len(groups) - 1
+	}
+
+	kept := make([]model.Message, 0, len(messages))
+	total := 0
+	if len(groups[0].msgs) > 0 && groups[0].msgs[0].Role == "system" {
+		kept = append(kept, groups[0].msgs...)
+		total += groups[0].size
+	}
+
+	required := groups[latestUserGroup:]
+	requiredSize := 0
+	for _, grp := range required {
+		requiredSize += grp.size
+	}
+	if total+requiredSize > limit && total > 0 {
+		kept = kept[:0]
+		total = 0
+	}
+	for _, grp := range required {
+		kept = append(kept, grp.msgs...)
+		total += grp.size
+	}
+
+	var middle []group
+	for i := latestUserGroup - 1; i >= 1; i-- {
 		if total+groups[i].size > limit {
 			continue
 		}
-		tail = append(tail, groups[i])
+		middle = append(middle, groups[i])
 		total += groups[i].size
 	}
-	for i := len(tail) - 1; i >= 0; i-- {
-		kept = append(kept, tail[i].msgs...)
+	for i := len(middle) - 1; i >= 0; i-- {
+		insertAt := 0
+		if len(kept) > 0 && kept[0].Role == "system" {
+			insertAt = 1
+		}
+		kept = append(kept[:insertAt], append(middle[i].msgs, kept[insertAt:]...)...)
 	}
 	return kept
 }
@@ -906,10 +977,7 @@ func summarizeConversationHistory(messages []model.Message, limit int) []model.M
 		if len(older) > 0 {
 			summary := summarizeTurns(older, min(maxSummaryChars, max(400, limit/3)))
 			if strings.TrimSpace(summary) != "" {
-				candidate = append(candidate, model.Message{
-					Role:    "system",
-					Content: syntheticSummaryPrefix + "\n" + summary,
-				})
+				candidate[0].Content = appendSyntheticSummary(model.ContentString(candidate[0].Content), summary)
 			}
 		}
 		for _, turn := range recent {
@@ -920,15 +988,42 @@ func summarizeConversationHistory(messages []model.Message, limit int) []model.M
 		}
 	}
 
-	summary := summarizeTurns(turns, min(maxSummaryChars, max(300, limit/2)))
+	older := turns[:len(turns)-1]
+	recent := turns[len(turns)-1:]
+	summary := summarizeTurns(older, min(maxSummaryChars, max(300, limit/2)))
 	if strings.TrimSpace(summary) == "" {
 		return pruneConversation(messages, limit)
 	}
-	candidate := []model.Message{
-		messages[0],
-		{Role: "system", Content: syntheticSummaryPrefix + "\n" + summary},
+	candidate := []model.Message{messages[0]}
+	candidate[0].Content = appendSyntheticSummary(model.ContentString(candidate[0].Content), summary)
+	for _, turn := range recent {
+		candidate = append(candidate, turn...)
 	}
 	return pruneConversation(candidate, limit)
+}
+
+func appendSyntheticSummary(base, summary string) string {
+	base = stripSyntheticSummaryBlock(model.ContentString(base))
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return strings.TrimSpace(base)
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return syntheticSummaryPrefix + "\n" + summary
+	}
+	return base + "\n\n" + syntheticSummaryPrefix + "\n" + summary
+}
+
+func stripSyntheticSummaryBlock(text string) string {
+	text = model.ContentString(text)
+	if idx := strings.Index(text, "\n\n"+syntheticSummaryPrefix); idx >= 0 {
+		return strings.TrimSpace(text[:idx])
+	}
+	if strings.HasPrefix(strings.TrimSpace(text), syntheticSummaryPrefix) {
+		return ""
+	}
+	return text
 }
 
 func splitConversationTurns(messages []model.Message) [][]model.Message {
@@ -1025,9 +1120,74 @@ func summarizeContextMessage(msg model.Message) string {
 			return ""
 		}
 		return "- assistant: " + text
+	case "tool":
+		facts := extractStructuredToolFacts(model.ContentString(msg.Content), 2)
+		if len(facts) > 0 {
+			return "- tool facts: " + strings.Join(facts, "; ")
+		}
+		text := truncateToolMessage(model.ContentString(msg.Content), 180)
+		if text == "" {
+			return ""
+		}
+		text = strings.ReplaceAll(text, "\n", " ")
+		text = strings.Join(strings.Fields(text), " ")
+		return "- tool: " + text
 	default:
 		return ""
 	}
+}
+
+func extractStructuredToolFacts(text string, maxFacts int) []string {
+	if maxFacts <= 0 {
+		return nil
+	}
+	if marker := strings.Index(text, "\n\n<system-reminder>"); marker >= 0 {
+		text = text[:marker]
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, maxFacts)
+	seen := make(map[string]bool, maxFacts)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		if !looksLikeStructuredFact(line) {
+			continue
+		}
+		seen[line] = true
+		out = append(out, line)
+		if len(out) >= maxFacts {
+			break
+		}
+	}
+	return out
+}
+
+func looksLikeStructuredFact(line string) bool {
+	var key, value string
+	var ok bool
+	if strings.Contains(line, "://") {
+		return true
+	}
+	if key, value, ok = strings.Cut(line, "="); !ok {
+		key, value, ok = strings.Cut(line, ":")
+	}
+	if !ok {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" || len(key) > 48 || len(value) > 160 {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func compactSummaryText(text string, limit int) string {
