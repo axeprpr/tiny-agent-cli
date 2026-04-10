@@ -311,6 +311,13 @@ func decideTurn(messages []model.Message, msg model.Message) turnDecision {
 			logLine:  "empty final after tool results, retrying with direct-answer reminder",
 		}
 	}
+	if final := fallbackToolAnswer(messages, msg); final != "" {
+		return turnDecision{
+			action:  turnActionFinish,
+			final:   final,
+			logLine: "model stayed empty after tool reminders, using latest tool output as final answer",
+		}
+	}
 	return turnDecision{
 		action: turnActionFinish,
 		final:  finalResponseText(msg),
@@ -513,11 +520,7 @@ func latestToolOutput(messages []model.Message) string {
 	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
 		return ""
 	}
-	output := model.ContentString(messages[len(messages)-1].Content)
-	if marker := strings.Index(output, "\n\n<system-reminder>"); marker >= 0 {
-		output = output[:marker]
-	}
-	return strings.TrimSpace(output)
+	return cleanToolOutput(messages[len(messages)-1].Content)
 }
 
 func latestToolLooksLikeCommandFailure(messages []model.Message) bool {
@@ -555,7 +558,7 @@ func shouldRetryFailedCommand(messages []model.Message, msg model.Message) bool 
 	if messages[len(messages)-1].Role != "tool" {
 		return false
 	}
-	if hasRecentReminder(messages, failedCommandRetryReminder) {
+	if hasReminderSince(messages, failedCommandRetryReminder, latestTrailingToolBlockStart(messages)) {
 		return false
 	}
 	return latestToolLooksLikeCommandFailure(messages)
@@ -571,16 +574,28 @@ func shouldRetryEmptyToolAnswer(messages []model.Message, msg model.Message) boo
 	if messages[len(messages)-1].Role != "tool" {
 		return false
 	}
-	for i := len(messages) - 1; i >= 0 && i >= len(messages)-3; i-- {
-		prior := messages[i]
-		if prior.Role != "user" {
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(model.ContentString(prior.Content)), emptyToolAnswerRetryReminder) {
-			return false
-		}
+	if hasReminderSince(messages, emptyToolAnswerRetryReminder, latestTrailingToolBlockStart(messages)) {
+		return false
 	}
 	return true
+}
+
+func fallbackToolAnswer(messages []model.Message, msg model.Message) string {
+	if strings.TrimSpace(model.ContentString(msg.Content)) != "" || len(msg.ToolCalls) != 0 {
+		return ""
+	}
+	start, _ := latestToolBlockRange(messages)
+	if start < 0 || !hasReminderSince(messages, emptyToolAnswerRetryReminder, start) {
+		return ""
+	}
+	outputs := latestTrailingToolOutputs(messages)
+	if len(outputs) == 0 {
+		return ""
+	}
+	if len(outputs) == 1 {
+		return outputs[0]
+	}
+	return "Latest tool results:\n\n" + strings.Join(outputs, "\n\n")
 }
 
 func evidenceRetryReminder(messages []model.Message, msg model.Message) string {
@@ -695,6 +710,86 @@ func hasRecentReminder(messages []model.Message, reminder string) bool {
 		}
 	}
 	return false
+}
+
+func hasReminderSince(messages []model.Message, reminder string, start int) bool {
+	if start < 0 {
+		start = 0
+	}
+	for i := len(messages) - 1; i >= start && i < len(messages); i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), reminder) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestTrailingToolBlockStart(messages []model.Message) int {
+	start, end := latestToolBlockRange(messages)
+	if end != len(messages)-1 {
+		return -1
+	}
+	return start
+}
+
+func latestToolBlockRange(messages []model.Message) (int, int) {
+	if len(messages) == 0 {
+		return -1, -1
+	}
+	i := len(messages) - 1
+	for i >= 0 {
+		msg := messages[i]
+		if msg.Role == "user" && strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), systemReminderTag) {
+			i--
+			continue
+		}
+		break
+	}
+	if i < 0 || messages[i].Role != "tool" {
+		return -1, -1
+	}
+	end := i
+	for i >= 0 {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			i--
+			continue
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			return i, end
+		}
+		break
+	}
+	return -1, -1
+}
+
+func latestTrailingToolOutputs(messages []model.Message) []string {
+	start, end := latestToolBlockRange(messages)
+	if start < 0 {
+		return nil
+	}
+	var outputs []string
+	for i := start + 1; i <= end; i++ {
+		if messages[i].Role != "tool" {
+			continue
+		}
+		if text := cleanToolOutput(messages[i].Content); text != "" {
+			outputs = append(outputs, text)
+		}
+	}
+	return outputs
+}
+
+func cleanToolOutput(content any) string {
+	output := model.ContentString(content)
+	if marker := strings.Index(output, "\n\n<system-reminder>"); marker >= 0 {
+		output = output[:marker]
+	}
+	return strings.TrimSpace(output)
 }
 
 func finalResponseText(msg model.Message) string {

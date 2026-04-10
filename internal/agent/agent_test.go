@@ -458,6 +458,34 @@ func TestShouldNotRetryEmptyToolAnswerTwice(t *testing.T) {
 	}
 }
 
+func TestShouldRetryEmptyToolAnswerAgainForNewToolBlock(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "do the whole task"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "write_file",
+				Arguments: `{"path":"sample.txt","content":"x"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("wrote sample.txt")},
+		{Role: "user", Content: emptyToolAnswerRetryReminder},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"cat sample.txt"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-2", Content: annotateToolResult("x")},
+	}
+	if !shouldRetryEmptyToolAnswer(messages, model.Message{}) {
+		t.Fatalf("expected a new tool block to allow another retry")
+	}
+}
+
 func TestShouldRetryFailedCommandAfterEmptyAnswer(t *testing.T) {
 	messages := []model.Message{
 		{Role: "user", Content: "run calc.py and tell me the result"},
@@ -492,6 +520,34 @@ func TestShouldNotRetryFailedCommandTwice(t *testing.T) {
 	}
 	if shouldRetryFailedCommand(messages, model.Message{}) {
 		t.Fatalf("expected failed-command reminder to suppress another retry")
+	}
+}
+
+func TestShouldRetryFailedCommandAgainForNewToolBlock(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "keep trying"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"missing-a"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command failed\nmissing-a: command not found")},
+		{Role: "user", Content: failedCommandRetryReminder},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"missing-b"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-2", Content: annotateToolResult("tool error: command failed\nmissing-b: command not found")},
+	}
+	if !shouldRetryFailedCommand(messages, model.Message{}) {
+		t.Fatalf("expected a new failed command block to allow another retry")
 	}
 }
 
@@ -538,6 +594,26 @@ func TestDecideTurnRetriesOnFailedCommandRecovery(t *testing.T) {
 	decision := decideTurn(messages, model.Message{})
 	if decision.action != turnActionRetry || decision.reminder != failedCommandRetryReminder {
 		t.Fatalf("expected failed-command retry decision, got %#v", decision)
+	}
+}
+
+func TestDecideTurnUsesToolOutputAfterRepeatedEmptyAnswer(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "show the output"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"printf done"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("done")},
+		{Role: "user", Content: emptyToolAnswerRetryReminder},
+	}
+	decision := decideTurn(messages, model.Message{})
+	if decision.action != turnActionFinish || decision.final != "done" {
+		t.Fatalf("expected fallback final from tool output, got %#v", decision)
 	}
 }
 
@@ -1454,6 +1530,48 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected todo reminder in request 4 messages: %#v", fourth.Messages)
+	}
+}
+
+func TestRunTaskRetriesAgainForNewToolBlockAndFallsBackFromToolOutput(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "write_file",
+					Arguments: `{"path":"sample.txt","content":"hello"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "run_command",
+					Arguments: `{"command":"printf second-output"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{}}}},
+			{Choices: []model.Choice{{Message: model.Message{}}}},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	result, err := a.NewSession().RunTask(context.Background(), "do the multi-step task")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "second-output" {
+		t.Fatalf("expected fallback final from latest tool output, got %q", result.Final)
+	}
+	if len(client.requests) != 5 {
+		t.Fatalf("expected two retries plus fallback, got %d requests", len(client.requests))
+	}
+	secondRetry := client.requests[4].Messages[len(client.requests[4].Messages)-1]
+	if secondRetry.Role != "user" || !strings.HasPrefix(model.ContentString(secondRetry.Content), emptyToolAnswerRetryReminder) {
+		t.Fatalf("expected second answer-now reminder for new tool block, got %#v", secondRetry)
 	}
 }
 
