@@ -101,6 +101,10 @@ func defaultStateDir(workDir string) string {
 	return newDir
 }
 
+func DefaultStateDir(workDir string) string {
+	return defaultStateDir(workDir)
+}
+
 func (c *Config) SetCommandTimeout(text string) error {
 	d, err := time.ParseDuration(text)
 	if err != nil {

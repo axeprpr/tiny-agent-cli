@@ -1691,6 +1691,72 @@ func TestRunTaskHandlesLongContextDuringLocalPackageInstall(t *testing.T) {
 	}
 }
 
+func TestRunTaskCompactsOversizedToolOutputBeforeNextRequest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell commands are bash-specific")
+	}
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{
+								{
+									ID:   "call-1",
+									Type: "function",
+									Function: model.ToolFunction{
+										Name:      "run_command",
+										Arguments: `{"command":"for i in $(seq 1 700); do printf 'row=%04d payload=abcdefghij\\n' \"$i\"; done; printf 'TAIL=omega\\n'","timeout_seconds":30}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "summarized"},
+					},
+				},
+			},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", 30*time.Second, nil), 32768, nil)
+	result, err := a.NewSession().RunTask(context.Background(), "Collect the command output and summarize it.")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "summarized" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(client.requests))
+	}
+
+	var toolText string
+	for _, msg := range client.requests[1].Messages {
+		if msg.Role == "tool" {
+			toolText = model.ContentString(msg.Content)
+		}
+	}
+	if toolText == "" {
+		t.Fatalf("expected compacted tool output in second request")
+	}
+	if !strings.Contains(toolText, "[tool output truncated:") {
+		t.Fatalf("expected truncation header, got %q", toolText)
+	}
+	if !strings.Contains(toolText, "TAIL=omega") {
+		t.Fatalf("expected tail fact to survive compaction, got %q", toolText)
+	}
+	if len(toolText) > maxToolMessageChars+len("\n\n"+postToolAnswerReminder)+200 {
+		t.Fatalf("expected compacted tool text to stay bounded, got %d chars", len(toolText))
+	}
+}
+
 func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{

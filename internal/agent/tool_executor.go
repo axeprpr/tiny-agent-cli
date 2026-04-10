@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -164,7 +165,7 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 	}
 	e.agent.registry.RecordToolAudit(ctx, inv, outcome, status)
 
-	output := truncateToolMessage(outcome.Output, maxToolMessageChars)
+	output := compactToolResultForConversation(truncateToolMessage(outcome.Output, maxToolMessageChars), maxToolMessageChars)
 	if outcome.Err != nil {
 		errLine := "tool error: " + outcome.Err.Error()
 		if strings.TrimSpace(output) == "" {
@@ -191,6 +192,19 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 		ToolCallID: call.ID,
 		Content:    annotateToolResult(output),
 	}
+}
+
+func compactToolResultForConversation(output string, limit int) string {
+	output = strings.TrimSpace(output)
+	if output == "" || limit <= 0 || len(output) <= limit {
+		return output
+	}
+	header := fmt.Sprintf("[tool output truncated: %d chars, %d lines]\n", len(output), strings.Count(output, "\n")+1)
+	bodyLimit := limit - len(header)
+	if bodyLimit < 120 {
+		bodyLimit = 120
+	}
+	return header + truncateToolMessage(output, bodyLimit)
 }
 
 func resultDuration(result tools.ToolResult) time.Duration {

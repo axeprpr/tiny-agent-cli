@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -262,6 +263,44 @@ func TestParseAgentFlagsRejectsStructuredChatOutput(t *testing.T) {
 	}
 }
 
+func TestParseAgentFlagsStateDirFollowsWorkDirByDefault(t *testing.T) {
+	t.Setenv("AGENT_STATE_DIR", "")
+	dir := t.TempDir()
+
+	cfg, _, _, _, err := parseAgentFlags("chat", []string{
+		"--workdir", dir,
+		"--base-url", "http://example.test/v1",
+		"--model", "test-model",
+	})
+	if err != nil {
+		t.Fatalf("parseAgentFlags returned error: %v", err)
+	}
+
+	want := filepath.Join(dir, ".tacli")
+	if cfg.StateDir != want {
+		t.Fatalf("unexpected state dir: got %q want %q", cfg.StateDir, want)
+	}
+}
+
+func TestParseAgentFlagsPreservesExplicitStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("AGENT_STATE_DIR", stateDir)
+
+	cfg, _, _, _, err := parseAgentFlags("chat", []string{
+		"--workdir", workDir,
+		"--base-url", "http://example.test/v1",
+		"--model", "test-model",
+	})
+	if err != nil {
+		t.Fatalf("parseAgentFlags returned error: %v", err)
+	}
+
+	if cfg.StateDir != stateDir {
+		t.Fatalf("unexpected state dir: got %q want %q", cfg.StateDir, stateDir)
+	}
+}
+
 func TestShouldPromptForLanguage(t *testing.T) {
 	if !shouldPromptForLanguage("chat", true) {
 		t.Fatalf("expected interactive chat to prompt for language")
@@ -442,9 +481,11 @@ func (chatClientStub) Complete(_ context.Context, _ model.Request) (model.Respon
 type scriptedChatClient struct {
 	responses []model.Response
 	requests  int
+	log       []model.Request
 }
 
-func (s *scriptedChatClient) Complete(_ context.Context, _ model.Request) (model.Response, error) {
+func (s *scriptedChatClient) Complete(_ context.Context, req model.Request) (model.Response, error) {
+	s.log = append(s.log, req)
 	if s.requests >= len(s.responses) {
 		return model.Response{}, nil
 	}
@@ -701,6 +742,133 @@ func TestDebugTurnCommand(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "decision=finish") {
 		t.Fatalf("expected final turn summary, got %q", result.output)
+	}
+}
+
+func TestSavedSessionStateCanResumeToolWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	client1 := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "write_file",
+									Arguments: `{"path":"session-note.txt","content":"resume-me"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "note written"},
+					},
+				},
+			},
+		},
+	}
+	r1 := newScriptedRuntime(t, dir, "resume-tools", client1)
+	if output, err := r1.executeTask(context.Background(), "Create the session note."); err != nil {
+		t.Fatalf("first executeTask: %v", err)
+	} else if output != "note written" {
+		t.Fatalf("unexpected first output: %q", output)
+	}
+
+	state, err := session.Load(r1.statePath)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	if len(state.Messages) == 0 {
+		t.Fatalf("expected saved session messages")
+	}
+
+	client2 := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-2",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "read_file",
+									Arguments: `{"path":"session-note.txt"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "resume verified"},
+					},
+				},
+			},
+		},
+	}
+	r2 := newScriptedRuntime(t, dir, "resume-tools", client2)
+	r2.session.ReplaceMessages(state.Messages)
+
+	if output, err := r2.executeTask(context.Background(), "Continue and verify the session note."); err != nil {
+		t.Fatalf("second executeTask: %v", err)
+	} else if output != "resume verified" {
+		t.Fatalf("unexpected second output: %q", output)
+	}
+	if len(client2.log) == 0 {
+		t.Fatalf("expected restored session to make a model request")
+	}
+
+	foundPriorWrite := false
+	for _, msg := range client2.log[0].Messages {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "session-note.txt") {
+			foundPriorWrite = true
+			break
+		}
+	}
+	if !foundPriorWrite {
+		t.Fatalf("expected restored request to include prior tool history: %#v", client2.log[0].Messages)
+	}
+}
+
+func TestSessionLoadCommandRestoresSavedMemory(t *testing.T) {
+	dir := t.TempDir()
+	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
+
+	if result := r.executeCommand("/memory remember original-note"); !result.handled {
+		t.Fatalf("expected memory command to be handled")
+	}
+	if result := r.executeCommand("/session save"); !result.handled || !strings.Contains(result.output, "session saved") {
+		t.Fatalf("unexpected save result: %#v", result)
+	}
+	if result := r.executeCommand("/session other"); !result.handled || !strings.Contains(result.output, "started session other") {
+		t.Fatalf("unexpected switch result: %#v", result)
+	}
+	if result := r.executeCommand("/memory remember other-note"); !result.handled {
+		t.Fatalf("expected memory command to be handled")
+	}
+	if result := r.executeCommand("/session load source"); !result.handled || !strings.Contains(result.output, "session restored: source") {
+		t.Fatalf("unexpected load result: %#v", result)
+	}
+
+	show := r.executeCommand("/memory show")
+	if !show.handled {
+		t.Fatalf("expected memory show handled")
+	}
+	if !strings.Contains(show.output, "original-note") {
+		t.Fatalf("expected restored memory note, got %q", show.output)
+	}
+	if strings.Contains(show.output, "other-note") {
+		t.Fatalf("expected other session memory to be replaced, got %q", show.output)
 	}
 }
 
@@ -1024,4 +1192,105 @@ func TestBeforeExitCtrlCStyleSkipsAutoMemorySummarization(t *testing.T) {
 	if !reflect.DeepEqual(r.projectMemory, []string{"existing note"}) {
 		t.Fatalf("unexpected project memory: %#v", r.projectMemory)
 	}
+}
+
+func TestRunChatProcessesNulSeparatedCommandsEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENT_SETTINGS_SYNC", "false")
+
+	stdinFile, err := os.CreateTemp(t.TempDir(), "chat-input-*.txt")
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	input := "/memory remember alpha\x00/memory remember beta\x00/memory show\n"
+	if _, err := stdinFile.WriteString(input); err != nil {
+		t.Fatalf("write stdin file: %v", err)
+	}
+	if _, err := stdinFile.Seek(0, 0); err != nil {
+		t.Fatalf("rewind stdin file: %v", err)
+	}
+	defer stdinFile.Close()
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	defer stdoutR.Close()
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+
+	oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = stdinFile, stdoutW, stderrW
+	defer func() {
+		os.Stdin, os.Stdout, os.Stderr = oldStdin, oldStdout, oldStderr
+	}()
+
+	code := runChat([]string{
+		"--workdir", dir,
+		"--base-url", "http://example.test/v1",
+		"--model", "test-model",
+		"--api-key", "test-key",
+		"--session", "nul-batch",
+	})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+
+	stdoutBytes, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runChat exit code = %d, stderr=%q", code, string(stderrBytes))
+	}
+	if strings.TrimSpace(string(stdoutBytes)) != "" {
+		t.Fatalf("expected no stdout for slash commands, got %q", string(stdoutBytes))
+	}
+	stderrText := string(stderrBytes)
+	if !strings.Contains(stderrText, "project_notes=2") {
+		t.Fatalf("expected both NUL-separated commands to run, got %q", stderrText)
+	}
+	if !strings.Contains(stderrText, "alpha") || !strings.Contains(stderrText, "beta") {
+		t.Fatalf("expected remembered notes in stderr output, got %q", stderrText)
+	}
+}
+
+func newScriptedRuntime(t *testing.T, dir, sessionName string, client *scriptedChatClient) *chatRuntime {
+	t.Helper()
+	cfg := config.Config{
+		Model:          "test-model",
+		BaseURL:        "http://127.0.0.1:11434/v1",
+		APIKey:         "test-key",
+		WorkDir:        dir,
+		StateDir:       dir,
+		ContextWindow:  32768,
+		MaxSteps:       4,
+		CommandTimeout: time.Second,
+		ModelTimeout:   time.Second,
+		Shell:          "bash",
+		ApprovalMode:   tools.ApprovalDangerously,
+		SettingsSync:   false,
+	}
+	loop := agent.New(client, tools.NewRegistry(dir, "bash", time.Second, nil, nil), 32768, nil)
+	r := &chatRuntime{
+		cfg:            cfg,
+		reader:         bufio.NewReader(strings.NewReader("")),
+		approver:       tools.NewTerminalApprover(bufio.NewReader(strings.NewReader("")), os.Stderr, tools.ApprovalDangerously, true),
+		loop:           loop,
+		session:        loop.NewSession(),
+		sessionName:    sessionName,
+		outputMode:     "raw",
+		transcriptPath: session.TranscriptPath(dir, sessionName),
+		statePath:      session.SessionPath(dir, sessionName),
+		memoryPath:     memory.Path(dir),
+		scopeKey:       memory.ScopeKey(dir),
+	}
+	r.refreshMemoryContext()
+	return r
 }

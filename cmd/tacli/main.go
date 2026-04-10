@@ -2697,6 +2697,9 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 	if err := fs.Parse(args); err != nil {
 		return cfg, runtimeOptions{}, nil, nil, err
 	}
+	if strings.TrimSpace(os.Getenv("AGENT_STATE_DIR")) == "" {
+		cfg.StateDir = config.DefaultStateDir(cfg.WorkDir)
+	}
 	if dangerously {
 		cfg.ApprovalMode = tools.PermissionModeDangerFullAccess
 	}

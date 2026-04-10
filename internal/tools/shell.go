@@ -77,6 +77,9 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	if err := validateCommand(command); err != nil {
 		return "", err
 	}
+	if err := validateForegroundCommand(command); err != nil {
+		return "", err
+	}
 	if t.approver != nil {
 		approved, err := t.approver.ApproveCommand(ctx, command)
 		if err != nil {
@@ -197,6 +200,16 @@ func validateCommand(command string) error {
 	return nil
 }
 
+func validateForegroundCommand(command string) error {
+	for _, part := range splitShellCommands(command) {
+		if !looksLikeForegroundLongRunningCommand(part) {
+			continue
+		}
+		return fmt.Errorf("command appears to start a long-running foreground process; background it explicitly or use start_background_job")
+	}
+	return nil
+}
+
 func splitShellCommands(command string) []string {
 	var out []string
 	var b strings.Builder
@@ -241,6 +254,57 @@ func splitShellCommands(command string) []string {
 	}
 	flush()
 	return out
+}
+
+func looksLikeForegroundLongRunningCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(command)), " "))
+	if normalized == "" {
+		return false
+	}
+	if strings.Contains(normalized, "&") {
+		return false
+	}
+	if strings.Contains(normalized, " nohup ") || strings.HasPrefix(normalized, "nohup ") {
+		return false
+	}
+	if strings.Contains(normalized, " setsid ") || strings.HasPrefix(normalized, "setsid ") {
+		return false
+	}
+	if strings.Contains(normalized, " timeout ") || strings.HasPrefix(normalized, "timeout ") {
+		return false
+	}
+	if strings.Contains(normalized, " gtimeout ") || strings.HasPrefix(normalized, "gtimeout ") {
+		return false
+	}
+
+	switch {
+	case strings.HasPrefix(normalized, "tail -f "),
+		strings.HasPrefix(normalized, "tail -f"),
+		strings.HasPrefix(normalized, "tail -F "),
+		strings.HasPrefix(normalized, "watch "),
+		strings.HasPrefix(normalized, "top"),
+		strings.HasPrefix(normalized, "htop"),
+		strings.HasPrefix(normalized, "less "),
+		strings.HasPrefix(normalized, "more "),
+		strings.HasPrefix(normalized, "python -m http.server"),
+		strings.HasPrefix(normalized, "python3 -m http.server"),
+		strings.HasPrefix(normalized, "npm run dev"),
+		strings.HasPrefix(normalized, "npm start"),
+		strings.HasPrefix(normalized, "pnpm dev"),
+		strings.HasPrefix(normalized, "pnpm start"),
+		strings.HasPrefix(normalized, "yarn dev"),
+		strings.HasPrefix(normalized, "yarn start"),
+		strings.HasPrefix(normalized, "vite"),
+		strings.HasPrefix(normalized, "next dev"),
+		strings.HasPrefix(normalized, "next start"),
+		strings.HasPrefix(normalized, "uvicorn "),
+		strings.HasPrefix(normalized, "gunicorn "),
+		strings.HasPrefix(normalized, "docker compose up"),
+		strings.HasPrefix(normalized, "docker-compose up"):
+		return true
+	default:
+		return false
+	}
 }
 
 func isDangerousRMInvocation(command string) bool {

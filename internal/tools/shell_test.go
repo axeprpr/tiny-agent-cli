@@ -131,3 +131,34 @@ func TestRunCommandToolPreservesExplicitCacheEnv(t *testing.T) {
 		t.Fatalf("unexpected env output: %q", out)
 	}
 }
+
+func TestRunCommandToolRejectsForegroundLongRunningCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	_, err := tool.Call(context.Background(), json.RawMessage(`{"command":"tail -f /dev/null"}`))
+	if err == nil || !strings.Contains(err.Error(), "long-running foreground process") {
+		t.Fatalf("expected foreground-process rejection, got %v", err)
+	}
+}
+
+func TestRunCommandToolAllowsExplicitBackgroundingForLongRunningCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"tail -f /dev/null >/dev/null 2>&1 & pid=$!; sleep 0.1; kill $pid >/dev/null 2>&1; wait $pid 2>/dev/null; echo ok"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
