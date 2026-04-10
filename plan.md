@@ -19,7 +19,7 @@ Reference baseline: `ultraworkers/claw-code`
    - Support explicit allow/deny patterns for common risky commands.
    - Persist and inspect those rules from chat and CLI entrypoints.
 
-4. [ ] Build a parity harness inspired by claw-code
+4. [x] Build a parity harness inspired by claw-code
    - Add deterministic runtime scenarios for tool loops, retries, sessions, and command failures.
    - Keep live-model E2E tests separate from fast deterministic coverage.
    - Use the harness to pin down provider-compatibility regressions.
