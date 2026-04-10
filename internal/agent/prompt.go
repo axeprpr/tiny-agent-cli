@@ -13,6 +13,7 @@ type PromptContext struct {
 	Model        string
 	ToolNames    []string
 	Skills       []PromptSkill
+	Capabilities []PromptCapability
 	Instructions []PromptInstructionFile
 	GitBranch    string
 	GitStatus    string
@@ -24,6 +25,14 @@ type PromptSkill struct {
 	Name        string
 	Description string
 	Path        string
+}
+
+type PromptCapability struct {
+	Name        string
+	Description string
+	When        string
+	Roles       []string
+	Tools       []string
 }
 
 type PromptInstructionFile struct {
@@ -73,6 +82,7 @@ func BuildSystemPrompt(ctx PromptContext) string {
 		renderRoleSection(ctx),
 		renderToolSection(ctx.ToolNames),
 		renderSkillSection(ctx.Skills),
+		renderCapabilitySection(ctx.Capabilities),
 		renderMemorySection(ctx.MemoryText),
 	}
 	var out []string
@@ -228,6 +238,45 @@ func renderSkillSection(skills []PromptSkill) string {
 		return ""
 	}
 	return "Available skills:\n- " + strings.Join(lines, "\n- ")
+}
+
+func renderCapabilitySection(capabilities []PromptCapability) string {
+	if len(capabilities) == 0 {
+		return ""
+	}
+	items := append([]PromptCapability(nil), capabilities...)
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	if len(items) > 8 {
+		items = items[:8]
+	}
+
+	var lines []string
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		line := name
+		if desc := strings.TrimSpace(item.Description); desc != "" {
+			line += ": " + desc
+		}
+		if when := strings.TrimSpace(item.When); when != "" {
+			line += " Use when: " + when
+		}
+		if len(item.Roles) > 0 {
+			line += " roles=" + strings.Join(item.Roles, ",")
+		}
+		if len(item.Tools) > 0 {
+			line += " tools=" + strings.Join(item.Tools, ",")
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Capability packs:\n- " + strings.Join(lines, "\n- ")
 }
 
 func renderMemorySection(memoryText string) string {

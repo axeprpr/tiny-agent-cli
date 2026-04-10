@@ -223,6 +223,11 @@ func TestCLIParityControlPlaneScenario(t *testing.T) {
 		t.Fatalf("skills failed: %#v", result)
 	}
 
+	result = runCLIHarness(t, workDir, []string{"capabilities", "--workdir", workDir, "repo-research"}, nil)
+	if result.code != 0 || !strings.Contains(result.stdout, "repo-research:") {
+		t.Fatalf("capabilities failed: %#v", result)
+	}
+
 	result = runCLIHarness(t, workDir, []string{"status", "--workdir", workDir}, nil)
 	if result.code != 0 {
 		t.Fatalf("status failed: %#v", result)
@@ -230,6 +235,7 @@ func TestCLIParityControlPlaneScenario(t *testing.T) {
 	for _, want := range []string{
 		"plan=" + filepath.Join(workDir, "plan.md"),
 		"skills=",
+		"capabilities=",
 		"sessions=0",
 		"command_rules=0",
 	} {

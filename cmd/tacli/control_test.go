@@ -115,12 +115,53 @@ func TestRunStatusPrintsWorkspaceState(t *testing.T) {
 		"sessions=1",
 		"command_rules=1",
 		"skills=",
+		"capabilities=",
 		"policy=" + tools.PermissionPath(stateDir),
 		"audit=" + tools.AuditPath(stateDir),
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected status output to contain %q, got %q", want, output)
 		}
+	}
+}
+
+func TestRunCapabilitiesListsPacks(t *testing.T) {
+	dir := t.TempDir()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	defer stdoutR.Close()
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	defer func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+	}()
+
+	code := runCapabilities([]string{"--workdir", dir, "repo-research"})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+
+	stdoutBytes, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runCapabilities exit code = %d, stderr=%q", code, string(stderrBytes))
+	}
+	text := string(stdoutBytes)
+	if !strings.Contains(text, "repo-research:") || !strings.Contains(text, "roles: explore, plan") {
+		t.Fatalf("expected repo-research pack, got %q", text)
 	}
 }
 

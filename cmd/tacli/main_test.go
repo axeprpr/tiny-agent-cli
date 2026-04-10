@@ -238,6 +238,14 @@ func TestPolicyCommandManagesCommandRules(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesCommandShowsNamedPack(t *testing.T) {
+	r := &chatRuntime{}
+	result := r.capabilitiesCommand([]string{"/capabilities", "release"})
+	if !strings.Contains(result, "release:") || !strings.Contains(result, "tools:") {
+		t.Fatalf("unexpected capabilities output: %q", result)
+	}
+}
+
 type stubApprover struct{}
 
 func newStubApprover() stubApprover {

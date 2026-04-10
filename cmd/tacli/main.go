@@ -136,6 +136,8 @@ func run(args []string) int {
 		return runStatus(args[1:])
 	case "skills":
 		return runSkills(args[1:])
+	case "capabilities", "capability":
+		return runCapabilities(args[1:])
 	case "ping":
 		return pingModel(args[1:])
 	case "models":
@@ -475,6 +477,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.reloadPluginsCommand(), exitCode: -1}
 	case "/skills":
 		return runtimeCommandResult{handled: true, output: r.skillsCommand(), exitCode: -1}
+	case "/capabilities", "/capability":
+		return runtimeCommandResult{handled: true, output: r.capabilitiesCommand(fields), exitCode: -1}
 	case "/audit":
 		return runtimeCommandResult{handled: true, output: r.auditCommand(fields), exitCode: -1}
 	case "/debug-tool-call":
@@ -1189,6 +1193,20 @@ func (r *chatRuntime) policyCommand(fields []string, input string) string {
 
 func (r *chatRuntime) skillsCommand() string {
 	return formatSkills(r.skills)
+}
+
+func (r *chatRuntime) capabilitiesCommand(fields []string) string {
+	if len(fields) == 1 {
+		return formatCapabilities(tools.BundledCapabilityPacks())
+	}
+	if len(fields) == 2 {
+		pack, ok := tools.FindCapabilityPack(fields[1])
+		if !ok {
+			return "unknown capability: " + fields[1]
+		}
+		return formatCapabilities([]tools.CapabilityPack{pack})
+	}
+	return "usage: /capabilities [name]"
 }
 
 func (r *chatRuntime) tasksCommand(fields []string, input string) string {
@@ -3318,6 +3336,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  tacli run [--dangerously] <task>")
 	fmt.Fprintln(os.Stderr, "  tacli status [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli skills [--workdir <path>]")
+	fmt.Fprintln(os.Stderr, "  tacli capabilities [--workdir <path>] [name]")
 	fmt.Fprintln(os.Stderr, "  tacli <task>          # shorthand for run")
 	fmt.Fprintln(os.Stderr, "  tacli ping [flags]")
 	fmt.Fprintln(os.Stderr, "  tacli models [flags]")

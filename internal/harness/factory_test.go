@@ -56,6 +56,9 @@ func TestBuildPromptContextUsesSortedToolNamesAndRole(t *testing.T) {
 	if !reflect.DeepEqual(ctx.ToolNames, expectedToolNames) {
 		t.Fatalf("unexpected tool names: %#v", ctx.ToolNames)
 	}
+	if len(ctx.Capabilities) == 0 {
+		t.Fatalf("expected bundled capabilities in prompt context")
+	}
 }
 
 func TestRoleFromSessionMode(t *testing.T) {

@@ -73,6 +73,7 @@ var messagesCN = map[string]string{
   /plugin               列出或加载插件
   /reload-plugins       重新加载已加载插件
   /skills               列出已发现技能
+  /capabilities         列出内置能力包
   /scope                显示项目作用域
   /model <name>         切换模型
   /policy ...           查看或调整持久化工具与命令策略

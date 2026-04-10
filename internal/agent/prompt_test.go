@@ -65,6 +65,23 @@ func TestBuildSystemPromptIncludesSkills(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptIncludesCapabilities(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		Capabilities: []PromptCapability{{
+			Name:        "repo-research",
+			Description: "Map a repository before implementation.",
+			When:        "Use for onboarding.",
+			Roles:       []string{"explore", "plan"},
+			Tools:       []string{"read_file", "run_command"},
+		}},
+	})
+	for _, want := range []string{"Capability packs:", "repo-research: Map a repository", "roles=explore,plan", "tools=read_file,run_command"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptIncludesGitContext(t *testing.T) {
 	prompt := BuildSystemPrompt(PromptContext{
 		GitBranch: "main",

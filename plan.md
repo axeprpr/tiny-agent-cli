@@ -24,7 +24,7 @@ Reference baseline: `ultraworkers/claw-code`
    - Keep live-model E2E tests separate from fast deterministic coverage.
    - Use the harness to pin down provider-compatibility regressions.
 
-5. [ ] Introduce a capability layer
+5. [x] Introduce a capability layer
    - Group higher-level workflows into capability packs instead of adding more loose tools.
    - Promote agent roles and task modes into explicit runtime objects.
    - Use that layer to stage future LSP integration and project init extensions.

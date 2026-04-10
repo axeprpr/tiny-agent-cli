@@ -78,6 +78,7 @@ var messagesEN = map[string]string{
   /plugin               List or load plugins
   /reload-plugins       Reload already loaded plugins
   /skills               List discovered skills
+  /capabilities         List bundled capability packs
   /scope                Show current project scope key
   /model <name>         Switch model for this session
   /policy ...           Show or change persisted tool and command policy

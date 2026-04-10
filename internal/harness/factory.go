@@ -70,6 +70,16 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 			})
 		}
 	}
+	capabilities := make([]agent.PromptCapability, 0, len(tools.BundledCapabilityPacks()))
+	for _, pack := range tools.BundledCapabilityPacks() {
+		capabilities = append(capabilities, agent.PromptCapability{
+			Name:        pack.Name,
+			Description: pack.Description,
+			When:        pack.When,
+			Roles:       append([]string(nil), pack.Roles...),
+			Tools:       append([]string(nil), pack.Tools...),
+		})
+	}
 	instructions, _ := discoverInstructionFiles(cfg.WorkDir)
 	gitBranch, gitStatus := gitPromptContext(cfg.WorkDir)
 	return agent.PromptContext{
@@ -80,6 +90,7 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 		Model:        cfg.Model,
 		ToolNames:    toolNames,
 		Skills:       skills,
+		Capabilities: capabilities,
 		Instructions: instructions,
 		GitBranch:    gitBranch,
 		GitStatus:    gitStatus,

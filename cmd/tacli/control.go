@@ -97,6 +97,32 @@ func runSkills(args []string) int {
 	return 0
 }
 
+func runCapabilities(args []string) int {
+	_, extra, err := parseWorkspaceFlags("capabilities", args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid capabilities config: %v\n", err)
+		printCapabilitiesUsage()
+		return 2
+	}
+	switch len(extra) {
+	case 0:
+		fmt.Println(formatCapabilities(tools.BundledCapabilityPacks()))
+		return 0
+	case 1:
+		pack, ok := tools.FindCapabilityPack(extra[0])
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown capability: %s\n", extra[0])
+			return 1
+		}
+		fmt.Println(formatCapabilities([]tools.CapabilityPack{pack}))
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "invalid capabilities config: unexpected arguments: %s\n", strings.Join(extra, " "))
+		printCapabilitiesUsage()
+		return 2
+	}
+}
+
 func readPlanFile(workDir string) (string, string, error) {
 	paths := []string{
 		filepath.Join(workDir, "plan.md"),
@@ -145,6 +171,7 @@ func renderWorkspaceStatus(cfg config.Config) string {
 	lines = append(lines,
 		fmt.Sprintf("instructions=%d", len(ctx.Instructions)),
 		fmt.Sprintf("skills=%d", len(ctx.Skills)),
+		fmt.Sprintf("capabilities=%d", len(ctx.Capabilities)),
 		fmt.Sprintf("sessions=%d", len(summaries)),
 		fmt.Sprintf("command_rules=%d", commandRules),
 		"memory="+presenceStatus(memPath),
@@ -172,6 +199,36 @@ func formatSkills(skills []tools.Skill) string {
 	return strings.Join(lines, "\n")
 }
 
+func formatCapabilities(packs []tools.CapabilityPack) string {
+	if len(packs) == 0 {
+		return "no capability packs available"
+	}
+	blocks := make([]string, 0, len(packs))
+	for _, pack := range packs {
+		var lines []string
+		lines = append(lines, pack.Name+": "+pack.Description)
+		if strings.TrimSpace(pack.When) != "" {
+			lines = append(lines, "when: "+pack.When)
+		}
+		if len(pack.Roles) > 0 {
+			lines = append(lines, "roles: "+strings.Join(pack.Roles, ", "))
+		}
+		if len(pack.Tools) > 0 {
+			lines = append(lines, "tools: "+strings.Join(pack.Tools, ", "))
+		}
+		if len(pack.Steps) > 0 {
+			lines = append(lines, "steps:")
+			for _, step := range pack.Steps {
+				if strings.TrimSpace(step) != "" {
+					lines = append(lines, "- "+strings.TrimSpace(step))
+				}
+			}
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
 func presenceStatus(path string) string {
 	if _, err := os.Stat(path); err == nil {
 		return path
@@ -192,4 +249,9 @@ func printStatusUsage() {
 func printSkillsUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  tacli skills [--workdir <path>]")
+}
+
+func printCapabilitiesUsage() {
+	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  tacli capabilities [--workdir <path>] [name]")
 }
