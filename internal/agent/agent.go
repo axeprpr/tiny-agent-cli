@@ -26,6 +26,7 @@ const (
 
 const syntheticSummaryPrefix = "[compacted summary]"
 const todoNagPrefix = "[todo reminder]"
+const systemReminderTag = "<system-reminder>"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
 const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
@@ -234,8 +235,7 @@ func (s *Session) TurnSummaries() []TurnSummary {
 }
 
 func (s *Session) ReplaceMessages(messages []model.Message) {
-	s.messages = make([]model.Message, len(messages))
-	copy(s.messages, messages)
+	s.messages = normalizeSystemMessages(messages)
 }
 
 func (s *Session) SetAgent(agent *Agent) {
@@ -453,11 +453,52 @@ func hasRepeatedToolLoop(messages []model.Message, window int) bool {
 
 func (s *Session) buildRequest() model.Request {
 	req := model.Request{
-		Messages: s.messages,
+		Messages: normalizeSystemMessages(s.messages),
 		Tools:    s.agent.registry.Definitions(),
 	}
 	req.ToolChoice = "auto"
 	return req
+}
+
+func normalizeSystemMessages(messages []model.Message) []model.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]model.Message, 0, len(messages))
+	seenNonSystem := false
+	for _, msg := range messages {
+		msg = copyMessage(msg)
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "system" {
+			if !seenNonSystem && len(out) == 0 {
+				msg.Role = "system"
+				out = append(out, msg)
+				continue
+			}
+			msg.Role = "user"
+			msg.Content = normalizeSystemReminderContent(msg.Content)
+			out = append(out, msg)
+			seenNonSystem = true
+			continue
+		}
+		if role != "" {
+			msg.Role = role
+		}
+		out = append(out, msg)
+		seenNonSystem = true
+	}
+	return out
+}
+
+func normalizeSystemReminderContent(content any) string {
+	text := strings.TrimSpace(model.ContentString(content))
+	if text == "" {
+		return systemReminderTag
+	}
+	if strings.HasPrefix(text, systemReminderTag) {
+		return text
+	}
+	return systemReminderTag + "\n" + text
 }
 
 func annotateToolResult(output string) string {

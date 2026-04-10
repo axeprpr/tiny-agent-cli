@@ -884,8 +884,11 @@ func TestInjectOrchestratorNote(t *testing.T) {
 	r.injectOrchestratorNote("job-001")
 	msgs := r.session.Messages()
 	last := msgs[len(msgs)-1]
-	if last.Role != "system" {
+	if last.Role != "user" {
 		t.Fatalf("unexpected role: %q", last.Role)
+	}
+	if !strings.HasPrefix(model.ContentString(last.Content), "<system-reminder>internal-orchestration") {
+		t.Fatalf("missing system reminder prefix: %q", model.ContentString(last.Content))
 	}
 	if !strings.Contains(model.ContentString(last.Content), "job-001") {
 		t.Fatalf("missing job id in note: %q", model.ContentString(last.Content))
@@ -907,8 +910,11 @@ func TestMaybeApplyReadyJobSummaries(t *testing.T) {
 	r.maybeApplyReadyJobSummaries()
 	msgs := r.session.Messages()
 	last := msgs[len(msgs)-1]
-	if last.Role != "system" {
+	if last.Role != "user" {
 		t.Fatalf("unexpected role: %q", last.Role)
+	}
+	if !strings.HasPrefix(model.ContentString(last.Content), "<system-reminder>background-result") {
+		t.Fatalf("missing system reminder prefix: %q", model.ContentString(last.Content))
 	}
 	if !strings.Contains(model.ContentString(last.Content), "job-001") {
 		t.Fatalf("missing job summary: %q", model.ContentString(last.Content))

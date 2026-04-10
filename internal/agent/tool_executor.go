@@ -165,8 +165,13 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 	e.agent.registry.RecordToolAudit(ctx, inv, outcome, status)
 
 	output := truncateToolMessage(outcome.Output, maxToolMessageChars)
-	if outcome.Err != nil && strings.TrimSpace(output) == "" {
-		output = "tool error: " + outcome.Err.Error()
+	if outcome.Err != nil {
+		errLine := "tool error: " + outcome.Err.Error()
+		if strings.TrimSpace(output) == "" {
+			output = errLine
+		} else if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "tool error:") {
+			output = errLine + "\n" + output
+		}
 	}
 	e.agent.logToolFinish(outcome.Duration, output, outcome.Err)
 	e.agent.emitEvent(ctx, "tool_finish", map[string]any{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -44,6 +45,51 @@ func TestFormatTerminalOutputNormalizesMarkdownTable(t *testing.T) {
 	want := "环境信息统计\n- 操作系统: Ubuntu\n- 架构: x86_64"
 	if got != want {
 		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestReplaceMessagesConvertsMisplacedSystemMessages(t *testing.T) {
+	a := New(stubChatClient{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "base system"},
+		{Role: "user", Content: "hello"},
+		{Role: "system", Content: "late system note"},
+	})
+
+	msgs := session.Messages()
+	if len(msgs) != 3 {
+		t.Fatalf("unexpected message count: %d", len(msgs))
+	}
+	if msgs[0].Role != "system" {
+		t.Fatalf("expected first message to remain system, got %#v", msgs[0])
+	}
+	if msgs[2].Role != "user" {
+		t.Fatalf("expected misplaced system message to become user reminder, got %#v", msgs[2])
+	}
+	if !strings.HasPrefix(model.ContentString(msgs[2].Content), systemReminderTag) {
+		t.Fatalf("expected system reminder tag, got %q", model.ContentString(msgs[2].Content))
+	}
+}
+
+func TestBuildRequestDoesNotSendNonLeadingSystemMessages(t *testing.T) {
+	a := New(stubChatClient{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	session.messages = []model.Message{
+		{Role: "system", Content: "base system"},
+		{Role: "user", Content: "hello"},
+		{Role: "system", Content: "legacy background note"},
+		{Role: "assistant", Content: "ok"},
+	}
+
+	req := session.buildRequest()
+	for i, msg := range req.Messages {
+		if i > 0 && msg.Role == "system" {
+			t.Fatalf("request contained non-leading system message at %d: %#v", i, req.Messages)
+		}
+	}
+	if req.Messages[2].Role != "user" || !strings.Contains(model.ContentString(req.Messages[2].Content), "legacy background note") {
+		t.Fatalf("expected legacy system note to be preserved as user reminder, got %#v", req.Messages[2])
 	}
 }
 
@@ -1411,6 +1457,118 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 }
 
+func TestRunTaskHandlesLongContextDuringLocalPackageInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell commands are bash-specific")
+	}
+	goBin := "/usr/local/go/bin/go"
+	if _, err := os.Stat(goBin); err != nil {
+		if found, lookErr := exec.LookPath("go"); lookErr == nil {
+			goBin = found
+		} else {
+			t.Skip("go toolchain not available")
+		}
+	}
+
+	dir := t.TempDir()
+	cmdDir := filepath.Join(dir, "cmd", "demo-tool")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("mkdir command: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/installfixture\n\ngo 1.25.1\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hello-from-demo-tool\") }\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{
+								{
+									ID:   "call-1",
+									Type: "function",
+									Function: model.ToolFunction{
+										Name:      "run_command",
+										Arguments: fmt.Sprintf(`{"command":"HOME=/root GOBIN=$PWD/bin GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache %s install ./cmd/demo-tool","timeout_seconds":60}`, goBin),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{
+								{
+									ID:   "call-2",
+									Type: "function",
+									Function: model.ToolFunction{
+										Name:      "run_command",
+										Arguments: `{"command":"./bin/demo-tool","timeout_seconds":30}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "Installed demo-tool and verified hello-from-demo-tool."},
+					},
+				},
+			},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(dir, "bash", 90*time.Second, nil), 1200, nil)
+	session := a.NewSession()
+	history := session.Messages()
+	for i := 0; i < 12; i++ {
+		history = append(history,
+			model.Message{Role: "user", Content: strings.Repeat(fmt.Sprintf("previous install requirement %d ", i), 32)},
+			model.Message{Role: "assistant", Content: strings.Repeat(fmt.Sprintf("previous install update %d ", i), 28)},
+		)
+	}
+	session.ReplaceMessages(history)
+
+	result, err := session.RunTask(context.Background(), "Install the local demo-tool binary into ./bin, verify it runs, and summarize the result.")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "Installed demo-tool and verified hello-from-demo-tool." {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three model requests, got %d", len(client.requests))
+	}
+	if !strings.Contains(model.ContentString(client.requests[0].Messages[0].Content), syntheticSummaryPrefix) {
+		t.Fatalf("expected first request to compact long history, got %#v", client.requests[0].Messages[0])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bin", "demo-tool")); err != nil {
+		t.Fatalf("expected installed binary: %v", err)
+	}
+	foundVerification := false
+	for _, msg := range session.Messages() {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "hello-from-demo-tool") {
+			foundVerification = true
+			break
+		}
+	}
+	if !foundVerification {
+		t.Fatalf("expected verification command output in session messages")
+	}
+}
+
 func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{
@@ -1466,6 +1624,70 @@ func TestSessionCanRecoverAfterRepeatedToolFailures(t *testing.T) {
 	}
 	if len(client.requests) != 2 {
 		t.Fatalf("expected second request after recovery, got %d", len(client.requests))
+	}
+}
+
+func TestRunTaskStopsAfterRepeatedRunCommandFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell error text is bash-specific")
+	}
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					{
+						ID:   "call-1",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "run_command",
+							Arguments: `{"command":"false"}`,
+						},
+					},
+					{
+						ID:   "call-2",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "run_command",
+							Arguments: `{"command":"false"}`,
+						},
+					},
+					{
+						ID:   "call-3",
+						Type: "function",
+						Function: model.ToolFunction{
+							Name:      "run_command",
+							Arguments: `{"command":"false"}`,
+						},
+					},
+				},
+			}}}},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", 5*time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	result, err := session.RunTask(context.Background(), "Try the install commands even if they keep failing.")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if !strings.Contains(result.Final, "repeated tool failures") {
+		t.Fatalf("expected repeated tool failure stop, got %q", result.Final)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected stop before a second model request, got %d", len(client.requests))
+	}
+	var toolErrors int
+	for _, msg := range session.Messages() {
+		if msg.Role != "tool" {
+			continue
+		}
+		text := strings.ToLower(model.ContentString(msg.Content))
+		if strings.Contains(text, "tool error:") && strings.Contains(text, "command failed") {
+			toolErrors++
+		}
+	}
+	if toolErrors != 3 {
+		t.Fatalf("expected three failing command tool messages, got %d", toolErrors)
 	}
 }
 

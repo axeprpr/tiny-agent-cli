@@ -1660,8 +1660,8 @@ func (r *chatRuntime) maybeStartAutoExplore(task string) {
 func (r *chatRuntime) injectOrchestratorNote(jobID string) {
 	msgs := r.session.Messages()
 	msgs = append(msgs, model.Message{
-		Role: "system",
-		Content: "Internal orchestration note: background exploration job " + jobID +
+		Role: "user",
+		Content: "<system-reminder>internal-orchestration\nBackground exploration job " + jobID +
 			" is running for the current user request. Keep making progress in the main conversation. " +
 			"Use inspect_background_job or list_background_jobs later if the exploration results would help.",
 	})
@@ -2086,8 +2086,8 @@ func (r *chatRuntime) newSession() *agent.Session {
 func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
 	msgs := r.session.Messages()
 	msgs = append(msgs, model.Message{
-		Role:    "system",
-		Content: "Background result available for the current task. Use it as additional context if relevant:\n" + summarizeJobForSession(snap),
+		Role:    "user",
+		Content: "<system-reminder>background-result\nBackground result available for the current task. Use it as additional context if relevant:\n" + summarizeJobForSession(snap),
 	})
 	r.session.ReplaceMessages(msgs)
 	r.dirtySession = true
