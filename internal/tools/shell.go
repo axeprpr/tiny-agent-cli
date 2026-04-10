@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -99,6 +101,7 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	name, shellArgs := shellInvocation(t.shell, command)
 	cmd := exec.CommandContext(runCtx, name, shellArgs...)
 	cmd.Dir = t.workDir
+	cmd.Env = commandEnv(t.workDir)
 	configureCommandCancellation(cmd)
 
 	data, err := cmd.CombinedOutput()
@@ -120,6 +123,42 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 		return "(no output)", nil
 	}
 	return text, nil
+}
+
+func commandEnv(workDir string) []string {
+	env := append([]string(nil), os.Environ()...)
+	home := envValue(env, "HOME")
+	if home == "" {
+		if detected, err := os.UserHomeDir(); err == nil {
+			home = strings.TrimSpace(detected)
+		}
+		if home == "" {
+			home = strings.TrimSpace(workDir)
+		}
+		if home != "" {
+			env = append(env, "HOME="+home)
+		}
+	}
+
+	cacheHome := envValue(env, "XDG_CACHE_HOME")
+	if cacheHome == "" && home != "" {
+		cacheHome = filepath.Join(home, ".cache")
+		env = append(env, "XDG_CACHE_HOME="+cacheHome)
+	}
+	if envValue(env, "GOCACHE") == "" && cacheHome != "" {
+		env = append(env, "GOCACHE="+filepath.Join(cacheHome, "go-build"))
+	}
+	return env
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(env[i], prefix))
+		}
+	}
+	return ""
 }
 
 func shellInvocation(shell, command string) (string, []string) {

@@ -1398,7 +1398,12 @@ func isContextLengthError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "context length") ||
 		strings.Contains(text, "input tokens") ||
-		strings.Contains(text, "maximum input length")
+		strings.Contains(text, "maximum input length") ||
+		strings.Contains(text, "request entity too large") ||
+		strings.Contains(text, "tokens_limit_reached") ||
+		strings.Contains(text, "request body too large") ||
+		strings.Contains(text, "max size:") ||
+		strings.Contains(text, "too many tokens")
 }
 
 func (a *Agent) logf(format string, args ...any) {

@@ -80,3 +80,54 @@ func TestConfigureCommandCancellationSetsCancel(t *testing.T) {
 		t.Fatalf("expected timeout with cancellation, got %v", err)
 	}
 }
+
+func TestRunCommandToolInjectsDefaultCacheEnvWhenMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("GOCACHE", "")
+
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"printf '%s|%s|%s' \"$HOME\" \"$XDG_CACHE_HOME\" \"$GOCACHE\""}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	parts := strings.Split(strings.TrimSpace(out), "|")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected env output: %q", out)
+	}
+	for i, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			t.Fatalf("expected part %d to be non-empty, got %q", i, out)
+		}
+	}
+	if !strings.HasSuffix(parts[2], "/go-build") {
+		t.Fatalf("expected GOCACHE to end with /go-build, got %q", parts[2])
+	}
+}
+
+func TestRunCommandToolPreservesExplicitCacheEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	t.Setenv("HOME", "/tmp/tacli-home")
+	t.Setenv("XDG_CACHE_HOME", "/tmp/tacli-cache")
+	t.Setenv("GOCACHE", "/tmp/tacli-gocache")
+
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"printf '%s|%s|%s' \"$HOME\" \"$XDG_CACHE_HOME\" \"$GOCACHE\""}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.TrimSpace(out) != "/tmp/tacli-home|/tmp/tacli-cache|/tmp/tacli-gocache" {
+		t.Fatalf("unexpected env output: %q", out)
+	}
+}

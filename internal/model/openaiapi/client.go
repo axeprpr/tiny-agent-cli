@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,7 +61,7 @@ func (c *Client) Complete(ctx context.Context, req model.Request) (model.Respons
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(attempt) * 2 * time.Second
+			backoff := retryBackoffForAttempt(lastErr, attempt)
 			select {
 			case <-ctx.Done():
 				return model.Response{}, ctx.Err()
@@ -104,6 +105,14 @@ func (c *Client) doComplete(ctx context.Context, req model.Request) (model.Respo
 	if resp.StatusCode >= 500 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return model.Response{}, &serverError{status: resp.Status, body: string(data)}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return model.Response{}, &rateLimitError{
+			status:     resp.Status,
+			body:       string(data),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 	if resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -215,6 +224,16 @@ func (e *serverError) Error() string {
 	return fmt.Sprintf("model API returned %s: %s", e.status, strings.TrimSpace(e.body))
 }
 
+type rateLimitError struct {
+	status     string
+	body       string
+	retryAfter time.Duration
+}
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("model API returned %s: %s", e.status, strings.TrimSpace(e.body))
+}
+
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false
@@ -222,11 +241,45 @@ func isRetryableError(err error) bool {
 	if _, ok := err.(*serverError); ok {
 		return true
 	}
+	if _, ok := err.(*rateLimitError); ok {
+		return true
+	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "connection reset") ||
 		strings.Contains(text, "connection refused") ||
 		strings.Contains(text, "eof") ||
 		strings.Contains(text, "timeout")
+}
+
+func retryBackoffForAttempt(err error, attempt int) time.Duration {
+	if rl, ok := err.(*rateLimitError); ok {
+		if rl.retryAfter > 0 {
+			return rl.retryAfter
+		}
+		return time.Duration(attempt) * 200 * time.Millisecond
+	}
+	return time.Duration(attempt) * 2 * time.Second
+}
+
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		d := time.Until(at)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
 }
 
 func (c *Client) Models(ctx context.Context) ([]string, error) {

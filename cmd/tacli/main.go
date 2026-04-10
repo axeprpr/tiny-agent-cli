@@ -277,20 +277,13 @@ func runChat(args []string) int {
 		return runChatTUI(runtime)
 	}
 
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && len(line) == 0 {
-			return 0
-		}
-
-		task := strings.TrimSpace(line)
-		if task == "" {
-			if readErr != nil {
-				return 0
-			}
-			continue
-		}
-
+	tasks, err := readNonInteractiveTasks(reader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+		runtime.beforeExit(true)
+		return 1
+	}
+	for _, task := range tasks {
 		if strings.HasPrefix(task, "/") {
 			result := runtime.executeCommand(task)
 			if result.handled {
@@ -300,10 +293,6 @@ func runChat(args []string) int {
 				if result.exitCode >= 0 {
 					runtime.beforeExit(true)
 					return result.exitCode
-				}
-				if readErr != nil {
-					runtime.beforeExit(true)
-					return 0
 				}
 				continue
 			}
@@ -315,12 +304,36 @@ func runChat(args []string) int {
 		} else {
 			fmt.Println(output)
 		}
-
-		if readErr != nil {
-			runtime.beforeExit(true)
-			return 0
-		}
 	}
+	runtime.beforeExit(true)
+	return 0
+}
+
+func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return nil, nil
+	}
+	if !strings.ContainsRune(text, '\x00') {
+		return []string{text}, nil
+	}
+	parts := strings.Split(text, "\x00")
+	tasks := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tasks = append(tasks, part)
+	}
+	return tasks, nil
 }
 
 func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader) (*chatRuntime, error) {

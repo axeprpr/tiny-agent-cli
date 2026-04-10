@@ -762,12 +762,16 @@ func (s *recordedEventSink) RecordAgentEvent(_ context.Context, event AgentEvent
 
 type scriptedChatClient struct {
 	responses []model.Response
+	errors    []error
 	requests  []model.Request
 }
 
 func (s *scriptedChatClient) Complete(_ context.Context, req model.Request) (model.Response, error) {
 	s.requests = append(s.requests, req)
 	index := len(s.requests) - 1
+	if index < len(s.errors) && s.errors[index] != nil {
+		return model.Response{}, s.errors[index]
+	}
 	if index >= len(s.responses) {
 		return model.Response{}, nil
 	}
@@ -1825,5 +1829,63 @@ func TestConversationSizeUsesTokenApproximation(t *testing.T) {
 	}
 	if cjk <= ascii/2 {
 		t.Fatalf("expected CJK size not to be heavily undercounted: ascii=%d cjk=%d", ascii, cjk)
+	}
+}
+
+func TestIsContextLengthErrorMatchesProviderSpecificLimits(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{err: fmt.Errorf("model API returned 413 Request Entity Too Large: {\"error\":{\"code\":\"tokens_limit_reached\"}}"), want: true},
+		{err: fmt.Errorf("request body too large for gpt-4o model. max size: 8000 tokens"), want: true},
+		{err: fmt.Errorf("context length exceeded"), want: true},
+		{err: fmt.Errorf("model API returned 429 Too Many Requests"), want: false},
+	}
+
+	for _, tt := range cases {
+		got := isContextLengthError(tt.err)
+		if got != tt.want {
+			t.Fatalf("isContextLengthError(%q) = %v, want %v", tt.err.Error(), got, tt.want)
+		}
+	}
+}
+
+func TestRunTaskCompactsAndRetriesOnProvider413(t *testing.T) {
+	client := &scriptedChatClient{
+		errors: []error{
+			fmt.Errorf("model API returned 413 Request Entity Too Large: {\"error\":{\"code\":\"tokens_limit_reached\"}}"),
+		},
+		responses: []model.Response{
+			{},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done after compaction"}}}},
+		},
+	}
+
+	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 900, nil)
+	session := a.NewSession()
+	history := session.Messages()
+	for i := 0; i < 10; i++ {
+		history = append(history,
+			model.Message{Role: "user", Content: strings.Repeat(fmt.Sprintf("old user %d ", i), 40)},
+			model.Message{Role: "assistant", Content: strings.Repeat(fmt.Sprintf("old answer %d ", i), 40)},
+		)
+	}
+	session.ReplaceMessages(history)
+
+	result, err := session.RunTask(context.Background(), "finish now")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "done after compaction" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected retry after context compaction, got %d requests", len(client.requests))
+	}
+	firstSize := conversationSize(client.requests[0].Messages)
+	secondSize := conversationSize(client.requests[1].Messages)
+	if secondSize >= firstSize {
+		t.Fatalf("expected compacted retry request to be smaller: first=%d second=%d", firstSize, secondSize)
 	}
 }

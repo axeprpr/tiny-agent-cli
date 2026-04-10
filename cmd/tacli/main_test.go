@@ -274,6 +274,37 @@ func TestShouldPromptForLanguage(t *testing.T) {
 	}
 }
 
+func TestReadNonInteractiveTasksTreatsMultilineInputAsSingleTask(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("first line\nsecond line\nthird line\n"))
+	tasks, err := readNonInteractiveTasks(reader)
+	if err != nil {
+		t.Fatalf("readNonInteractiveTasks returned error: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected one task, got %d: %#v", len(tasks), tasks)
+	}
+	if tasks[0] != "first line\nsecond line\nthird line" {
+		t.Fatalf("unexpected task content: %q", tasks[0])
+	}
+}
+
+func TestReadNonInteractiveTasksSupportsNulSeparatedBatches(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("first task\x00second task\x00\n\x00third task"))
+	tasks, err := readNonInteractiveTasks(reader)
+	if err != nil {
+		t.Fatalf("readNonInteractiveTasks returned error: %v", err)
+	}
+	want := []string{"first task", "second task", "third task"}
+	if len(tasks) != len(want) {
+		t.Fatalf("unexpected task count: got %d want %d (%#v)", len(tasks), len(want), tasks)
+	}
+	for i := range want {
+		if tasks[i] != want[i] {
+			t.Fatalf("task %d mismatch: got %q want %q", i, tasks[i], want[i])
+		}
+	}
+}
+
 func TestDefaultStartupLanguage(t *testing.T) {
 	oldLCAll := os.Getenv("LC_ALL")
 	oldLCMessages := os.Getenv("LC_MESSAGES")
