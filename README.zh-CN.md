@@ -1,317 +1,295 @@
-# tiny-agent-cli
+# tacli
 
-`tiny-agent-cli` 是一个为离线环境、弱网环境、低依赖环境准备的轻量终端 agent。
+`tacli` 是一个轻量的终端 coding agent，运行时表面积很小：
 
-你可以把它理解成：
-
-- 一个丐版的 `claude-cli`
-- 一个轻量化的 `codex`
-- 一个只靠单文件二进制和 OpenAI 兼容接口就能跑起来的 coding agent
-
-它的定位非常直接：
-
-- 单文件二进制
-- 不需要安装 Node.js
-- 不需要 Python 运行时
+- 一个 Go 二进制
+- 一个工作区
+- 一个 OpenAI 兼容模型接口
+- 不依赖 Node.js
+- 不要求 Python 运行时
 - 不需要 Electron
 - 不需要常驻后台服务
-- 支持 Linux、macOS、Windows 全端运行
-- 只依赖一个 OpenAI 兼容 LLM 接口，也可以接你自己的本地模型服务
-
-它追求的是“小、够用、可控”，不是全家桶。
 
 英文版见 [README.md](README.md)。
 
-## 它为什么存在
-
-很多 agent CLI 很强，但也很重：
-
-- 要装 Node.js
-- 要装一堆额外依赖
-- 初始化链路长
-- 在离线机、服务器、容器、救援环境里不够顺手
-
-`tiny-agent-cli` 走的是反方向：
-
-- 一个二进制
-- 一个模型接口
-- 一个工作目录
-- 不折腾环境
-
-它不是想做最大最全的 agent 平台，而是想做你可以随手丢到任何机器上就开干的那个“丐版 codex”。
-
 ## 它能做什么
 
-- 单次执行任务
-- 多轮交互式会话，支持 SSE 实时流式输出
-- 后台任务并行探索
-- 全局记忆 + 项目记忆
-- 读写文件、精确编辑
-- grep 搜索
-- 执行 shell 命令
-- 抓网页和 web search（DuckDuckGo HTML 抓取）
-- 接本地模型或兼容 OpenAI API 的服务
-- 直接下载原始二进制运行，不需要 zip/tgz 解压流程
+`tacli` 覆盖的是核心 agent 工作流，不把机器变成一整套重平台。
 
-## 核心思路
+核心能力：
 
-- `证据优先执行`
-  内置提示词会推动模型先看文件和命令输出，再做决策。
-- `工具驱动、最小步推进`
-  先调用工具拿证据，再验证结果，然后推进下一步。
-- `默认安全`
-  shell 命令默认要确认。
-- `分层记忆`
-  全局偏好和项目规则分开存，不会把所有上下文都塞进每次会话。
-- `dangerously 模式`
-  你需要速度时，可以整场会话跳过确认。
-- `默认 raw 输出`
-  不强行过度改写模型原生回答。
-- `terminal 输出模式`
-  `chat` 默认走终端友好渲染，`run` 默认保留原生输出。
+- 单次任务执行：`tacli run ...`
+- 交互式多轮会话：`tacli chat`
+- 仓库初始化：`tacli init`
+- 直接控制面命令：`plan`、`status`、`skills`、`capabilities`
+- 读文件、写文件、精确编辑、搜索、抓网页、web search、diff review
+- 带审批和命令模式策略的 shell 执行
+- 用于探索和验证的后台任务
+- 全局、团队、项目三级持久化记忆
+- 注入到提示词中的 capability packs 和本地 skills
+- 保存在 `.tacli/` 下的 session、trace、audit、task 状态
 
-## 命令
-
-- `tacli`
-  交互终端里默认直接进入 chat
-- `tacli -d`
-  直接进入 dangerously 模式的 chat
-- `tacli run [--dangerously] <task>`
-  跑一次任务
-- `tacli <task>`
-  一次性任务的简写
-- `tacli chat`
-  进入等待模式，可以连续提问；在交互终端里会默认进入全屏 TUI
-- `tacli models`
-  查看模型列表
-- `tacli ping`
-  测试接口和模型
-- `tacli version`
-  查看版本
-
-## 命令确认与 dangerously
-
-- `confirm`
-  默认模式。执行 shell 命令和写文件前都会确认。
-- `dangerously`
-  本次运行或本次会话里，跳过 shell 和写文件确认。
-
-示例：
+## 快速开始
 
 ```bash
-tacli
-tacli -d
-tacli "检查这个仓库"
-tacli -d "运行 go test ./..."
-tacli run --dangerously "运行 go test ./..."
+export MODEL_BASE_URL="http://127.0.0.1:11434/v1"
+export MODEL_NAME="your-model"
+
+tacli init
+tacli status
+tacli "inspect this repository and summarize the architecture"
+```
+
+交互模式：
+
+```bash
+tacli chat
+```
+
+信任本地环境时可以直接跳过审批：
+
+```bash
+tacli run --dangerously "go test ./..."
 tacli chat --dangerously
 ```
 
-## 一句话安装
+## 顶层命令
 
-安装脚本会自动识别架构，所以每个平台只保留一条推荐命令。
+| 命令 | 作用 |
+| --- | --- |
+| `tacli` | 在交互终端里进入 chat；非交互环境要求显式任务 |
+| `tacli run <task>` | 执行一次任务并退出 |
+| `tacli chat` | 多轮交互会话 |
+| `tacli init` | 生成 `CLAW.md`、`.claw/` 和本地忽略规则 |
+| `tacli plan` | 输出根目录 `plan.md` |
+| `tacli status` | 输出工作区、状态目录、计划、skills、capabilities、session 状态 |
+| `tacli skills` | 输出内置和发现到的 skills |
+| `tacli capabilities` | 输出内置 capability packs |
+| `tacli ping` | 检查模型接口是否可用 |
+| `tacli models` | 列出 provider 返回的模型 |
+| `tacli version` | 输出版本 |
+
+## Chat 控制面
+
+`chat` 把运行时控制面直接暴露在会话里。
+
+高价值命令：
+
+- `/init`
+- `/plan`
+- `/status`
+- `/policy ...`
+- `/skills`
+- `/capabilities`
+- `/session ...`
+- `/memory ...`
+- `/bg ...`
+- `/jobs`
+- `/audit ...`
+- `/trace ...`
+
+设计目标是做 CLI 命令和 chat slash command 的能力对齐：常用控制操作，两边都能跑。
+
+## 核心运行模型
+
+从高层看，`tacli` 由四层组成：
+
+1. CLI 和 TUI 入口
+2. 控制面和提示词装配
+3. 会话运行时
+4. 工具和 provider 执行层
+
+### 单轮执行路径
+
+每一轮任务都走同一条链路：
+
+1. 从工作区状态、指令文件、skills、capability packs、git 状态、记忆构建 prompt context
+2. 把消息和 tool schema 发给模型
+3. 通过 registry 和 permission layer 执行 tool call
+4. 把 tool 结果回写进 session
+5. 按运行时策略决定重试、压缩、fallback 或结束
+
+## 架构图
+
+```mermaid
+flowchart TD
+    U[User] --> CLI[cmd/tacli\nrun chat init plan status skills capabilities]
+    CLI --> TUI[chat TUI]
+    CLI --> CTRL[control-plane handlers]
+    CTRL --> HARNESS[internal/harness\nprompt assembly + wiring]
+    HARNESS --> PROMPT[Prompt context\nCLAW.md skills capabilities git memory]
+    HARNESS --> AGENT[internal/agent\nconversation runtime]
+    AGENT --> MODEL[internal/model/openaiapi\nOpenAI-compatible client]
+    AGENT --> REGISTRY[internal/tools\nregistry + permission + hooks + audit]
+    REGISTRY --> FILES[file tools]
+    REGISTRY --> SHELL[run_command]
+    REGISTRY --> WEB[fetch_url web_search]
+    REGISTRY --> MCP[MCP tools]
+    AGENT --> STATE[session memory tasks trace]
+    STATE --> DISK[.tacli/]
+```
+
+## 代码地图
+
+理解仓库，建议按这个顺序看：
+
+- [cmd/tacli/main.go](/root/tiny-agent-cli/cmd/tacli/main.go)  
+  CLI 入口、chat runtime、slash commands、顶层命令分发。
+
+- [cmd/tacli/control.go](/root/tiny-agent-cli/cmd/tacli/control.go)  
+  `plan`、`status`、`skills`、`capabilities` 这些直接控制面命令。
+
+- [cmd/tacli/init.go](/root/tiny-agent-cli/cmd/tacli/init.go)  
+  `CLAW.md` 和本地初始化脚手架。
+
+- [internal/harness/factory.go](/root/tiny-agent-cli/internal/harness/factory.go)  
+  组合根，负责装配 prompt context、model client、agent、hooks、audit 和 permissions。
+
+- [internal/agent/agent.go](/root/tiny-agent-cli/internal/agent/agent.go)  
+  会话状态机，负责重试、压缩、fallback 和任务编排。
+
+- [internal/agent/prompt.go](/root/tiny-agent-cli/internal/agent/prompt.go)  
+  从运行时上下文、指令文件、skills、capability packs、memory 组装 system prompt。
+
+- [internal/tools/registry.go](/root/tiny-agent-cli/internal/tools/registry.go)  
+  tool 注册、校验、策略判断、hook 执行、audit 接入。
+
+- [internal/tools/runtime.go](/root/tiny-agent-cli/internal/tools/runtime.go)  
+  permission 评估和 tool middleware 行为。
+
+- [internal/tools/permissions.go](/root/tiny-agent-cli/internal/tools/permissions.go)  
+  持久化 tool policy 和 `run_command` 的命令模式规则。
+
+- [internal/tools/capability.go](/root/tiny-agent-cli/internal/tools/capability.go)  
+  内置 capability pack 定义。
+
+## 深度解读：tacli 核心功能
+
+### 1. Prompt Context
+
+在模型看到任务前，`tacli` 会先组一层紧凑但结构化的上下文：
+
+- 运行时信息：workdir、shell、model、approval mode
+- git branch 和 dirty 状态
+- `CLAW.md` 这类指令文件
+- 本地发现到的 skills
+- 内置 capability packs
+- 按作用域命中的 memory
+
+这让运行时可以配置化，但不需要很重的外部框架。
+
+### 2. Tool Runtime
+
+工具层不是一堆零散 helper，而是一条受策略约束的执行管线：
+
+- schema 校验
+- permission 判断
+- pre/post hooks
+- audit 记录
+- 真正执行 tool
+
+这层结构是 `run_command` 策略、audit 回放、后台任务编排能保持一致的基础。
+
+### 3. 权限模型
+
+`tacli` 现在有两层权限轴：
+
+- tool 级策略
+- `run_command` 的命令模式策略
+
+例如：
+
+```text
+/policy tool write_file deny
+/policy command add allow git status *
+/policy command add deny git push *
+```
+
+这样既能让可信本地命令保持高效率，也能挡住 blast radius 很大的操作。
+
+### 4. Capability Packs
+
+Capability packs 是高层工作流约束，不是新工具。它们的作用是告诉 agent 在某类任务里优先采用已经验证过的工作路径。
+
+当前内置：
+
+- `repo-research`
+- `web-app`
+- `release`
+- `ops`
+
+### 5. Deterministic Parity Harness
+
+仓库里已经补了 deterministic CLI parity 场景，用来固定这些运行时行为：
+
+- 控制面命令
+- slash command 的 policy 流程
+- session 恢复
+- repeated tool failures
+- empty-answer fallback
+- provider `429` 重试
+
+这类测试的目标，是在不依赖 live model 的前提下钉住核心回归面。
+
+## 仓库初始化
+
+在仓库里先跑一次：
+
+```bash
+tacli init
+```
+
+它会创建：
+
+- `.claw/`
+- `CLAW.md`
+- 针对 `.tacli/` 和 `CLAW.local.md` 的本地忽略规则
+
+`CLAW.md` 不是固定模板，会根据仓库类型生成起步指导，所以 Go、Rust、Python、Node 仓库拿到的内容不一样。
+
+## 状态目录
+
+默认情况下，本地运行时状态保存在 `.tacli/`：
+
+- `sessions/`
+- `transcripts/`
+- `memory.json`
+- `permissions.json`
+- audit logs
+- trace logs
+
+这让 agent 状态跟工作区走，而不是藏在某个全局守护进程里。
+
+## 安装
 
 Linux 或 macOS：
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/tacli
+curl -fsSL https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\tacli.exe
+iwr https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
 可选安装变量：
 
 - `TACLI_VERSION`
-  安装指定版本，比如 `v0.1.2`
 - `TACLI_INSTALL_DIR`
-  安装到自定义目录
 
-## 等待模式
+## 构建与发布
 
-`chat` 会保留上下文，所以它已经不只是“一次一问”的工具，而是一个轻量的持续会话 agent。
-
-在交互终端里，`chat` 现在会直接打开全屏 TUI，包含：
-
-- 顶部信息条，显示工作目录、shell、模型、审批模式
-- 单栏消息主视图，执行步骤和工具活动会直接并入对话
-- SSE 流式输出：模型生成时 token 实时显示，不用盯着 spinner 等
-- 可折叠的活动抽屉，可按步骤、工具、错误、审批过滤
-- 动态多行输入区，根据内容自动增长（1-5 行）
-- 对回答里的 Markdown / 代码块做更好的终端渲染
-- 底部状态栏：模型、审批模式、会话名、上下文剩余估算、步骤进度
-- 命令 / 文件写入审批直接并入对话流
-- `Ctrl+O` 展开或收起活动抽屉
-- `Ctrl+G` 切换活动日志过滤器
-- `Home` / `End` 跳转到对话顶部/底部
-- `PgUp` / `PgDn` 翻页
-- `F1` 展开或收起帮助
-
-内置控制命令：
-
-- `/help`                 显示所有命令
-- `/exit`, `/quit`        退出
-- `/reset`                清除对话上下文
-- `/session [name|new]`   切换或新建会话
-- `/status`               显示当前状态
-- `/scope`                显示项目作用域
-- `/model <name>`         切换模型
-- `/policy ...`           查看或调整持久化工具策略
-- `/approval <mode>`      设置审批模式 (confirm|dangerously)
-- `/memory`               查看记忆
-- `/memory team ...`      查看或管理团队记忆
-- `/remember <text>`      保存项目记忆
-- `/remember-global <t>`  保存全局记忆
-- `/forget <query>`       删除匹配的项目记忆
-- `/forget-global <q>`    删除匹配的全局记忆
-- `/memorize`             从对话中提取记忆
-- `/bg <task>`            启动后台任务
-- `/jobs`                 列出后台任务
-- `/job <id>`             查看后台任务详情
-- `/job-send <id> <msg>`  向后台任务发送追加指令
-- `/job-cancel <id>`      取消后台任务
-- `/job-apply <id>`       将后台任务结果注入对话上下文
-
-示例：
-
-```text
-tacli> 看看这个项目是干什么的
-tacli> 接下来优先改什么
-tacli> /approval dangerously
-tacli> /remember 默认输出中文，简洁回答
-tacli> /remember-global 优先用简短中文回答
-tacli> /bg 分析这个仓库的测试覆盖率
-tacli> /jobs
-tacli> /memorize
-tacli> /reset
-tacli> 给我写个最小发布检查单
-```
-
-## 会话持久化
-
-`chat` 默认会把会话保存在 `.tacli` 目录下。
-
-- 会话状态：
-  `.tacli/sessions/<session>.json`
-- transcript 日志：
-  `.tacli/transcripts/<session>.log`
-
-默认每次启动 `chat` 都会新建一个带时间戳的会话，并在退出时自动把稳定上下文整理进记忆。需要恢复或切换会话时，可以用 `tacli chat --session <name>` 或 `/session <name>`。
-如果要改存储位置，继续用环境变量比如 `AGENT_STATE_DIR` 就可以。
-
-## 持久化记忆
-
-现在 `tiny-agent-cli` 已经支持一个轻量的长期记忆层。
-
-它分成三个作用域：
-
-- 全局记忆
-  跨项目通用的偏好，比如语言、回答风格
-- 团队记忆
-  通过 `AGENT_TEAM` 指定；若未设置，则优先回退到 git `origin` 的 owner
-- 项目记忆
-  只绑定当前工作目录的规则和背景
-
-你可以把稳定偏好、项目规则、长期背景信息记进去：
-
-```text
-tacli> /remember-global 默认输出中文，简洁回答。
-tacli> /memory team remember 合并前先做 review。
-tacli> /remember 这个项目优先支持 ARM64。
-tacli> /scope
-tacli> /memory
-tacli> /memorize
-tacli> /forget ARM64
-```
-
-记忆文件默认保存在：
-
-- `.tacli/memory.json`
-- `.tacli/permissions.json`
-
-后续新的 chat 会话会把命中的记忆作为背景上下文注入到第一条 system prompt。
-
-补充说明：
-
-- 项目记忆按工作目录路径隔离
-- 团队记忆按 `AGENT_TEAM` 或 `remote.origin.url` 推断出的 owner 隔离
-- `/memorize` 会把当前会话提炼成项目记忆
-- chat 会在退出时自动执行这一步
-- 如果模型侧的记忆总结超时或失败，`tiny-agent-cli` 会回退到本地提取明显的长期偏好和项目事实
-- 长会话会被压缩成一段本地摘要，同时尽量保留最近几轮完整上下文，更适合短上下文模型
-- 会话和记忆文件使用原子写入（先写临时文件再重命名），崩溃时不会损坏数据
-
-## 后台任务
-
-在 `dangerously` 模式下，你可以在继续主对话的同时并行运行子任务：
-
-```text
-tacli> /bg 探索这个仓库的测试覆盖情况
-tacli> /jobs
-tacli> /job job-001
-tacli> /job-apply job-001
-```
-
-对于大范围探索类任务，agent 也会自动启动后台任务。后台任务完成后，结果会被注入主对话上下文。
-
-最多可以同时运行 2 个后台任务，每个任务在独立的 agent session 中运行，拥有完整的工具访问权限。
-
-## 环境变量
-
-- `MODEL_BASE_URL`
-  默认值：`http://127.0.0.1:11434/v1`
-- `MODEL_NAME`
-  默认值：`qwen2.5-coder:7b`
-- `MODEL_API_KEY`
-  默认值：空
-- `MODEL_TIMEOUT`
-  默认值：`180s`。模型响应的最大等待时间。
-- `MODEL_CONTEXT_WINDOW`
-  默认值：`32768`。用于 TUI 中的上下文用量估算。
-- `AGENT_WORKDIR`
-  默认值：当前目录
-- `AGENT_MAX_STEPS`
-  默认值：`24`
-- `AGENT_COMMAND_TIMEOUT`
-  默认值：`30s`
-- `AGENT_SHELL`
-  默认值：Linux/macOS 下为 `bash`，Windows 下为 `powershell.exe`
-- `AGENT_APPROVAL`
-  默认值：`confirm`
-- `AGENT_TEAM`
-  默认值：空。未设置时，团队记忆会尽量回退到 git `origin` owner。
-- `AGENT_SETTINGS_ENDPOINT`
-  默认值：空。可选的远程配置端点，使用 `GET`/`PUT` JSON 同步设置。
-- `AGENT_SETTINGS_SYNC`
-  默认值：`true`。设为 `false` 可关闭远程设置同步。
-
-## 源码构建
+本地构建发布产物：
 
 ```bash
-go test ./...
-go build ./...
-go run ./cmd/tacli version
+./scripts/build-release.sh <version> dist/<version>
 ```
 
-## 发布
+生成的是原始可执行文件，不额外套压缩包。
 
-本地构建：
+## 开发说明
 
-```bash
-./scripts/build-release.sh v0.1.2
-```
-
-GitHub 自动发版：
-
-- 推一个 tag，比如 `v0.1.2`
-- GitHub Actions 会自动构建 `linux`、`darwin`、`windows`
-- 上传资产是原始二进制，不再额外压缩
-
-## 状态
-
-它现在已经不是玩具了，但仍然刻意保持轻量。
-
-如果你要的是一个便宜、可改、终端原生的 coding agent，这个方向是对的。
+- 当前开发计划：[plan.md](plan.md)
+- 发布页说明：[release-site/README.md](release-site/README.md)

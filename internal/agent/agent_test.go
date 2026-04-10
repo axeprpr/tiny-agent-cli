@@ -1506,7 +1506,7 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 				Type: "function",
 				Function: model.ToolFunction{
 					Name:      "read_file",
-					Arguments: `{"path":"docs/plan.md"}`,
+					Arguments: `{"path":"plan.md"}`,
 				},
 			}}}}}},
 			{Choices: []model.Choice{{Message: model.Message{Content: "done"}}}},

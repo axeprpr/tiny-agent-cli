@@ -212,8 +212,8 @@ var bundledSkills = []Skill{
 	},
 	{
 		Name:            "planning",
-		Description:     "Use docs/plan.md as the source of truth for the current development plan.",
-		Instructions:    "Read docs/plan.md before implementation-heavy tasks and keep work aligned with the listed phases.",
+		Description:     "Use plan.md as the source of truth for the current development plan.",
+		Instructions:    "Read plan.md before implementation-heavy tasks and keep work aligned with the listed phases.",
 		Path:            "bundled:planning",
 		Source:          "bundled",
 		ToolDefinitions: []string{"read_file", "list_files"},

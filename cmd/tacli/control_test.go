@@ -12,24 +12,29 @@ import (
 	"tiny-agent-cli/internal/tools"
 )
 
-func TestReadPlanFileFallsBackToDocs(t *testing.T) {
+func TestReadPlanFileReadsRootPlan(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o755); err != nil {
-		t.Fatalf("mkdir docs: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "docs", "plan.md"), []byte("docs fallback"), 0o644); err != nil {
-		t.Fatalf("write docs plan: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "plan.md"), []byte("root plan"), 0o644); err != nil {
+		t.Fatalf("write root plan: %v", err)
 	}
 
 	path, text, err := readPlanFile(dir)
 	if err != nil {
 		t.Fatalf("readPlanFile returned error: %v", err)
 	}
-	if path != filepath.Join(dir, "docs", "plan.md") {
+	if path != filepath.Join(dir, "plan.md") {
 		t.Fatalf("unexpected plan path: %q", path)
 	}
-	if text != "docs fallback" {
+	if text != "root plan" {
 		t.Fatalf("unexpected plan text: %q", text)
+	}
+}
+
+func TestReadPlanFileReportsMissingRootPlan(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := readPlanFile(dir)
+	if !os.IsNotExist(err) {
+		t.Fatalf("expected os.ErrNotExist, got %v", err)
 	}
 }
 

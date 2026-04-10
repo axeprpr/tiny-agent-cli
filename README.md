@@ -1,313 +1,295 @@
-# tiny-agent-cli
+# tacli
 
-`tiny-agent-cli` is a lean terminal coding agent for people who want a cheap `codex` or `claude-cli` style workflow, without the heavy stack.
+`tacli` is a lightweight terminal coding agent with a small runtime surface:
 
-It is built for offline-friendly and low-dependency environments:
-
-- one small binary
+- one Go binary
+- one workspace
+- one OpenAI-compatible model endpoint
 - no Node.js
 - no Python runtime requirement
 - no Electron
-- no background service
-- works on Linux, macOS, and Windows
-- only depends on one OpenAI-compatible LLM endpoint, including your own local model server
-
-You can think of it as:
-
-- a cheap `codex`
-- a stripped-down `claude-cli`
-- a terminal-native agent you can drop into a machine and run immediately
+- no background daemon
 
 Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
-## Why It Exists
+## What It Does
 
-Most agent CLIs are powerful, but they also come with more runtime, more dependencies, and more installation friction than many people actually need.
+`tacli` covers the core agent workflow without turning the machine into a full agent platform.
 
-That is a bad fit for:
+Core functionality:
 
-- offline or semi-offline machines
-- servers you do not want to pollute with extra runtimes
-- minimal containers and rescue environments
-- users who just want a binary plus a model endpoint
+- one-shot task execution: `tacli run ...`
+- interactive chat with session persistence: `tacli chat`
+- repository bootstrap: `tacli init`
+- direct control-plane commands: `plan`, `status`, `skills`, `capabilities`
+- file reading, writing, editing, search, web fetch, web search, review diff
+- bounded shell execution with approval and command-pattern policy
+- background jobs for exploration and verification
+- persistent memory across global, team, and project scope
+- capability packs and discovered skills injected into prompt context
+- local session, trace, audit, and task storage under `.tacli/`
 
-`tiny-agent-cli` aims for the opposite:
-
-- one binary
-- one model endpoint
-- no Node.js dependency
-- one workspace
-- one task at a time, or one lightweight interactive session
-
-It is not trying to be the biggest agent platform. It is trying to be the one you can actually keep around on every box.
-
-## What You Get
-
-- shell + files + grep + fetch + web search
-- interactive chat mode with SSE streaming support
-- background jobs for parallel exploration
-- persistent memory with global and project scope
-- command and file-write confirmation by default
-- `--dangerously` when you want speed
-- raw binary releases for direct download, no zip or tgz step
-
-## Core Ideas
-
-- `Evidence-first execution`
-  The built-in prompt pushes the model to inspect files and outputs before acting.
-- `Direct tool-driven workflow`
-  The model is pushed to call tools, validate results, then continue with the next smallest step.
-- `Safe by default`
-  Shell commands require confirmation unless you opt into `--dangerously`.
-- `Scoped memory`
-  Keep global preferences and project-specific rules without dragging all context everywhere.
-- `Raw by default`
-  `run` returns the model's native answer by default.
-- `Terminal mode when wanted`
-  `chat` uses terminal-friendly rendering by default while `run` stays raw.
-
-## Commands
-
-- `tacli`
-  Default chat on interactive terminals
-- `tacli -d`
-  Default chat in dangerously mode
-- `tacli run [--dangerously] <task>`
-  Run one task
-- `tacli <task>`
-  Shorthand for a one-shot run
-- `tacli chat`
-  Stay in a lightweight multi-turn session with a full-screen terminal UI on interactive terminals
-- `tacli models`
-  List available models from the endpoint
-- `tacli ping`
-  Quick endpoint and model check
-- `tacli version`
-  Print the embedded version
-
-## Approval Modes
-
-- `confirm`
-  Default. Shell commands and file writes ask for confirmation.
-- `dangerously`
-  Skip shell and file-write prompts for the current run or chat session.
-
-Examples:
+## Quick Start
 
 ```bash
-tacli
-tacli -d
-tacli "inspect this repo and tell me what it does"
-tacli -d "run go test ./..."
-tacli run --dangerously "run go test ./..."
+export MODEL_BASE_URL="http://127.0.0.1:11434/v1"
+export MODEL_NAME="your-model"
+
+tacli init
+tacli status
+tacli "inspect this repository and summarize the architecture"
+```
+
+Interactive mode:
+
+```bash
+tacli chat
+```
+
+Dangerous mode for trusted local work:
+
+```bash
+tacli run --dangerously "go test ./..."
 tacli chat --dangerously
 ```
 
-## One-Line Install
+## Top-Level Commands
 
-The installer script auto-detects the architecture, so each platform only needs one command.
+| Command | Purpose |
+| --- | --- |
+| `tacli` | Start chat on interactive terminals, otherwise require an explicit task |
+| `tacli run <task>` | Run one task and exit |
+| `tacli chat` | Multi-turn interactive session |
+| `tacli init` | Scaffold `CLAW.md`, `.claw/`, and local ignore rules |
+| `tacli plan` | Print `plan.md` |
+| `tacli status` | Show workspace, state, plan, skills, capabilities, and session status |
+| `tacli skills` | Show bundled and discovered skills |
+| `tacli capabilities` | Show bundled capability packs |
+| `tacli ping` | Check endpoint/model connectivity |
+| `tacli models` | List models from the provider |
+| `tacli version` | Print embedded version |
+
+## Chat Control Plane
+
+`chat` exposes the runtime control surface directly inside the session.
+
+High-value commands:
+
+- `/init`
+- `/plan`
+- `/status`
+- `/policy ...`
+- `/skills`
+- `/capabilities`
+- `/session ...`
+- `/memory ...`
+- `/bg ...`
+- `/jobs`
+- `/audit ...`
+- `/trace ...`
+
+The design goal is parity: common control actions should work both as direct CLI commands and as slash commands in chat.
+
+## Core Runtime Model
+
+At a high level, `tacli` is built from four layers:
+
+1. CLI and TUI entrypoints
+2. Control plane and prompt assembly
+3. Conversation runtime
+4. Tool and provider execution
+
+### Turn Loop
+
+Each task turn follows the same path:
+
+1. Build prompt context from workspace state, instructions, skills, capability packs, git state, and memory
+2. Send messages and tool schema to the model
+3. Execute tool calls through the registry and permission layer
+4. Append tool results back into the session
+5. Retry, compact, fallback, or finish based on runtime policy
+
+## Architecture Diagram
+
+```mermaid
+flowchart TD
+    U[User] --> CLI[cmd/tacli\nrun chat init plan status skills capabilities]
+    CLI --> TUI[chat TUI]
+    CLI --> CTRL[control-plane handlers]
+    CTRL --> HARNESS[internal/harness\nprompt assembly + wiring]
+    HARNESS --> PROMPT[Prompt context\nCLAW.md skills capabilities git memory]
+    HARNESS --> AGENT[internal/agent\nconversation runtime]
+    AGENT --> MODEL[internal/model/openaiapi\nOpenAI-compatible client]
+    AGENT --> REGISTRY[internal/tools\nregistry + permission + hooks + audit]
+    REGISTRY --> FILES[file tools]
+    REGISTRY --> SHELL[run_command]
+    REGISTRY --> WEB[fetch_url web_search]
+    REGISTRY --> MCP[MCP tools]
+    AGENT --> STATE[session memory tasks trace]
+    STATE --> DISK[.tacli/]
+```
+
+## Code Map
+
+The repo is easier to understand if you read it in this order:
+
+- [cmd/tacli/main.go](/root/tiny-agent-cli/cmd/tacli/main.go)  
+  CLI entrypoint, chat runtime, slash commands, and top-level command routing.
+
+- [cmd/tacli/control.go](/root/tiny-agent-cli/cmd/tacli/control.go)  
+  Direct control-plane commands such as `plan`, `status`, `skills`, and `capabilities`.
+
+- [cmd/tacli/init.go](/root/tiny-agent-cli/cmd/tacli/init.go)  
+  Repository bootstrap for `CLAW.md` and local scaffolding.
+
+- [internal/harness/factory.go](/root/tiny-agent-cli/internal/harness/factory.go)  
+  Composition root: builds prompt context, model client, agent, hooks, audit sinks, and permissions.
+
+- [internal/agent/agent.go](/root/tiny-agent-cli/internal/agent/agent.go)  
+  Conversation state machine: retries, compaction, fallback behavior, and task orchestration.
+
+- [internal/agent/prompt.go](/root/tiny-agent-cli/internal/agent/prompt.go)  
+  System prompt assembly from runtime context, instruction files, skills, capability packs, and memory.
+
+- [internal/tools/registry.go](/root/tiny-agent-cli/internal/tools/registry.go)  
+  Tool registration, validation, policy checks, hook execution, and audit integration.
+
+- [internal/tools/runtime.go](/root/tiny-agent-cli/internal/tools/runtime.go)  
+  Permission evaluation and tool middleware behavior.
+
+- [internal/tools/permissions.go](/root/tiny-agent-cli/internal/tools/permissions.go)  
+  Persistent tool policy and command-pattern rules for `run_command`.
+
+- [internal/tools/capability.go](/root/tiny-agent-cli/internal/tools/capability.go)  
+  Bundled capability pack definitions.
+
+## Deep Dive: Core Features
+
+### 1. Prompt Context
+
+Before the model sees a task, `tacli` assembles a compact but structured context:
+
+- runtime details: workdir, shell, model, approval mode
+- git branch and dirty status
+- instruction files such as `CLAW.md`
+- discovered skills
+- bundled capability packs
+- scoped memory
+
+This keeps the runtime configurable without requiring a large external framework.
+
+### 2. Tool Runtime
+
+The tool layer is not a bag of helpers. It is a policy-enforced execution pipeline:
+
+- schema validation
+- permission decision
+- pre/post hooks
+- audit logging
+- tool execution
+
+That structure is what allows `run_command` policy, audit replay, and background orchestration to stay coherent.
+
+### 3. Permission Model
+
+`tacli` has two permission axes:
+
+- tool-level policy
+- command-pattern policy for `run_command`
+
+Examples:
+
+```text
+/policy tool write_file deny
+/policy command add allow git status *
+/policy command add deny git push *
+```
+
+This keeps trusted local commands fast while still blocking high-blast-radius operations.
+
+### 4. Capability Packs
+
+Capability packs are higher-level workflow bundles. They are not new tools. They are reusable guidance units that tell the agent when to prefer a known workflow shape.
+
+Bundled packs currently cover:
+
+- `repo-research`
+- `web-app`
+- `release`
+- `ops`
+
+### 5. Deterministic Parity Harness
+
+The repository now includes deterministic CLI parity scenarios that exercise:
+
+- control-plane commands
+- slash-command policy flow
+- session resume
+- repeated tool failures
+- empty-answer fallback
+- provider `429` retry
+
+Those tests are meant to pin runtime behavior without requiring live model access for every regression run.
+
+## Repository Bootstrap
+
+Run this once inside a repo:
+
+```bash
+tacli init
+```
+
+It creates:
+
+- `.claw/`
+- `CLAW.md`
+- local ignore rules for `.tacli/` and `CLAW.local.md`
+
+`CLAW.md` is generated from repo detection, so the starter guidance is different for Go, Rust, Python, and Node repositories.
+
+## State Layout
+
+By default, local runtime state lives in `.tacli/`:
+
+- `sessions/`
+- `transcripts/`
+- `memory.json`
+- `permissions.json`
+- audit logs
+- trace logs
+
+This keeps agent state local to the workspace instead of hiding it in a global daemon.
+
+## Install
 
 Linux or macOS:
 
 ```bash
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash && MODEL_BASE_URL='http://127.0.0.1:11434/v1' MODEL_NAME='your-model' ~/.local/bin/tacli
+curl -fsSL https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://gh-proxy.com/https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex; $env:MODEL_BASE_URL='http://127.0.0.1:11434/v1'; $env:MODEL_NAME='your-model'; $HOME\.local\bin\tacli.exe
+iwr https://raw.githubusercontent.com/axeprpr/tiny-agent-cli/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
 Optional install variables:
 
 - `TACLI_VERSION`
-  Install a specific tag like `v0.1.2`
 - `TACLI_INSTALL_DIR`
-  Install to a custom directory
 
-## Interactive Chat
+## Build and Release
 
-`chat` keeps context across turns, so it behaves much more like a small coding assistant than a one-shot CLI.
-
-On interactive terminals, `chat` now opens a full-screen TUI with:
-
-- top info bar for workspace, shell, model, and approval mode
-- single-column conversation view with inline step/tool activity
-- SSE streaming: assistant tokens appear in real-time as the model generates them
-- optional activity drawer for filtered step/tool/error/approval logs
-- dynamic multi-line composer that grows with your input (1-5 lines)
-- richer assistant rendering for markdown-style answers and code blocks
-- footer status bar for model, approval mode, session, and approximate context remaining
-- inline command/file approval prompts in the conversation flow
-- `Ctrl+O` to toggle the activity drawer
-- `Ctrl+G` to cycle activity filters
-- `Home` / `End` to jump to top/bottom of conversation
-- `PgUp` / `PgDn` to scroll
-- `F1` to toggle help
-
-Built-in chat commands:
-
-- `/help`                 Show all commands
-- `/exit`, `/quit`        Exit the chat
-- `/reset`                Clear conversation context
-- `/session [name|new]`   Switch or create a session
-- `/status`               Show session and config status
-- `/scope`                Show current project scope key
-- `/model <name>`         Switch model for this session
-- `/policy ...`           Show or change persisted tool policy
-- `/approval <mode>`      Set approval mode (confirm|dangerously)
-- `/memory`               Show saved memory notes
-- `/memory team ...`      Show or manage team-scoped memory notes
-- `/remember <text>`      Save a project memory note
-- `/remember-global <t>`  Save a global memory note
-- `/forget <query>`       Remove matching project memory
-- `/forget-global <q>`    Remove matching global memory
-- `/memorize`             Extract memory from conversation
-- `/bg <task>`            Start a background job
-- `/jobs`                 List background jobs
-- `/job <id>`             Inspect a background job
-- `/job-send <id> <msg>`  Send follow-up to a background job
-- `/job-cancel <id>`      Cancel a background job
-- `/job-apply <id>`       Apply job result to chat context
-
-Example:
-
-```text
-tacli> inspect this repo
-tacli> what should I improve next?
-tacli> /approval dangerously
-tacli> /remember Prefer concise answers.
-tacli> /remember-global Always answer in English unless asked otherwise.
-tacli> /bg analyze all error handling paths in this repo
-tacli> /jobs
-tacli> /memorize
-tacli> /reset
-tacli> write a minimal release checklist
-```
-
-## Session Persistence
-
-`chat` sessions are persisted under `.tacli` by default.
-
-- session state:
-  `.tacli/sessions/<session>.json`
-- transcript log:
-  `.tacli/transcripts/<session>.log`
-
-By default, each `chat` launch starts a fresh timestamped session and auto-summarizes stable memory on exit. Use `tacli chat --session <name>` or `/session <name>` to resume or switch sessions.
-Advanced storage tuning is still available through environment variables like `AGENT_STATE_DIR`.
-
-## Persistent Memory
-
-`tiny-agent-cli` now has a lightweight persistent memory layer for long-lived usage.
-
-It supports three scopes:
-
-- global memory
-  Cross-project preferences, such as response style or language
-- team memory
-  Shared notes keyed by `AGENT_TEAM` or the git origin owner when available
-- project memory
-  Notes tied to the current workspace path
-
-Use it to store user preferences, project rules, or stable context:
-
-```text
-tacli> /remember-global Prefer concise answers in Chinese.
-tacli> /memory team remember Run reviews before merge.
-tacli> /remember This repo targets ARM64 first.
-tacli> /scope
-tacli> /memory
-tacli> /memorize
-tacli> /forget ARM64
-```
-
-Memory is stored in:
-
-- `.tacli/memory.json`
-- `.tacli/permissions.json`
-
-Future chat sessions inject matching memory into the first system prompt as background context.
-
-Notes:
-
-- project memory is keyed by workspace path
-- team memory is keyed by `AGENT_TEAM` or the repo owner inferred from `remote.origin.url`
-- `/memorize` summarizes the current session into project memory
-- chat runs that summarization automatically on exit
-- if the model-side memory summarizer fails, `tiny-agent-cli` falls back to local extraction of obvious stable preferences and project facts
-- long conversations are compacted into a local synthetic summary while keeping recent full turns, which helps shorter-context models survive longer sessions
-- session and memory files use atomic writes (write to temp file, then rename) to prevent corruption on crash
-
-## Background Jobs
-
-In `dangerously` mode, you can run parallel subtasks in the background while continuing your main conversation:
-
-```text
-tacli> /bg explore the test coverage of this repo
-tacli> /jobs
-tacli> /job job-001
-tacli> /job-apply job-001
-```
-
-The agent can also start background jobs automatically for broad exploration tasks. Background job results are injected into the main conversation context when ready.
-
-Up to 2 background jobs can run concurrently. Each runs in its own agent session with full tool access.
-
-## Environment Variables
-
-- `MODEL_BASE_URL`
-  Default: `http://127.0.0.1:11434/v1`
-- `MODEL_NAME`
-  Default: `qwen2.5-coder:7b`
-- `MODEL_API_KEY`
-  Default: empty
-- `MODEL_TIMEOUT`
-  Default: `180s`. Maximum time to wait for a model response.
-- `MODEL_CONTEXT_WINDOW`
-  Default: `32768`. Used for context usage estimation in the TUI.
-- `AGENT_WORKDIR`
-  Default: current directory
-- `AGENT_MAX_STEPS`
-  Default: `24`
-- `AGENT_COMMAND_TIMEOUT`
-  Default: `30s`
-- `AGENT_SHELL`
-  Default: `bash` on Linux/macOS, `powershell.exe` on Windows
-- `AGENT_APPROVAL`
-  Default: `confirm`
-- `AGENT_TEAM`
-  Default: empty. When unset, team memory falls back to the git origin owner if available.
-- `AGENT_SETTINGS_ENDPOINT`
-  Default: empty. Optional remote endpoint used for settings sync via `GET`/`PUT` JSON.
-- `AGENT_SETTINGS_SYNC`
-  Default: `true`. Set to `false` to disable remote settings pull/push.
-
-## Build From Source
+Local release build:
 
 ```bash
-go test ./...
-go build ./...
-go run ./cmd/tacli version
+./scripts/build-release.sh <version> dist/<version>
 ```
 
-## Release
+The generated binaries are raw executables without an extra archive step.
 
-Local build:
+## Development Notes
 
-```bash
-./scripts/build-release.sh v0.1.2
-```
-
-GitHub release:
-
-- push a tag like `v0.1.2`
-- GitHub Actions builds raw binaries for `linux`, `darwin`, and `windows`
-- release assets are uploaded as direct binaries, not archives
-
-## Status
-
-This is now more than a toy, but still intentionally small.
-
-If you want a cheap, hackable, terminal-native coding agent, this is the point.
+- Current development roadmap: [plan.md](plan.md)
+- Release page sources: [release-site/README.md](release-site/README.md)

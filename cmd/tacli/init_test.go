@@ -159,12 +159,6 @@ func TestPlanCommandPrefersRootPlanFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "plan.md"), []byte("root plan"), 0o644); err != nil {
 		t.Fatalf("write root plan: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o755); err != nil {
-		t.Fatalf("mkdir docs: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "docs", "plan.md"), []byte("docs plan"), 0o644); err != nil {
-		t.Fatalf("write docs plan: %v", err)
-	}
 
 	r := &chatRuntime{cfg: configForPlanTest(dir)}
 	if got := r.planCommand(); got != "root plan" {

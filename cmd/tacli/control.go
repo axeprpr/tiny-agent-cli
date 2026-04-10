@@ -124,20 +124,15 @@ func runCapabilities(args []string) int {
 }
 
 func readPlanFile(workDir string) (string, string, error) {
-	paths := []string{
-		filepath.Join(workDir, "plan.md"),
-		filepath.Join(workDir, "docs", "plan.md"),
+	path := filepath.Join(workDir, "plan.md")
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return path, strings.TrimSpace(string(data)), nil
 	}
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return path, strings.TrimSpace(string(data)), nil
-		}
-		if !os.IsNotExist(err) {
-			return "", "", err
-		}
+	if os.IsNotExist(err) {
+		return "", "", os.ErrNotExist
 	}
-	return "", "", os.ErrNotExist
+	return "", "", err
 }
 
 func renderWorkspaceStatus(cfg config.Config) string {
