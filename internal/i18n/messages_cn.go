@@ -58,13 +58,14 @@ var messagesCN = map[string]string{
 	// /help
 	"help": `命令：
   /help                 显示此帮助
+  /init                 生成 CLAW.md 与本地仓库脚手架
   /exit, /quit          退出
   /reset                清除对话上下文
   /session [name|new]   切换或新建会话
   /session save         保存当前会话状态
   /session restore      恢复当前会话状态
   /status               显示当前状态
-  /plan                 显示 docs/plan.md
+  /plan                 显示 plan.md
   /compact              立即压缩上下文
   /agents               查看或管理后台子代理
   /hooks                查看或调整 hooks 配置
@@ -74,7 +75,7 @@ var messagesCN = map[string]string{
   /skills               列出已发现技能
   /scope                显示项目作用域
   /model <name>         切换模型
-  /policy ...           查看或调整持久化工具策略
+  /policy ...           查看或调整持久化工具与命令策略
   /review [base] [target] [--staged] [--path <path>]
                         审查当前 git diff，可带范围参数
   /approval <mode>      设置审批模式 (prompt|read-only|workspace-write|danger-full-access|allow)

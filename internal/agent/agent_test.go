@@ -1562,7 +1562,8 @@ func TestRunTaskRetriesAgainForNewToolBlockAndFallsBackFromToolOutput(t *testing
 		},
 	}
 
-	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
 	result, err := a.NewSession().RunTask(context.Background(), "do the multi-step task")
 	if err != nil {
 		t.Fatalf("run task: %v", err)

@@ -409,11 +409,35 @@ func (d *approvalPermissionPolicy) Evaluate(ctx context.Context, inv ToolInvocat
 			mode = d.policy.DefaultMode()
 		}
 	}
+	var matchedCommandRule CommandPermissionRule
+	var matchedCommand bool
+	var runCommandText string
+	if inv.Name == "run_command" && d.policy != nil {
+		var args struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(inv.Raw, &args); err != nil {
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: fmt.Sprintf("decode args: %v", err)}
+		}
+		runCommandText = strings.TrimSpace(args.Command)
+		if runCommandText == "" {
+			return PermissionDecision{Allowed: false, Mode: mode, Reason: "command is required"}
+		}
+		if rule, ok := d.policy.MatchCommandRule(runCommandText); ok {
+			matchedCommandRule = rule
+			matchedCommand = true
+			mode = rule.Mode
+		}
+	}
 	if mode == PermissionModeDeny {
+		reason := fmt.Sprintf("tool %q is denied by permission policy", inv.Name)
+		if matchedCommand {
+			reason = fmt.Sprintf("command %q is denied by policy pattern %q", runCommandText, matchedCommandRule.Pattern)
+		}
 		return PermissionDecision{
 			Allowed: false,
 			Mode:    mode,
-			Reason:  fmt.Sprintf("tool %q is denied by permission policy", inv.Name),
+			Reason:  reason,
 		}
 	}
 	if mode == PermissionModeAllow {

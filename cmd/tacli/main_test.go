@@ -189,12 +189,12 @@ func TestPolicyCommandUpdatesAndPersistsStore(t *testing.T) {
 		session:        agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
 	}
 
-	output := r.policyCommand([]string{"/policy", "default", "allow"})
+	output := r.policyCommand([]string{"/policy", "default", "allow"}, "/policy default allow")
 	if !strings.Contains(output, "default=allow") {
 		t.Fatalf("unexpected default policy output: %q", output)
 	}
 
-	output = r.policyCommand([]string{"/policy", "tool", "write_file", "deny"})
+	output = r.policyCommand([]string{"/policy", "tool", "write_file", "deny"}, "/policy tool write_file deny")
 	if !strings.Contains(output, "write_file=deny") {
 		t.Fatalf("unexpected tool policy output: %q", output)
 	}
@@ -205,6 +205,36 @@ func TestPolicyCommandUpdatesAndPersistsStore(t *testing.T) {
 	}
 	if reloaded.ModeForTool("write_file") != tools.PermissionModeDeny {
 		t.Fatalf("expected persisted deny mode, got %#v", reloaded.Snapshot())
+	}
+}
+
+func TestPolicyCommandManagesCommandRules(t *testing.T) {
+	stateDir := t.TempDir()
+	r := &chatRuntime{
+		cfg:            config.Config{StateDir: stateDir, WorkDir: stateDir, Model: "test-model", ApprovalMode: "confirm"},
+		permissionPath: tools.PermissionPath(stateDir),
+		permissions:    loadRuntimePolicy(config.Config{StateDir: stateDir}),
+		approver:       newStubApprover(),
+		session:        agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+
+	output := r.policyCommand([]string{"/policy", "command", "add", "allow", "git", "status", "*"}, "/policy command add allow git status *")
+	if !strings.Contains(output, "1. allow git status *") {
+		t.Fatalf("unexpected command policy output: %q", output)
+	}
+
+	reloaded, err := tools.LoadPermissionStore(r.permissionPath)
+	if err != nil {
+		t.Fatalf("reload permission store: %v", err)
+	}
+	rule, ok := reloaded.MatchCommandRule("git status --short")
+	if !ok || rule.Mode != tools.PermissionModeAllow {
+		t.Fatalf("expected persisted command rule, got %#v ok=%t", rule, ok)
+	}
+
+	output = r.policyCommand([]string{"/policy", "command", "remove", "1"}, "/policy command remove 1")
+	if strings.Contains(output, "1. allow git status *") {
+		t.Fatalf("expected rule to be removed, got %q", output)
 	}
 }
 

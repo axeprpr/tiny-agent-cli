@@ -63,13 +63,14 @@ var messagesEN = map[string]string{
 	// /help
 	"help": `Commands:
   /help                 Show this help
+  /init                 Scaffold CLAW.md and local repo artifacts
   /exit, /quit          Exit the chat
   /reset                Clear conversation context
   /session [name|new]   Switch or create a session
   /session save         Save current session state
   /session restore      Restore current session state
   /status               Show session and config status
-  /plan                 Show docs/plan.md
+  /plan                 Show plan.md
   /compact              Compact conversation context now
   /agents               Inspect or manage background subagents
   /hooks                Show or change hook configuration
@@ -79,7 +80,7 @@ var messagesEN = map[string]string{
   /skills               List discovered skills
   /scope                Show current project scope key
   /model <name>         Switch model for this session
-  /policy ...           Show or change persisted tool policy
+  /policy ...           Show or change persisted tool and command policy
   /tasks ...            Manage persistent project tasks
   /review [base] [target] [--staged] [--path <path>]
                         Review the current git diff with optional scope

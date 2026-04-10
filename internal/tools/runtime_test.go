@@ -172,6 +172,48 @@ func TestApprovalPermissionPolicyWorkspaceWritePromptsCommands(t *testing.T) {
 	}
 }
 
+func TestApprovalPermissionPolicyAllowsCommandRuleOverride(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadPermissionStore(filepath.Join(dir, "permissions.json"))
+	if err != nil {
+		t.Fatalf("load permission store: %v", err)
+	}
+	store.SetCommandMode("git status *", PermissionModeAllow)
+
+	policy := NewApprovalPermissionPolicy(dir, modeApprover{mode: PermissionModePrompt, commandAllowed: false, writeAllowed: true}, store)
+	decision := policy.Evaluate(context.Background(), ToolInvocation{
+		Name: "run_command",
+		Raw:  json.RawMessage(`{"command":"git status --short"}`),
+	})
+	if !decision.Allowed {
+		t.Fatalf("expected allow override, got %#v", decision)
+	}
+	if decision.Mode != PermissionModeAllow {
+		t.Fatalf("unexpected mode: %q", decision.Mode)
+	}
+}
+
+func TestApprovalPermissionPolicyDeniesCommandRuleOverride(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadPermissionStore(filepath.Join(dir, "permissions.json"))
+	if err != nil {
+		t.Fatalf("load permission store: %v", err)
+	}
+	store.SetCommandMode("git push *", PermissionModeDeny)
+
+	policy := NewApprovalPermissionPolicy(dir, modeApprover{mode: PermissionModeDangerFullAccess, commandAllowed: true, writeAllowed: true}, store)
+	decision := policy.Evaluate(context.Background(), ToolInvocation{
+		Name: "run_command",
+		Raw:  json.RawMessage(`{"command":"git push origin main"}`),
+	})
+	if decision.Allowed {
+		t.Fatalf("expected deny override")
+	}
+	if !strings.Contains(decision.Reason, `policy pattern "git push *"`) {
+		t.Fatalf("unexpected reason: %q", decision.Reason)
+	}
+}
+
 type modeApprover struct {
 	mode           string
 	writeAllowed   bool

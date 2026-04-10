@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,9 +25,15 @@ const (
 )
 
 type PermissionState struct {
-	Default string            `json:"default,omitempty"`
-	Tools   map[string]string `json:"tools,omitempty"`
-	SavedAt time.Time         `json:"saved_at"`
+	Default  string                  `json:"default,omitempty"`
+	Tools    map[string]string       `json:"tools,omitempty"`
+	Commands []CommandPermissionRule `json:"commands,omitempty"`
+	SavedAt  time.Time               `json:"saved_at"`
+}
+
+type CommandPermissionRule struct {
+	Pattern string `json:"pattern"`
+	Mode    string `json:"mode"`
 }
 
 type PermissionStore struct {
@@ -60,6 +68,7 @@ func LoadPermissionStore(path string) (*PermissionStore, error) {
 	for key, value := range store.data.Tools {
 		store.data.Tools[key] = normalizePermissionMode(value)
 	}
+	store.data.Commands = normalizeCommandRules(store.data.Commands)
 	return store, nil
 }
 
@@ -126,9 +135,10 @@ func (s *PermissionStore) Snapshot() PermissionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := PermissionState{
-		Default: normalizePermissionMode(s.data.Default),
-		Tools:   make(map[string]string, len(s.data.Tools)),
-		SavedAt: s.data.SavedAt,
+		Default:  normalizePermissionMode(s.data.Default),
+		Tools:    make(map[string]string, len(s.data.Tools)),
+		Commands: append([]CommandPermissionRule(nil), s.data.Commands...),
+		SavedAt:  s.data.SavedAt,
 	}
 	for key, value := range s.data.Tools {
 		out.Tools[key] = normalizePermissionMode(value)
@@ -155,6 +165,7 @@ func (s *PermissionStore) Replace(state PermissionState) {
 		}
 		s.data.Tools[name] = mode
 	}
+	s.data.Commands = normalizeCommandRules(state.Commands)
 }
 
 func (s *PermissionStore) Save() error {
@@ -167,6 +178,7 @@ func (s *PermissionStore) Save() error {
 		return err
 	}
 	s.data.Default = normalizePermissionMode(s.data.Default)
+	s.data.Commands = normalizeCommandRules(s.data.Commands)
 	s.data.SavedAt = time.Now().UTC()
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
@@ -183,17 +195,146 @@ func FormatPermissionState(state PermissionState) string {
 	lines := []string{"default=" + normalizePermissionMode(state.Default)}
 	if len(state.Tools) == 0 {
 		lines = append(lines, "(no per-tool overrides)")
+	} else {
+		keys := make([]string, 0, len(state.Tools))
+		for key := range state.Tools {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			lines = append(lines, key+"="+normalizePermissionMode(state.Tools[key]))
+		}
+	}
+	if len(state.Commands) == 0 {
+		lines = append(lines, "(no run_command patterns)")
 		return strings.Join(lines, "\n")
 	}
-	keys := make([]string, 0, len(state.Tools))
-	for key := range state.Tools {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		lines = append(lines, key+"="+normalizePermissionMode(state.Tools[key]))
+	lines = append(lines, "command_rules:")
+	for i, rule := range state.Commands {
+		lines = append(lines, formatCommandRule(i+1, rule))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (s *PermissionStore) CommandRules() []CommandPermissionRule {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]CommandPermissionRule(nil), s.data.Commands...)
+}
+
+func (s *PermissionStore) MatchCommandRule(command string) (CommandPermissionRule, bool) {
+	if s == nil {
+		return CommandPermissionRule{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	normalized := normalizeCommandPattern(command)
+	for _, rule := range s.data.Commands {
+		if commandPatternMatches(rule.Pattern, normalized) {
+			return rule, true
+		}
+	}
+	return CommandPermissionRule{}, false
+}
+
+func (s *PermissionStore) SetCommandMode(pattern, mode string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pattern = normalizeCommandPattern(pattern)
+	mode = normalizePermissionMode(mode)
+	if pattern == "" {
+		return
+	}
+	for i := range s.data.Commands {
+		if s.data.Commands[i].Pattern != pattern {
+			continue
+		}
+		if mode == PermissionModePrompt {
+			s.data.Commands = append(s.data.Commands[:i], s.data.Commands[i+1:]...)
+			return
+		}
+		s.data.Commands[i].Mode = mode
+		return
+	}
+	if mode == PermissionModePrompt {
+		return
+	}
+	s.data.Commands = append(s.data.Commands, CommandPermissionRule{
+		Pattern: pattern,
+		Mode:    mode,
+	})
+}
+
+func (s *PermissionStore) RemoveCommandRule(index int) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.data.Commands) {
+		return false
+	}
+	s.data.Commands = append(s.data.Commands[:index], s.data.Commands[index+1:]...)
+	return true
+}
+
+func normalizeCommandRules(rules []CommandPermissionRule) []CommandPermissionRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	out := make([]CommandPermissionRule, 0, len(rules))
+	for _, rule := range rules {
+		pattern := normalizeCommandPattern(rule.Pattern)
+		mode := normalizePermissionMode(rule.Mode)
+		if pattern == "" || mode == PermissionModePrompt {
+			continue
+		}
+		out = append(out, CommandPermissionRule{
+			Pattern: pattern,
+			Mode:    mode,
+		})
+	}
+	return out
+}
+
+func normalizeCommandPattern(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func commandPatternMatches(pattern, command string) bool {
+	pattern = normalizeCommandPattern(pattern)
+	command = normalizeCommandPattern(command)
+	if pattern == "" || command == "" {
+		return false
+	}
+	return globToRegexp(pattern).MatchString(command)
+}
+
+func globToRegexp(pattern string) *regexp.Regexp {
+	var b strings.Builder
+	b.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteString("$")
+	return regexp.MustCompile(b.String())
+}
+
+func formatCommandRule(index int, rule CommandPermissionRule) string {
+	return strconv.Itoa(index) + ". " + normalizePermissionMode(rule.Mode) + " " + normalizeCommandPattern(rule.Pattern)
 }
 
 func normalizePermissionMode(mode string) string {

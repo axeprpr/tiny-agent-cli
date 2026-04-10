@@ -12,10 +12,9 @@ coverage/
 *.test
 .vercel
 cmd/tacli/.tacli/tasks-v2.json
-tacli
+/tacli
 .cache
 .cache
-tacli
 cmd/tacli/.tacli/
 cmd/tacli/.tmp
 cmd/tacli/.tacli/

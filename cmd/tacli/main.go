@@ -124,10 +124,18 @@ func run(args []string) int {
 	}
 
 	switch args[0] {
+	case "init":
+		return runInit(args[1:])
+	case "plan":
+		return runPlan(args[1:])
 	case "run":
 		return runTask(withDangerouslyFlag(args[1:], globalDangerously))
 	case "chat":
 		return runChat(withDangerouslyFlag(args[1:], globalDangerously))
+	case "status":
+		return runStatus(args[1:])
+	case "skills":
+		return runSkills(args[1:])
 	case "ping":
 		return pingModel(args[1:])
 	case "models":
@@ -419,6 +427,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1}
 	case "/help":
 		return runtimeCommandResult{handled: true, output: i18n.T("help"), exitCode: -1}
+	case "/init":
+		report, err := initializeRepo(r.cfg.WorkDir)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: "init error: " + err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: report.render(), exitCode: -1}
 	case "/status":
 		jobSummary := "jobs=0"
 		if r.jobs != nil {
@@ -434,8 +448,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if strings.TrimSpace(r.cfg.SettingsURL) != "" {
 			settingsSummary = fmt.Sprintf("settings_sync=%t endpoint=%s", r.cfg.SettingsSync, r.cfg.SettingsURL)
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s",
-			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary), exitCode: -1}
+		commandRuleSummary := "command_rules=0"
+		if r.permissions != nil {
+			commandRuleSummary = fmt.Sprintf("command_rules=%d", len(r.permissions.CommandRules()))
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
+			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
 	case "/plan":
 		return runtimeCommandResult{handled: true, output: r.planCommand(), exitCode: -1}
 	case "/compact":
@@ -521,7 +539,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		_ = r.pushRemoteSettings()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model), exitCode: -1}
 	case "/policy":
-		return runtimeCommandResult{handled: true, output: r.policyCommand(fields), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: r.policyCommand(fields, input), exitCode: -1}
 	case "/bg":
 		id, err := r.jobs.Start(strings.TrimSpace(input[len("/bg"):]))
 		if err != nil {
@@ -779,12 +797,14 @@ func (r *chatRuntime) describeSessions() string {
 }
 
 func (r *chatRuntime) planCommand() string {
-	path := filepath.Join(r.cfg.WorkDir, "docs", "plan.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Sprintf("plan read error: %v", err)
+	_, text, err := readPlanFile(r.cfg.WorkDir)
+	if err == nil {
+		return text
 	}
-	return strings.TrimSpace(string(data))
+	if os.IsNotExist(err) {
+		return "plan read error: no plan.md found"
+	}
+	return fmt.Sprintf("plan read error: %v", err)
 }
 
 func (r *chatRuntime) hooksCommand(fields []string) string {
@@ -1080,7 +1100,7 @@ func formatHookCommandList(commands []string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (r *chatRuntime) policyCommand(fields []string) string {
+func (r *chatRuntime) policyCommand(fields []string, input string) string {
 	if r.permissions == nil {
 		r.permissions = loadRuntimePolicy(r.cfg)
 	}
@@ -1091,6 +1111,9 @@ func (r *chatRuntime) policyCommand(fields []string) string {
 		"usage: /policy",
 		"usage: /policy default <prompt|read-only|workspace-write|danger-full-access|allow|deny>",
 		"usage: /policy tool <name> <prompt|read-only|workspace-write|danger-full-access|allow|deny>",
+		"usage: /policy command list",
+		"usage: /policy command add <prompt|read-only|workspace-write|danger-full-access|allow|deny> <pattern>",
+		"usage: /policy command remove <index>",
 		"usage: /policy reload",
 		"usage: /policy save",
 	}, "\n")
@@ -1112,6 +1135,34 @@ func (r *chatRuntime) policyCommand(fields []string) string {
 			return usage
 		}
 		r.permissions.SetToolMode(fields[2], fields[3])
+	case "command":
+		if len(fields) < 3 {
+			return usage
+		}
+		switch strings.ToLower(strings.TrimSpace(fields[2])) {
+		case "list", "show":
+			return tools.FormatPermissionState(r.permissions.Snapshot())
+		case "add":
+			if len(fields) < 5 {
+				return usage
+			}
+			prefix := fields[0] + " " + fields[1] + " " + fields[2] + " " + fields[3]
+			pattern := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), prefix))
+			if pattern == "" {
+				return usage
+			}
+			r.permissions.SetCommandMode(pattern, fields[3])
+		case "remove", "delete":
+			if len(fields) != 4 {
+				return usage
+			}
+			index, err := strconv.Atoi(strings.TrimSpace(fields[3]))
+			if err != nil || index < 1 || !r.permissions.RemoveCommandRule(index-1) {
+				return "invalid command rule index"
+			}
+		default:
+			return usage
+		}
 	case "reload":
 		r.permissions = loadRuntimePolicy(r.cfg)
 		if r.permissions == nil {
@@ -1137,21 +1188,7 @@ func (r *chatRuntime) policyCommand(fields []string) string {
 }
 
 func (r *chatRuntime) skillsCommand() string {
-	if len(r.skills) == 0 {
-		return "no skills discovered"
-	}
-	lines := make([]string, 0, len(r.skills))
-	for _, skill := range r.skills {
-		line := skill.Name + " [" + firstNonEmpty(skill.Source, "local") + "]"
-		if strings.TrimSpace(skill.Description) != "" {
-			line += ": " + skill.Description
-		}
-		if len(skill.ToolDefinitions) > 0 {
-			line += " tools=" + strings.Join(skill.ToolDefinitions, ",")
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
+	return formatSkills(r.skills)
 }
 
 func (r *chatRuntime) tasksCommand(fields []string, input string) string {
@@ -3276,7 +3313,11 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  tacli                 # default chat on interactive terminals")
 	fmt.Fprintln(os.Stderr, "  tacli -d              # default chat in dangerously mode")
 	fmt.Fprintln(os.Stderr, "  tacli chat")
+	fmt.Fprintln(os.Stderr, "  tacli init [--workdir <path>]")
+	fmt.Fprintln(os.Stderr, "  tacli plan [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli run [--dangerously] <task>")
+	fmt.Fprintln(os.Stderr, "  tacli status [--workdir <path>]")
+	fmt.Fprintln(os.Stderr, "  tacli skills [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli <task>          # shorthand for run")
 	fmt.Fprintln(os.Stderr, "  tacli ping [flags]")
 	fmt.Fprintln(os.Stderr, "  tacli models [flags]")
