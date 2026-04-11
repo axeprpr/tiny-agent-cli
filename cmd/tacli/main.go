@@ -2377,7 +2377,7 @@ func memoryCommandBody(input string, prefix string) string {
 
 func (r *chatRuntime) beforeExit(allowAutoMemory bool) {
 	if allowAutoMemory && r.autoMemoryExit && r.dirtySession {
-		if added, err := r.summarizeMemory(); err != nil {
+		if added, err := r.summarizeMemoryBestEffort(); err != nil {
 			fmt.Fprintf(os.Stderr, i18n.T("auto.memory.err"), err)
 		} else if added > 0 {
 			fmt.Fprintf(os.Stderr, i18n.T("auto.memory.ok"), added)
@@ -2391,7 +2391,18 @@ func (r *chatRuntime) summarizeMemory() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return r.applyMemoryNotes(lines)
+}
 
+func (r *chatRuntime) summarizeMemoryBestEffort() (int, error) {
+	lines, err := r.collectMemoryNotesBestEffort()
+	if err != nil {
+		return 0, err
+	}
+	return r.applyMemoryNotes(lines)
+}
+
+func (r *chatRuntime) applyMemoryNotes(lines []string) (int, error) {
 	before := len(r.projectMemory)
 	for _, line := range lines {
 		r.projectMemory = memory.Add(r.projectMemory, line)
@@ -2428,6 +2439,31 @@ func (r *chatRuntime) collectMemoryNotes() ([]string, error) {
 
 	if err != nil {
 		return nil, err
+	}
+	return nil, nil
+}
+
+func (r *chatRuntime) collectMemoryNotesBestEffort() ([]string, error) {
+	text := buildConversationSummaryInput(r.session.Messages())
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+
+	lines, err := r.collectMemoryNotesWithModel(text)
+	if len(lines) > 0 {
+		return lines, nil
+	}
+
+	fallback := extractStableMemoryNotes(r.session.Messages())
+	if len(fallback) > 0 {
+		return fallback, nil
+	}
+
+	if err != nil {
+		r.recordTrace(context.Background(), "runtime", "auto_memory_fallback", map[string]any{
+			"error": err.Error(),
+		})
+		return nil, nil
 	}
 	return nil, nil
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1229,6 +1231,123 @@ func TestBeforeExitCtrlCStyleSkipsAutoMemorySummarization(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.projectMemory, []string{"existing note"}) {
 		t.Fatalf("unexpected project memory: %#v", r.projectMemory)
+	}
+}
+
+func TestBeforeExitAutoMemoryFallsBackWithoutProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"filtered","code":"content_filter"}}`)
+	}))
+	defer server.Close()
+
+	r := newMemoryTestRuntime(t)
+	r.cfg.BaseURL = server.URL
+	r.autoMemoryExit = true
+	r.dirtySession = true
+	r.session.ReplaceMessages(append(r.session.Messages(), model.Message{
+		Role:    "user",
+		Content: "Always answer in Chinese and keep responses concise.",
+	}))
+
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+	oldStderr := os.Stderr
+	os.Stderr = stderrW
+	r.beforeExit(true)
+	_ = stderrW.Close()
+	os.Stderr = oldStderr
+
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if strings.Contains(string(stderrBytes), "auto-memory error") {
+		t.Fatalf("expected no auto-memory error, got %q", string(stderrBytes))
+	}
+	if len(r.projectMemory) == 0 {
+		t.Fatalf("expected fallback memory note to be stored")
+	}
+	if r.dirtySession {
+		t.Fatalf("expected dirty session to be cleared")
+	}
+}
+
+func TestBeforeExitAutoMemorySilentlySkipsProviderErrorWithoutFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"filtered","code":"content_filter"}}`)
+	}))
+	defer server.Close()
+
+	r := newMemoryTestRuntime(t)
+	r.cfg.BaseURL = server.URL
+	r.autoMemoryExit = true
+	r.dirtySession = true
+	r.session.ReplaceMessages(append(r.session.Messages(), model.Message{
+		Role:    "user",
+		Content: "What time is it now?",
+	}))
+
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+	oldStderr := os.Stderr
+	os.Stderr = stderrW
+	r.beforeExit(true)
+	_ = stderrW.Close()
+	os.Stderr = oldStderr
+
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if strings.Contains(string(stderrBytes), "auto-memory error") {
+		t.Fatalf("expected no auto-memory error, got %q", string(stderrBytes))
+	}
+	if len(r.projectMemory) != 0 {
+		t.Fatalf("expected no fallback notes, got %#v", r.projectMemory)
+	}
+	if r.dirtySession {
+		t.Fatalf("expected dirty session to be cleared")
+	}
+}
+
+func TestInterruptCommandCancelsForegroundTask(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	canceled := false
+	r.setForegroundCancel(func() {
+		canceled = true
+	})
+
+	result := r.executeCommand("/interrupt")
+	if !result.handled {
+		t.Fatalf("expected /interrupt handled")
+	}
+	if result.output != i18n.T("cmd.interrupt.ok") {
+		t.Fatalf("unexpected output: %q", result.output)
+	}
+	if !canceled {
+		t.Fatalf("expected foreground cancel to run")
+	}
+}
+
+func TestInterruptCommandReportsIdleWhenNoForegroundTask(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+
+	result := r.executeCommand("/interrupt")
+	if !result.handled {
+		t.Fatalf("expected /interrupt handled")
+	}
+	if result.output != i18n.T("cmd.interrupt.idle") {
+		t.Fatalf("unexpected output: %q", result.output)
 	}
 }
 
