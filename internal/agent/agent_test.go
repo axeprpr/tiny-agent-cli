@@ -1759,6 +1759,39 @@ func TestVerifyFinishGateRequiresAcceptanceEvidence(t *testing.T) {
 	}
 }
 
+func TestRunTaskStopsAfterRepeatedFinishGateBlocks(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{Content: "done 1"}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done 2"}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done 3"}}}},
+		},
+	}
+
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded app",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	result, err := a.NewSession().RunTask(context.Background(), "ship the embedded app")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if !strings.Contains(result.Final, "finish-gate doom loop") {
+		t.Fatalf("expected finish-gate doom-loop stop, got %q", result.Final)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("expected three requests before doom-loop stop, got %d", len(client.requests))
+	}
+}
+
 func TestRunTaskRetriesAgainForNewToolBlockAndFallsBackFromToolOutput(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{

@@ -243,12 +243,31 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 	decision := decideTurn(s.messages, msg)
 	if decision.action == turnActionFinish {
 		if reminder := s.finishGateReminder(); reminder != "" {
+			s.finishGateBlocks++
+			if s.finishGateBlocks >= finishGateLoopLimit {
+				summary := TurnSummary{
+					Turn:      turn,
+					Decision:  "finish_gate_doom_loop",
+					Assistant: copyMessage(model.Message{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls}),
+					Reminder:  reminder,
+					Final:     "Stopped after detecting a finish-gate doom loop. The agent kept trying to finish without satisfying tracked work. Inspect the task contract or acceptance checks before continuing.",
+				}
+				s.turns = append(s.turns, summary)
+				s.agent.emitTurnSummaryEvent(ctx, summary)
+				s.agent.logf("finish gate doom loop detected\n")
+				result := Result{Final: summary.Final}
+				return &result, false
+			}
 			decision = turnDecision{
 				action:   turnActionRetry,
 				reminder: reminder,
 				logLine:  "finish gate blocked premature completion",
 			}
+		} else {
+			s.finishGateBlocks = 0
 		}
+	} else {
+		s.finishGateBlocks = 0
 	}
 	summary := TurnSummary{
 		Turn:      turn,

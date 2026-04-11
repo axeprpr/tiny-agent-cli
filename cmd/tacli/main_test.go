@@ -1351,6 +1351,73 @@ func TestInterruptCommandReportsIdleWhenNoForegroundTask(t *testing.T) {
 	}
 }
 
+func TestRenderSessionRecordIncludesMessagesAndToolCalls(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "system prompt contents"},
+		{Role: "user", Content: "build a repro"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"README.md"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "tiny-agent-cli\nREADME snippet"},
+		{Role: "assistant", Content: "done"},
+	})
+
+	got := r.renderSessionRecord()
+	if !strings.Contains(got, "# tacli session record") {
+		t.Fatalf("missing header: %q", got)
+	}
+	if !strings.Contains(got, "session=chat-test") {
+		t.Fatalf("missing session line: %q", got)
+	}
+	if !strings.Contains(got, "(initial system prompt omitted") {
+		t.Fatalf("expected initial system prompt omission, got %q", got)
+	}
+	if !strings.Contains(got, "### 2 user") || !strings.Contains(got, "build a repro") {
+		t.Fatalf("missing user message: %q", got)
+	}
+	if !strings.Contains(got, `tool_call read_file {"path":"README.md"}`) {
+		t.Fatalf("missing tool call: %q", got)
+	}
+	if !strings.Contains(got, "tool_call_id=call-1") || !strings.Contains(got, "README snippet") {
+		t.Fatalf("missing tool result: %q", got)
+	}
+}
+
+func TestSaveCommandWritesExportFile(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	r.session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "system prompt contents"},
+		{Role: "user", Content: "please inspect this failure"},
+		{Role: "assistant", Content: "I found one issue."},
+	})
+
+	result := r.executeCommand("/save")
+	if !result.handled {
+		t.Fatalf("expected /save handled")
+	}
+	if !strings.Contains(result.output, "session record saved") {
+		t.Fatalf("expected save output, got %q", result.output)
+	}
+	wantPath := "/tmp/session-data.txt"
+	if !strings.Contains(result.output, wantPath) {
+		t.Fatalf("expected export path in output, got %q", result.output)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "please inspect this failure") || !strings.Contains(text, "I found one issue.") {
+		t.Fatalf("unexpected export text: %q", text)
+	}
+}
+
 func TestRunChatProcessesNulSeparatedCommandsEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AGENT_SETTINGS_SYNC", "false")

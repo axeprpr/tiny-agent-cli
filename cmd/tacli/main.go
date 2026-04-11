@@ -468,6 +468,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
 	case "/contract":
 		return runtimeCommandResult{handled: true, output: r.contractCommand(), exitCode: -1}
+	case "/save":
+		return runtimeCommandResult{handled: true, output: r.saveCommand(), exitCode: -1}
 	case "/plan":
 		return runtimeCommandResult{handled: true, output: r.planCommand(), exitCode: -1}
 	case "/compact":
@@ -864,6 +866,81 @@ func (r *chatRuntime) contractCommand() string {
 		return "(no task contract)"
 	}
 	return "path=" + path + "\n" + text
+}
+
+func (r *chatRuntime) saveCommand() string {
+	record := r.renderSessionRecord()
+	path, err := r.writeSessionRecordExport(record)
+	if err != nil {
+		return fmt.Sprintf("save export error: %v", err)
+	}
+	return fmt.Sprintf(i18n.T("cmd.save.ok"), path)
+}
+
+func (r *chatRuntime) renderSessionRecord() string {
+	if r == nil {
+		return ""
+	}
+	lines := []string{
+		"# tacli session record",
+		fmt.Sprintf("session=%s", r.sessionName),
+		fmt.Sprintf("model=%s", strings.TrimSpace(r.cfg.Model)),
+		fmt.Sprintf("workdir=%s", r.cfg.WorkDir),
+		fmt.Sprintf("state=%s", r.statePath),
+		fmt.Sprintf("transcript=%s", r.transcriptPath),
+		fmt.Sprintf("trace=%s", r.tracePath),
+		fmt.Sprintf("exported_at=%s", time.Now().UTC().Format(time.RFC3339)),
+		"",
+		"## messages",
+	}
+	msgs := r.session.Messages()
+	for i, msg := range msgs {
+		lines = append(lines, renderSessionMessageRecord(i, msg)...)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n"
+}
+
+func renderSessionMessageRecord(index int, msg model.Message) []string {
+	lines := []string{fmt.Sprintf("### %d %s", index+1, msg.Role)}
+	content := strings.TrimSpace(model.ContentString(msg.Content))
+	if msg.Role == "system" && index == 0 {
+		lines = append(lines, fmt.Sprintf("(initial system prompt omitted, chars=%d)", len(content)))
+		return append(lines, "")
+	}
+	if msg.ToolCallID != "" {
+		lines = append(lines, "tool_call_id="+msg.ToolCallID)
+	}
+	if len(msg.ToolCalls) > 0 {
+		for _, call := range msg.ToolCalls {
+			name := strings.TrimSpace(call.Function.Name)
+			args := strings.TrimSpace(call.Function.Arguments)
+			switch {
+			case name != "" && args != "":
+				lines = append(lines, fmt.Sprintf("tool_call %s %s", name, args))
+			case name != "":
+				lines = append(lines, "tool_call "+name)
+			}
+		}
+	}
+	if content != "" {
+		lines = append(lines, content)
+	}
+	return append(lines, "")
+}
+
+func (r *chatRuntime) writeSessionRecordExport(record string) (string, error) {
+	path := r.sessionRecordExportPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(record), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (r *chatRuntime) sessionRecordExportPath() string {
+	return "/tmp/session-data.txt"
 }
 
 func (r *chatRuntime) hooksCommand(fields []string) string {

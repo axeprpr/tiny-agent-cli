@@ -65,6 +65,7 @@ var messagesEN = map[string]string{
   /help                 Show this help
   /interrupt            Interrupt the current foreground task
   /init                 Scaffold CLAW.md and local repo artifacts
+  /save                 Save the current session record for debugging
   /exit, /quit          Exit the chat
   /reset                Clear conversation context
   /session [name|new]   Switch or create a session
@@ -119,6 +120,7 @@ Or just type naturally -- no command needed for most tasks.`,
 
 	// Commands
 	"cmd.reset":              "context reset",
+	"cmd.save.ok":            "session record saved\npath=%s",
 	"cmd.interrupt.ok":       "interrupt requested",
 	"cmd.interrupt.idle":     "no foreground task is running",
 	"cmd.interrupt.pending":  "interrupting current task",

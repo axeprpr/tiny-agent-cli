@@ -21,6 +21,7 @@ const (
 	recentTurnsToKeep      = 3
 	maxConsecutiveToolErrs = 3
 	repeatedToolWindow     = 4
+	finishGateLoopLimit    = 3
 	todoNagRoundThreshold  = 3
 	contractNagRoundThresh = 2
 )
@@ -114,6 +115,7 @@ type Session struct {
 	role                 string
 	roundsSinceTodoPatch int
 	roundsSinceContract  int
+	finishGateBlocks     int
 }
 
 func New(client chatClient, registry *tools.Registry, contextWindow int, log io.Writer) *Agent {
