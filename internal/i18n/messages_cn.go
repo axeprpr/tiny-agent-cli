@@ -58,6 +58,7 @@ var messagesCN = map[string]string{
 	// /help
 	"help": `命令：
   /help                 显示此帮助
+  /interrupt            中断当前前台任务
   /init                 生成 CLAW.md 与本地仓库脚手架
   /exit, /quit          退出
   /reset                清除对话上下文
@@ -112,6 +113,14 @@ var messagesCN = map[string]string{
 
 	// Commands
 	"cmd.reset":              "上下文已重置",
+	"cmd.interrupt.ok":       "已请求中断当前任务",
+	"cmd.interrupt.idle":     "当前没有运行中的前台任务",
+	"cmd.interrupt.pending":  "正在中断当前任务",
+	"cmd.interrupt.done":     "当前前台任务已中断",
+	"cmd.queue.added.one":    "下一条问题已入队",
+	"cmd.queue.added.many":   "问题已入队（待执行 %d 条）",
+	"cmd.queue.starting":     "开始执行排队问题：%s",
+	"cmd.queue.remaining":    "仍有 %d 条排队",
 	"cmd.approval.usage":     "用法：/approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "审批模式已设为 %s",
 	"cmd.output.deprecated":  "output 命令已弃用；chat 默认使用终端渲染",

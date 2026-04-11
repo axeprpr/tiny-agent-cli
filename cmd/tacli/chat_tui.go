@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,6 +35,7 @@ type tuiApprovalMsg struct {
 }
 
 type tuiTaskDoneMsg struct {
+	task   string
 	output string
 	err    error
 }
@@ -199,23 +201,24 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 }
 
 type chatKeyMap struct {
-	Send     key.Binding
-	Newline  key.Binding
-	Quit     key.Binding
-	Help     key.Binding
-	PageDown key.Binding
-	PageUp   key.Binding
-	Home     key.Binding
-	End      key.Binding
+	Send      key.Binding
+	Newline   key.Binding
+	Interrupt key.Binding
+	Quit      key.Binding
+	Help      key.Binding
+	PageDown  key.Binding
+	PageUp    key.Binding
+	Home      key.Binding
+	End       key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.Newline, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.Interrupt, k.Quit}
 }
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Help, k.Quit},
+		{k.Send, k.Newline, k.Interrupt, k.Help, k.Quit},
 		{k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
@@ -243,6 +246,9 @@ type chatTUIModel struct {
 	entryBlocks   []string
 	pendingScroll int
 	scrollQueued  bool
+	queuedTasks   []string
+	runningTask   string
+	runningCancel context.CancelFunc
 }
 
 var (
@@ -362,14 +368,15 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		chatViewport: chatVP,
 		help:         help.New(),
 		keys: chatKeyMap{
-			Send:     key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
-			Newline:  key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Help:     key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
-			Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-			PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
-			PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
-			Home:     key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
-			End:      key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
+			Send:      key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
+			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
+			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
+			Help:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
+			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
+			PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
+			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
+			End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
 		entriesDirty: true,
 	}
@@ -435,12 +442,12 @@ func scheduleMouseScroll() tea.Cmd {
 	})
 }
 
-func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, task string) tea.Cmd {
+func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, ctx context.Context, task string) tea.Cmd {
 	return func() tea.Msg {
-		output, err := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
+		output, err := runtime.executeTaskStreaming(ctx, task, func(token string) {
 			events <- tuiStreamMsg{token: token}
 		})
-		events <- tuiTaskDoneMsg{output: output, err: err}
+		events <- tuiTaskDoneMsg{task: task, output: output, err: err}
 		return nil
 	}
 }
@@ -472,6 +479,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			keyHandled = true
 			m.showFullHelp = !m.showFullHelp
+		case key.Matches(msg, m.keys.Interrupt):
+			keyHandled = true
+			if m.interruptForeground() {
+				m.entries = append(m.entries, tuiEntry{role: "system", text: i18n.T("cmd.interrupt.ok")})
+				m.entriesDirty = true
+				immediateRefresh = true
+			}
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
 			m.chatViewport.HalfViewUp()
@@ -493,11 +507,8 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if task == "" {
 				break
 			}
-			if m.approval == nil && m.busy && !strings.HasPrefix(task, "/") {
-				break
-			}
-			m.input.Reset()
 			if m.approval != nil {
+				m.input.Reset()
 				m.entries = append(m.entries, tuiEntry{role: "user", text: task})
 				if answer, ok := parseApprovalAnswer(task); ok {
 					m.approval.response <- answer
@@ -513,6 +524,16 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				immediateRefresh = true
 				break
 			}
+			if m.busy && !strings.HasPrefix(task, "/") {
+				m.input.Reset()
+				m.entries = append(m.entries, tuiEntry{role: "user", text: task})
+				m.enqueueTask(task)
+				m.entriesDirty = true
+				m.refreshInputState()
+				immediateRefresh = true
+				break
+			}
+			m.input.Reset()
 			if strings.HasPrefix(task, "/") {
 				result := m.runtime.executeCommand(task)
 				if result.handled {
@@ -533,10 +554,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, tuiEntry{role: "user", text: task})
 			m.entriesDirty = true
 			immediateRefresh = true
-			m.busy = true
-			m.statusText = i18n.T("tui.status.running")
-			m.refreshInputState()
-			cmds = append(cmds, runTaskCmd(m.runtime, m.events, task))
+			cmds = append(cmds, m.startTask(task))
 		}
 	case tea.MouseMsg:
 		mouseHandled = true
@@ -567,6 +585,9 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiTaskDoneMsg:
 		m.busy = false
+		m.runningTask = ""
+		m.runtime.clearForegroundCancel(m.runningCancel)
+		m.runningCancel = nil
 		m.refreshQueued = false
 		// Convert any streaming entry to assistant
 		for i := range m.entries {
@@ -575,8 +596,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.err != nil {
-			m.entries = append(m.entries, tuiEntry{role: "error", text: msg.err.Error()})
-			m.statusText = i18n.T("tui.status.error")
+			if errors.Is(msg.err, context.Canceled) {
+				m.entries = append(m.entries, tuiEntry{role: "system", text: i18n.T("cmd.interrupt.done")})
+				m.statusText = i18n.T("tui.status.ready")
+			} else {
+				m.entries = append(m.entries, tuiEntry{role: "error", text: msg.err.Error()})
+				m.statusText = i18n.T("tui.status.error")
+			}
 		} else {
 			// Only add if no streaming entry captured the output
 			hasStreamed := false
@@ -594,6 +620,11 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entriesDirty = true
 		m.refreshInputState()
 		immediateRefresh = true
+		if next, ok := m.dequeueTask(); ok {
+			m.entries = append(m.entries, tuiEntry{role: "system", text: queuedTaskStartingText(next, len(m.queuedTasks))})
+			m.entriesDirty = true
+			cmds = append(cmds, m.startTask(next))
+		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiJobUpdateMsg:
 		m.entries = append(m.entries, tuiEntry{role: "system", text: msg.text})
@@ -1053,7 +1084,7 @@ func (m *chatTUIModel) refreshInputState() {
 	case m.approval != nil:
 		m.input.Placeholder = i18n.T("tui.placeholder.approval")
 	case m.busy:
-		m.input.Placeholder = i18n.T("tui.placeholder.busy")
+		m.input.Placeholder = busyPlaceholder(len(m.queuedTasks))
 	default:
 		m.input.Placeholder = i18n.T("tui.placeholder.default")
 	}
@@ -1064,10 +1095,77 @@ func (m chatTUIModel) composerHint() string {
 	case m.approval != nil:
 		return i18n.T("tui.hint.approval")
 	case m.busy:
-		return i18n.T("tui.hint.busy")
+		return busyHint(len(m.queuedTasks))
 	default:
 		return i18n.T("tui.hint.send")
 	}
+}
+
+func (m *chatTUIModel) startTask(task string) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.busy = true
+	m.runningTask = task
+	m.runningCancel = cancel
+	m.runtime.setForegroundCancel(cancel)
+	m.statusText = i18n.T("tui.status.running")
+	m.refreshInputState()
+	return runTaskCmd(m.runtime, m.events, ctx, task)
+}
+
+func (m *chatTUIModel) enqueueTask(task string) {
+	m.queuedTasks = append(m.queuedTasks, task)
+	m.statusText = queuedTaskAddedText(len(m.queuedTasks))
+	m.entries = append(m.entries, tuiEntry{role: "system", text: queuedTaskAddedText(len(m.queuedTasks))})
+}
+
+func (m *chatTUIModel) dequeueTask() (string, bool) {
+	if len(m.queuedTasks) == 0 {
+		return "", false
+	}
+	task := m.queuedTasks[0]
+	m.queuedTasks = m.queuedTasks[1:]
+	return task, true
+}
+
+func (m *chatTUIModel) interruptForeground() bool {
+	if !m.busy || m.runningCancel == nil {
+		return false
+	}
+	m.runtime.interruptForegroundTask()
+	m.statusText = i18n.T("cmd.interrupt.pending")
+	m.refreshInputState()
+	return true
+}
+
+func busyPlaceholder(queued int) string {
+	base := strings.TrimSpace(i18n.T("tui.placeholder.busy"))
+	if queued <= 0 {
+		return base
+	}
+	return fmt.Sprintf("%s queued=%d", base, queued)
+}
+
+func busyHint(queued int) string {
+	base := strings.TrimSpace(i18n.T("tui.hint.busy"))
+	if queued <= 0 {
+		return base
+	}
+	return fmt.Sprintf("%s queued=%d", base, queued)
+}
+
+func queuedTaskAddedText(count int) string {
+	if count <= 1 {
+		return i18n.T("cmd.queue.added.one")
+	}
+	return fmt.Sprintf(i18n.T("cmd.queue.added.many"), count)
+}
+
+func queuedTaskStartingText(task string, remaining int) string {
+	text := fmt.Sprintf(i18n.T("cmd.queue.starting"), task)
+	if remaining > 0 {
+		text += fmt.Sprintf(" (%s)", fmt.Sprintf(i18n.T("cmd.queue.remaining"), remaining))
+	}
+	return text
 }
 
 func (m *chatTUIModel) appendActivityEntry(kind, text string) {

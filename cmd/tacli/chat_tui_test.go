@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,86 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 	}
 	if m.chatViewport.YOffset != 5 {
 		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestBusySendQueuesPrompt(t *testing.T) {
+	r := &chatRuntime{
+		cfg:     config.Config{Model: "test-model"},
+		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.busy = true
+	m.input.SetValue("follow-up question")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(chatTUIModel)
+
+	if len(m.queuedTasks) != 1 || m.queuedTasks[0] != "follow-up question" {
+		t.Fatalf("expected queued task, got %#v", m.queuedTasks)
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("expected input to reset after queueing, got %q", m.input.Value())
+	}
+	if len(m.entries) != 2 {
+		t.Fatalf("expected user entry plus queue note, got %d entries", len(m.entries))
+	}
+	if m.entries[1].role != "system" || !strings.Contains(m.entries[1].text, "queued") {
+		t.Fatalf("expected queue note, got %#v", m.entries[1])
+	}
+}
+
+func TestInterruptForegroundCancelsRunningTask(t *testing.T) {
+	canceled := false
+	r := &chatRuntime{
+		cfg:     config.Config{Model: "test-model"},
+		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.busy = true
+	m.runningCancel = func() {
+		canceled = true
+	}
+	m.runtime.setForegroundCancel(m.runningCancel)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(chatTUIModel)
+
+	if !canceled {
+		t.Fatalf("expected running task to be canceled")
+	}
+	if !strings.Contains(m.statusText, "interrupt") {
+		t.Fatalf("expected interrupt status, got %q", m.statusText)
+	}
+}
+
+func TestTaskDoneStartsQueuedTask(t *testing.T) {
+	r := &chatRuntime{
+		cfg: config.Config{Model: "test-model"},
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	m := chatTUIModel{
+		runtime:       r,
+		input:         textarea.New(),
+		queuedTasks:   []string{"second task"},
+		busy:          true,
+		runningTask:   "first task",
+		runningCancel: func() {},
+	}
+
+	updated, cmd := m.Update(tuiTaskDoneMsg{task: "first task", err: context.Canceled})
+	m = updated.(chatTUIModel)
+
+	if !m.busy {
+		t.Fatalf("expected queued task to start immediately")
+	}
+	if m.runningTask != "second task" {
+		t.Fatalf("expected second task to start, got %q", m.runningTask)
+	}
+	if len(m.queuedTasks) != 0 {
+		t.Fatalf("expected queue to drain, got %#v", m.queuedTasks)
+	}
+	if cmd == nil {
+		t.Fatalf("expected queued task command to be scheduled")
 	}
 }

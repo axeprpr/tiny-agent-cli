@@ -63,6 +63,7 @@ var messagesEN = map[string]string{
 	// /help
 	"help": `Commands:
   /help                 Show this help
+  /interrupt            Interrupt the current foreground task
   /init                 Scaffold CLAW.md and local repo artifacts
   /exit, /quit          Exit the chat
   /reset                Clear conversation context
@@ -118,6 +119,14 @@ Or just type naturally -- no command needed for most tasks.`,
 
 	// Commands
 	"cmd.reset":              "context reset",
+	"cmd.interrupt.ok":       "interrupt requested",
+	"cmd.interrupt.idle":     "no foreground task is running",
+	"cmd.interrupt.pending":  "interrupting current task",
+	"cmd.interrupt.done":     "foreground task interrupted",
+	"cmd.queue.added.one":    "queued next prompt",
+	"cmd.queue.added.many":   "queued prompt (%d pending)",
+	"cmd.queue.starting":     "starting queued prompt: %s",
+	"cmd.queue.remaining":    "%d still queued",
 	"cmd.approval.usage":     "usage: /approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "approval mode set to %s",
 	"cmd.output.deprecated":  "output mode command is deprecated in chat; terminal rendering is now the default",

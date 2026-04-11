@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"tiny-agent-cli/internal/agent"
@@ -41,33 +42,35 @@ type runtimeOptions struct {
 }
 
 type chatRuntime struct {
-	cfg            config.Config
-	reader         *bufio.Reader
-	approver       tools.Approver
-	loop           *agent.Agent
-	session        *agent.Session
-	jobs           *jobManager
-	sessionName    string
-	outputMode     string
-	transcriptPath string
-	statePath      string
-	memoryPath     string
-	auditPath      string
-	tracePath      string
-	permissionPath string
-	teamKey        string
-	scopeKey       string
-	globalMemory   []string
-	teamMemory     []string
-	projectMemory  []string
-	permissions    *tools.PermissionStore
-	taskStore      *tasks.Store
-	autoMemoryExit bool
-	dirtySession   bool
-	tracer         *trace.FileSink
-	pluginManager  *plugins.Manager
-	pluginCommands map[string]plugins.Command
-	skills         []tools.Skill
+	cfg              config.Config
+	reader           *bufio.Reader
+	approver         tools.Approver
+	loop             *agent.Agent
+	session          *agent.Session
+	jobs             *jobManager
+	sessionName      string
+	outputMode       string
+	transcriptPath   string
+	statePath        string
+	memoryPath       string
+	auditPath        string
+	tracePath        string
+	permissionPath   string
+	teamKey          string
+	scopeKey         string
+	globalMemory     []string
+	teamMemory       []string
+	projectMemory    []string
+	permissions      *tools.PermissionStore
+	taskStore        *tasks.Store
+	autoMemoryExit   bool
+	dirtySession     bool
+	tracer           *trace.FileSink
+	pluginManager    *plugins.Manager
+	pluginCommands   map[string]plugins.Command
+	skills           []tools.Skill
+	foregroundMu     sync.Mutex
+	foregroundCancel context.CancelFunc
 }
 
 type runtimeAgentEventSink struct {
@@ -429,6 +432,11 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1}
 	case "/help":
 		return runtimeCommandResult{handled: true, output: i18n.T("help"), exitCode: -1}
+	case "/interrupt":
+		if r.interruptForegroundTask() {
+			return runtimeCommandResult{handled: true, output: i18n.T("cmd.interrupt.ok"), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.interrupt.idle"), exitCode: -1}
 	case "/init":
 		report, err := initializeRepo(r.cfg.WorkDir)
 		if err != nil {
@@ -667,6 +675,38 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		return runtimeCommandResult{handled: false, exitCode: -1}
 	}
+}
+
+func (r *chatRuntime) setForegroundCancel(cancel context.CancelFunc) {
+	if r == nil {
+		return
+	}
+	r.foregroundMu.Lock()
+	defer r.foregroundMu.Unlock()
+	r.foregroundCancel = cancel
+}
+
+func (r *chatRuntime) clearForegroundCancel(_ context.CancelFunc) {
+	if r == nil {
+		return
+	}
+	r.foregroundMu.Lock()
+	defer r.foregroundMu.Unlock()
+	r.foregroundCancel = nil
+}
+
+func (r *chatRuntime) interruptForegroundTask() bool {
+	if r == nil {
+		return false
+	}
+	r.foregroundMu.Lock()
+	cancel := r.foregroundCancel
+	r.foregroundMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 func (r *chatRuntime) rebuildLoop() {
