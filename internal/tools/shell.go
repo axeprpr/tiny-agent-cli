@@ -202,10 +202,19 @@ func validateCommand(command string) error {
 
 func validateForegroundCommand(command string) error {
 	for _, part := range splitShellCommands(command) {
-		if !looksLikeForegroundLongRunningCommand(part) {
+		normalized := normalizeShellCommand(part)
+		if normalized == "" {
 			continue
 		}
-		return fmt.Errorf("command appears to start a long-running foreground process; background it explicitly or use start_background_job")
+		if !looksLikeLongRunningCommand(normalized) {
+			continue
+		}
+		if !containsBackgroundOperator(part) {
+			return fmt.Errorf("command appears to start a long-running foreground process; use start_background_job or detach it with nohup/setsid")
+		}
+		if !usesDetachedBackgrounding(normalized) {
+			return fmt.Errorf("command appears to start a long-running service via shell backgrounding; use start_background_job or detach it with nohup/setsid")
+		}
 	}
 	return nil
 }
@@ -224,7 +233,8 @@ func splitShellCommands(command string) []string {
 		b.Reset()
 	}
 
-	for _, r := range command {
+	for i := 0; i < len(command); i++ {
+		r := rune(command[i])
 		if escape {
 			b.WriteRune(r)
 			escape = false
@@ -246,6 +256,13 @@ func splitShellCommands(command string) []string {
 		case '\'', '"':
 			quote = r
 			b.WriteRune(r)
+		case '&', '|':
+			if i+1 < len(command) && rune(command[i+1]) == r {
+				flush()
+				i++
+				continue
+			}
+			b.WriteRune(r)
 		case ';', '\n':
 			flush()
 		default:
@@ -256,27 +273,11 @@ func splitShellCommands(command string) []string {
 	return out
 }
 
-func looksLikeForegroundLongRunningCommand(command string) bool {
-	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(command)), " "))
-	if normalized == "" {
-		return false
-	}
-	if strings.Contains(normalized, "&") {
-		return false
-	}
-	if strings.Contains(normalized, " nohup ") || strings.HasPrefix(normalized, "nohup ") {
-		return false
-	}
-	if strings.Contains(normalized, " setsid ") || strings.HasPrefix(normalized, "setsid ") {
-		return false
-	}
-	if strings.Contains(normalized, " timeout ") || strings.HasPrefix(normalized, "timeout ") {
-		return false
-	}
-	if strings.Contains(normalized, " gtimeout ") || strings.HasPrefix(normalized, "gtimeout ") {
-		return false
-	}
+func normalizeShellCommand(command string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(command)), " "))
+}
 
+func looksLikeLongRunningCommand(normalized string) bool {
 	switch {
 	case strings.HasPrefix(normalized, "tail -f "),
 		strings.HasPrefix(normalized, "tail -f"),
@@ -305,6 +306,56 @@ func looksLikeForegroundLongRunningCommand(command string) bool {
 	default:
 		return false
 	}
+}
+
+func usesDetachedBackgrounding(normalized string) bool {
+	if strings.Contains(normalized, " nohup ") || strings.HasPrefix(normalized, "nohup ") {
+		return true
+	}
+	if strings.Contains(normalized, " setsid ") || strings.HasPrefix(normalized, "setsid ") {
+		return true
+	}
+	return false
+}
+
+func containsBackgroundOperator(command string) bool {
+	var quote rune
+	escape := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if quote != 0 {
+			if ch == '\\' && quote == '"' {
+				escape = true
+				continue
+			}
+			if rune(ch) == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = rune(ch)
+		case '&':
+			prev := byte(0)
+			next := byte(0)
+			if i > 0 {
+				prev = command[i-1]
+			}
+			if i+1 < len(command) {
+				next = command[i+1]
+			}
+			if prev == '&' || next == '&' || prev == '>' || prev == '<' {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func isDangerousRMInvocation(command string) bool {

@@ -567,6 +567,60 @@ func TestDecideTurnExecutesToolCalls(t *testing.T) {
 	}
 }
 
+func TestDecideTurnStopsAfterExplicitUserDenial(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "update the file"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: file write rejected by user")},
+	}
+	decision := decideTurn(messages, model.Message{
+		ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "edit_file",
+				Arguments: `{"path":"README.md","search":"old","replace":"new"}`,
+			},
+		}},
+	})
+	if decision.action != turnActionFinish || decision.final != userDeniedActionFinal {
+		t.Fatalf("expected explicit-denial finish decision, got %#v", decision)
+	}
+}
+
+func TestDecideTurnOverridesAssistantWorkaroundAfterExplicitUserDenial(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "write the file"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: file write rejected by user")},
+	}
+	decision := decideTurn(messages, model.Message{Content: "写文件被拒了，我改用精确编辑现有文件。"})
+	if decision.action != turnActionFinish || decision.final != userDeniedActionFinal {
+		t.Fatalf("expected denial to return control to user, got %#v", decision)
+	}
+}
+
+func TestDecideTurnKeepsSafeAssistantReplyAfterExplicitUserDenial(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "write the file"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: file write rejected by user")},
+	}
+	decision := decideTurn(messages, model.Message{Content: "Creating new files is currently not allowed in this workspace. Is there something else I can help you with?"})
+	if decision.action != turnActionFinish || decision.final != "Creating new files is currently not allowed in this workspace. Is there something else I can help you with?" {
+		t.Fatalf("expected safe denial reply to pass through, got %#v", decision)
+	}
+}
+
+func TestDecideTurnKeepsSafeAssistantReplyWithLetMeKnowAfterExplicitUserDenial(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "write the file"},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: file write rejected by user")},
+	}
+	reply := "I am currently unable to create the file DENY_TEST_2.txt due to workspace restrictions. Let me know if you'd like me to try another approach or assist with something else."
+	decision := decideTurn(messages, model.Message{Content: reply})
+	if decision.action != turnActionFinish || decision.final != reply {
+		t.Fatalf("expected safe denial reply to pass through, got %#v", decision)
+	}
+}
+
 func TestDecideTurnRetriesOnEmptyPostToolAnswer(t *testing.T) {
 	messages := []model.Message{
 		{Role: "user", Content: "show the file contents"},

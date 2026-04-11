@@ -32,6 +32,7 @@ const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the us
 const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
 const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
+const userDeniedActionFinal = "The requested action was denied by the user. I will not try alternative write or command paths automatically. Tell me how you want to proceed."
 
 type turnAction int
 
@@ -287,6 +288,19 @@ func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken fun
 }
 
 func decideTurn(messages []model.Message, msg model.Message) turnDecision {
+	if latestToolWasExplicitUserDenial(messages) {
+		if len(msg.ToolCalls) == 0 && !assistantContinuesAfterDeniedAction(msg) {
+			return turnDecision{
+				action: turnActionFinish,
+				final:  finalResponseText(msg),
+			}
+		}
+		return turnDecision{
+			action:  turnActionFinish,
+			final:   userDeniedActionFinal,
+			logLine: "user denied the requested action, returning control to the user",
+		}
+	}
 	if len(msg.ToolCalls) > 0 {
 		return turnDecision{action: turnActionExecuteTools}
 	}
@@ -542,6 +556,52 @@ func latestToolLooksLikeCommandFailure(messages []model.Message) bool {
 	}
 	for _, hint := range hints {
 		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestToolWasExplicitUserDenial(messages []model.Message) bool {
+	lower := strings.ToLower(latestToolOutput(messages))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"rejected by user",
+		"command rejected by user",
+		"file write rejected by user",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantContinuesAfterDeniedAction(msg model.Message) bool {
+	if len(msg.ToolCalls) > 0 {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(model.ContentString(msg.Content)))
+	if text == "" {
+		return false
+	}
+	hints := []string{
+		"i'll ",
+		"i will ",
+		"instead",
+		"use precise edit",
+		"use edit",
+		"改用",
+		"我改用",
+		"我会改用",
+		"继续尝试",
+		"换个方式",
+	}
+	for _, hint := range hints {
+		if strings.Contains(text, hint) {
 			return true
 		}
 	}

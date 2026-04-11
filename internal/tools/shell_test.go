@@ -146,7 +146,7 @@ func TestRunCommandToolRejectsForegroundLongRunningCommands(t *testing.T) {
 	}
 }
 
-func TestRunCommandToolAllowsExplicitBackgroundingForLongRunningCommands(t *testing.T) {
+func TestRunCommandToolRejectsChainedForegroundHttpServer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell assertions are bash-specific")
 	}
@@ -154,7 +154,35 @@ func TestRunCommandToolAllowsExplicitBackgroundingForLongRunningCommands(t *test
 	if !ok {
 		t.Fatalf("unexpected tool type")
 	}
-	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"tail -f /dev/null >/dev/null 2>&1 & pid=$!; sleep 0.1; kill $pid >/dev/null 2>&1; wait $pid 2>/dev/null; echo ok"}`))
+	_, err := tool.Call(context.Background(), json.RawMessage(`{"command":"cd /tmp && python3 -m http.server 8000 --bind 0.0.0.0 >/tmp/http.log 2>&1"}`))
+	if err == nil || !strings.Contains(err.Error(), "long-running foreground process") {
+		t.Fatalf("expected chained foreground-process rejection, got %v", err)
+	}
+}
+
+func TestRunCommandToolRejectsBareBackgroundingForLongRunningServices(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	_, err := tool.Call(context.Background(), json.RawMessage(`{"command":"cd /tmp && python3 -m http.server 8000 --bind 0.0.0.0 >/tmp/http.log 2>&1 & echo started"}`))
+	if err == nil || !strings.Contains(err.Error(), "shell backgrounding") {
+		t.Fatalf("expected bare background-service rejection, got %v", err)
+	}
+}
+
+func TestRunCommandToolAllowsDetachedBackgroundingForLongRunningCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"nohup tail -f /dev/null >/tmp/tacli-tail.log 2>&1 < /dev/null & pid=$!; sleep 0.1; kill $pid >/dev/null 2>&1; echo ok"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
