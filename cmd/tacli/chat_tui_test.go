@@ -12,6 +12,8 @@ import (
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
+	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/session"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -64,6 +66,19 @@ func TestRenderTodoSummary(t *testing.T) {
 	got := m.renderTodoSummary()
 	if !strings.Contains(got, "plan") || !strings.Contains(got, "[done] inspect auth flow") {
 		t.Fatalf("unexpected todo summary: %q", got)
+	}
+}
+
+func TestRenderHeaderShowsVersionExplicitly(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	m := chatTUIModel{runtime: r, width: 100}
+	got := m.renderHeader()
+	if !strings.Contains(got, "tacli "+version) {
+		t.Fatalf("expected header to show explicit version, got %q", got)
 	}
 }
 
@@ -285,5 +300,51 @@ func TestTaskDoneStartsQueuedTask(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatalf("expected queued task command to be scheduled")
+	}
+}
+
+func TestSessionLoadReloadsVisibleConversation(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := session.Save(session.SessionPath(stateDir, "source"), session.State{
+		SessionName: "source",
+		Messages: []model.Message{
+			{Role: "system", Content: "system prompt"},
+			{Role: "user", Content: "old question"},
+			{Role: "assistant", Content: "old answer"},
+		},
+	}); err != nil {
+		t.Fatalf("save source session: %v", err)
+	}
+
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model", StateDir: stateDir},
+		session:     agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+		sessionName: "current",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "current question"},
+		{Role: "assistant", Content: "current answer"},
+	})
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.width = 100
+	m.height = 30
+	m.input.SetValue("/resume source")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(chatTUIModel)
+	m.resize(true)
+
+	content := m.renderEntries()
+	if strings.Contains(content, "current question") {
+		t.Fatalf("expected previous session content to be replaced, got %q", content)
+	}
+	if !strings.Contains(content, "old question") || !strings.Contains(content, "old answer") {
+		t.Fatalf("expected restored session content, got %q", content)
+	}
+	if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "system" || !strings.Contains(m.entries[len(m.entries)-1].text, "conversation resumed: source") {
+		t.Fatalf("expected restore confirmation entry, got %#v", m.entries)
 	}
 }

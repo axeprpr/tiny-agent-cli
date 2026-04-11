@@ -398,6 +398,25 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	return m
 }
 
+func (m *chatTUIModel) reloadConversationFromSession() {
+	m.entries = m.entries[:0]
+	for _, msg := range m.runtime.session.Messages() {
+		switch msg.Role {
+		case "user":
+			m.entries = append(m.entries, tuiEntry{role: "user", text: model.ContentString(msg.Content)})
+		case "assistant":
+			text := strings.TrimSpace(model.ContentString(msg.Content))
+			if text != "" {
+				m.entries = append(m.entries, tuiEntry{role: "assistant", text: formatRunOutput(text, m.runtime.outputMode)})
+			}
+		}
+	}
+	m.entriesDirty = true
+	m.entriesWidth = 0
+	m.chatViewport.SetContent("")
+	m.chatViewport.SetYOffset(0)
+}
+
 func runChatTUI(runtime *chatRuntime) int {
 	events := make(chan tea.Msg, 256)
 	approver := newTUIApprover(runtime.cfg.ApprovalMode, events)
@@ -537,6 +556,9 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(task, "/") {
 				result := m.runtime.executeCommand(task)
 				if result.handled {
+					if result.reloadSessionView {
+						m.reloadConversationFromSession()
+					}
 					if strings.TrimSpace(result.output) != "" {
 						m.entries = append(m.entries, tuiEntry{role: "system", text: result.output})
 						m.entriesDirty = true
@@ -1018,8 +1040,7 @@ func parseApprovalFields(body string) map[string]string {
 
 func (m chatTUIModel) renderHeader() string {
 	chips := []string{
-		titleStyle.Render("tacli"),
-		chipMutedStyle.Render(version),
+		titleStyle.Render(fmt.Sprintf("tacli %s", version)),
 		chipAccentStyle.Render(m.runtime.cfg.Model),
 		chipMutedStyle.Render(m.runtime.sessionName),
 	}

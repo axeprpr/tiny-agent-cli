@@ -65,13 +65,14 @@ var messagesEN = map[string]string{
   /help                 Show this help
   /interrupt            Interrupt the current foreground task
   /init                 Scaffold CLAW.md and local repo artifacts
-  /save                 Save the current session record for debugging
+  /save                 Save the current conversation record for debugging
   /exit, /quit          Exit the chat
   /reset                Clear conversation context
-  /session [name|new]   Switch or create a session
-  /session save         Save current session state
-  /session restore      Restore current session state
-  /status               Show session and config status
+  /new [name]           Start a new conversation
+  /resume [name]        Resume a saved conversation or list recent ones
+  /rename <name>        Rename the current conversation
+  /fork [name]          Fork the current conversation into a new one
+  /status               Show conversation and config status
   /plan                 Show plan.md
   /compact              Compact conversation context now
   /agents               Inspect or manage background subagents
@@ -82,7 +83,7 @@ var messagesEN = map[string]string{
   /skills               List discovered skills
   /capabilities         List bundled capability packs
   /scope                Show current project scope key
-  /model <name>         Switch model for this session
+  /model <name>         Switch model for this conversation
   /policy ...           Show or change persisted tool and command policy
   /tasks ...            Manage persistent project tasks
   /review [base] [target] [--staged] [--path <path>]
@@ -120,7 +121,7 @@ Or just type naturally -- no command needed for most tasks.`,
 
 	// Commands
 	"cmd.reset":              "context reset",
-	"cmd.save.ok":            "session record saved\npath=%s",
+	"cmd.save.ok":            "conversation record saved\npath=%s",
 	"cmd.interrupt.ok":       "interrupt requested",
 	"cmd.interrupt.idle":     "no foreground task is running",
 	"cmd.interrupt.pending":  "interrupting current task",
@@ -161,9 +162,6 @@ Or just type naturally -- no command needed for most tasks.`,
 	"cmd.forgetg.ok":         "removed %d global memory note(s)",
 	"cmd.memorize.err":       "memorize error: %v",
 	"cmd.memorize.ok":        "added %d memory note(s)",
-	"cmd.session.already":    "already on session %s",
-	"cmd.session.switched":   "switched to session %s",
-	"cmd.session.started":    "started session %s",
 
 	// Memory responses
 	"mem.reject":               "This is not suitable for long-term memory; state a stable preference or project fact directly.",

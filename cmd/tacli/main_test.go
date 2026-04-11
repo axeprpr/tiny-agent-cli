@@ -26,6 +26,29 @@ import (
 	"tiny-agent-cli/internal/transport"
 )
 
+func TestPrintUsageIncludesVersion(t *testing.T) {
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = old
+	})
+
+	printUsage()
+	_ = w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "tacli "+version) {
+		t.Fatalf("expected usage to include explicit version, got %q", got)
+	}
+}
+
 func TestExtractStableMemoryNotes(t *testing.T) {
 	messages := []model.Message{
 		{Role: "user", Content: "My preference is short Chinese answers.\nThis repo uses Go."},
@@ -880,23 +903,20 @@ func TestSavedSessionStateCanResumeToolWorkflow(t *testing.T) {
 	}
 }
 
-func TestSessionLoadCommandRestoresSavedMemory(t *testing.T) {
+func TestResumeCommandRestoresSavedMemory(t *testing.T) {
 	dir := t.TempDir()
 	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
 
 	if result := r.executeCommand("/memory remember original-note"); !result.handled {
 		t.Fatalf("expected memory command to be handled")
 	}
-	if result := r.executeCommand("/session save"); !result.handled || !strings.Contains(result.output, "session saved") {
-		t.Fatalf("unexpected save result: %#v", result)
-	}
-	if result := r.executeCommand("/session other"); !result.handled || !strings.Contains(result.output, "started session other") {
+	if result := r.executeCommand("/new other"); !result.handled || !strings.Contains(result.output, "started conversation other") {
 		t.Fatalf("unexpected switch result: %#v", result)
 	}
 	if result := r.executeCommand("/memory remember other-note"); !result.handled {
 		t.Fatalf("expected memory command to be handled")
 	}
-	if result := r.executeCommand("/session load source"); !result.handled || !strings.Contains(result.output, "session restored: source") {
+	if result := r.executeCommand("/resume source"); !result.handled || !strings.Contains(result.output, "conversation resumed: source") {
 		t.Fatalf("unexpected load result: %#v", result)
 	}
 
@@ -909,6 +929,43 @@ func TestSessionLoadCommandRestoresSavedMemory(t *testing.T) {
 	}
 	if strings.Contains(show.output, "other-note") {
 		t.Fatalf("expected other session memory to be replaced, got %q", show.output)
+	}
+}
+
+func TestRenameAndForkConversationCommands(t *testing.T) {
+	dir := t.TempDir()
+	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
+	r.session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "world"},
+	})
+	if err := r.save(); err != nil {
+		t.Fatalf("save source: %v", err)
+	}
+
+	if result := r.executeCommand("/rename renamed"); !result.handled || !strings.Contains(result.output, "renamed conversation source -> renamed") {
+		t.Fatalf("unexpected rename result: %#v", result)
+	}
+	if _, err := os.Stat(session.SessionPath(dir, "renamed")); err != nil {
+		t.Fatalf("expected renamed conversation file: %v", err)
+	}
+	if _, err := os.Stat(session.SessionPath(dir, "source")); !os.IsNotExist(err) {
+		t.Fatalf("expected old conversation file removed, got %v", err)
+	}
+
+	if result := r.executeCommand("/fork forked"); !result.handled || !strings.Contains(result.output, "forked conversation to forked") {
+		t.Fatalf("unexpected fork result: %#v", result)
+	}
+	if r.sessionName != "forked" {
+		t.Fatalf("expected current conversation to switch to forked, got %q", r.sessionName)
+	}
+	forked, err := session.Load(session.SessionPath(dir, "forked"))
+	if err != nil {
+		t.Fatalf("load forked conversation: %v", err)
+	}
+	if !strings.Contains(model.ContentString(forked.Messages[1].Content), "hello") {
+		t.Fatalf("expected forked conversation to keep history, got %#v", forked.Messages)
 	}
 }
 
@@ -1369,11 +1426,11 @@ func TestRenderSessionRecordIncludesMessagesAndToolCalls(t *testing.T) {
 	})
 
 	got := r.renderSessionRecord()
-	if !strings.Contains(got, "# tacli session record") {
+	if !strings.Contains(got, "# tacli conversation record") {
 		t.Fatalf("missing header: %q", got)
 	}
-	if !strings.Contains(got, "session=chat-test") {
-		t.Fatalf("missing session line: %q", got)
+	if !strings.Contains(got, "conversation=chat-test") {
+		t.Fatalf("missing conversation line: %q", got)
 	}
 	if !strings.Contains(got, "(initial system prompt omitted") {
 		t.Fatalf("expected initial system prompt omission, got %q", got)
@@ -1401,7 +1458,7 @@ func TestSaveCommandWritesExportFile(t *testing.T) {
 	if !result.handled {
 		t.Fatalf("expected /save handled")
 	}
-	if !strings.Contains(result.output, "session record saved") {
+	if !strings.Contains(result.output, "conversation record saved") {
 		t.Fatalf("expected save output, got %q", result.output)
 	}
 	wantPath := "/tmp/session-data.txt"
@@ -1457,7 +1514,7 @@ func TestRunChatProcessesNulSeparatedCommandsEndToEnd(t *testing.T) {
 		"--base-url", "http://example.test/v1",
 		"--model", "test-model",
 		"--api-key", "test-key",
-		"--session", "nul-batch",
+		"--resume", "nul-batch",
 	})
 	_ = stdoutW.Close()
 	_ = stderrW.Close()

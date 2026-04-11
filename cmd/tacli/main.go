@@ -37,7 +37,7 @@ var version = "dev"
 
 type runtimeOptions struct {
 	outputMode     string
-	session        string
+	conversation   string
 	autoMemoryExit bool
 }
 
@@ -353,7 +353,7 @@ func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {
 
 func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader) (*chatRuntime, error) {
 	loop, approver := buildAgent(cfg, reader)
-	sessionName := resolveChatSessionName(opts.session, time.Now())
+	sessionName := resolveChatSessionName(opts.conversation, time.Now())
 
 	r := &chatRuntime{
 		cfg:            cfg,
@@ -394,7 +394,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		_, _ = manager.Discover()
 	}
 
-	if strings.TrimSpace(opts.session) != "" {
+	if strings.TrimSpace(opts.conversation) != "" {
 		if _, err := r.loadCurrentSessionState(); err != nil {
 			return nil, err
 		}
@@ -402,7 +402,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	r.recordTrace(context.Background(), "runtime", "runtime_started", map[string]any{
 		"model":      cfg.Model,
 		"workdir":    cfg.WorkDir,
-		"session":    r.sessionName,
+		"conversation": r.sessionName,
 		"trace_path": r.tracePath,
 	})
 
@@ -410,9 +410,10 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 }
 
 type runtimeCommandResult struct {
-	handled  bool
-	output   string
-	exitCode int
+	handled           bool
+	output            string
+	exitCode          int
+	reloadSessionView bool
 }
 
 func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
@@ -431,9 +432,9 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/reset":
 		r.session = r.newSession()
 		_ = r.save()
-		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1, reloadSessionView: true}
 	case "/help":
-		return runtimeCommandResult{handled: true, output: i18n.T("help"), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("tacli %s\n\n%s", version, i18n.T("help")), exitCode: -1}
 	case "/interrupt":
 		if r.interruptForegroundTask() {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.interrupt.ok"), exitCode: -1}
@@ -464,7 +465,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if r.permissions != nil {
 			commandRuleSummary = fmt.Sprintf("command_rules=%d", len(r.permissions.CommandRules()))
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
 			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
 	case "/contract":
 		return runtimeCommandResult{handled: true, output: r.contractCommand(), exitCode: -1}
@@ -479,6 +480,43 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: "conversation compacted", exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: "conversation did not need compaction", exitCode: -1}
+	case "/new":
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		started, err := r.startNewConversation(target)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation create error: %v", err), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: started, exitCode: -1, reloadSessionView: true}
+	case "/resume":
+		if len(fields) == 1 {
+			return runtimeCommandResult{handled: true, output: r.describeConversations(), exitCode: -1}
+		}
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		loaded, err := r.resumeConversation(target)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation resume error: %v", err), exitCode: -1}
+		}
+		if !loaded {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("no saved conversation %s", target), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation resumed: %s", r.sessionName), exitCode: -1, reloadSessionView: true}
+	case "/rename":
+		if len(fields) < 2 {
+			return runtimeCommandResult{handled: true, output: "usage: /rename <name>", exitCode: -1}
+		}
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		output, err := r.renameConversation(target)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation rename error: %v", err), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: output, exitCode: -1, reloadSessionView: true}
+	case "/fork":
+		target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		output, err := r.forkConversation(target)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation fork error: %v", err), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: output, exitCode: -1, reloadSessionView: true}
 	case "/agents":
 		return runtimeCommandResult{handled: true, output: r.agentsCommand(fields), exitCode: -1}
 	case "/hooks":
@@ -501,38 +539,6 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.debugTurnCommand(fields), exitCode: -1}
 	case "/trace":
 		return runtimeCommandResult{handled: true, output: r.traceCommand(fields), exitCode: -1}
-	case "/session":
-		if len(fields) == 1 {
-			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
-		}
-		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "list" {
-			return runtimeCommandResult{handled: true, output: r.describeSessions(), exitCode: -1}
-		}
-		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "save" {
-			if err := r.save(); err != nil {
-				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session save error: %v", err), exitCode: -1}
-			}
-			return runtimeCommandResult{handled: true, output: "session saved", exitCode: -1}
-		}
-		if action := strings.ToLower(strings.TrimSpace(fields[1])); action == "restore" || action == "load" {
-			target := r.sessionName
-			if len(fields) > 2 {
-				target = strings.Join(fields[2:], " ")
-			}
-			loaded, err := r.loadSessionState(target)
-			if err != nil {
-				return runtimeCommandResult{handled: true, output: fmt.Sprintf("session restore error: %v", err), exitCode: -1}
-			}
-			if !loaded {
-				return runtimeCommandResult{handled: true, output: fmt.Sprintf("no saved state for session %s", resolveChatSessionName(target, time.Now())), exitCode: -1}
-			}
-			return runtimeCommandResult{handled: true, output: fmt.Sprintf("session restored: %s", r.sessionName), exitCode: -1}
-		}
-		switchedTo, err := r.switchSession(strings.Join(fields[1:], " "))
-		if err != nil {
-			return runtimeCommandResult{handled: true, output: fmt.Sprintf("session switch error: %v", err), exitCode: -1}
-		}
-		return runtimeCommandResult{handled: true, output: switchedTo, exitCode: -1}
 	case "/scope":
 		return runtimeCommandResult{handled: true, output: r.scopeKey, exitCode: -1}
 	case "/approval":
@@ -741,11 +747,14 @@ func (r *chatRuntime) setSessionName(name string) {
 }
 
 func (r *chatRuntime) loadCurrentSessionState() (bool, error) {
-	return r.loadSessionState(r.sessionName)
+	return r.resumeConversation(r.sessionName)
 }
 
-func (r *chatRuntime) loadSessionState(name string) (bool, error) {
-	next := resolveChatSessionName(name, time.Now())
+func (r *chatRuntime) resumeConversation(name string) (bool, error) {
+	next := strings.TrimSpace(name)
+	if next == "" {
+		next = r.sessionName
+	}
 	path := session.SessionPath(r.cfg.StateDir, next)
 	state, err := session.Load(path)
 	if err != nil {
@@ -780,10 +789,10 @@ func (r *chatRuntime) loadSessionState(name string) (bool, error) {
 	return true, nil
 }
 
-func (r *chatRuntime) switchSession(name string) (string, error) {
+func (r *chatRuntime) resumeOrCreateConversation(name string) (string, error) {
 	next := resolveChatSessionName(name, time.Now())
 	if next == r.sessionName {
-		return fmt.Sprintf("already on session %s", r.sessionName), nil
+		return fmt.Sprintf("already on conversation %s", r.sessionName), nil
 	}
 	if err := r.save(); err != nil {
 		return "", err
@@ -802,20 +811,20 @@ func (r *chatRuntime) switchSession(name string) (string, error) {
 	}
 	if loaded {
 		r.recordTrace(context.Background(), "runtime", "session_switched", map[string]any{"session": r.sessionName, "loaded": true})
-		return fmt.Sprintf("switched to session %s", r.sessionName), nil
+		return fmt.Sprintf("conversation resumed: %s", r.sessionName), nil
 	}
 	r.recordTrace(context.Background(), "runtime", "session_switched", map[string]any{"session": r.sessionName, "loaded": false})
-	return fmt.Sprintf("started session %s", r.sessionName), nil
+	return fmt.Sprintf("started conversation %s", r.sessionName), nil
 }
 
-func (r *chatRuntime) describeSessions() string {
+func (r *chatRuntime) describeConversations() string {
 	lines := []string{
-		"current=" + r.sessionName,
-		"usage: /session list",
-		"usage: /session <name>",
-		"usage: /session new",
-		"usage: /session save",
-		"usage: /session load [name]",
+		"current_conversation=" + r.sessionName,
+		"usage: /resume",
+		"usage: /resume <name>",
+		"usage: /new [name]",
+		"usage: /rename <name>",
+		"usage: /fork [name]",
 	}
 
 	summaries, err := session.ListSessions(r.cfg.StateDir)
@@ -826,7 +835,7 @@ func (r *chatRuntime) describeSessions() string {
 	if len(summaries) > 8 {
 		summaries = summaries[:8]
 	}
-	lines = append(lines, "recent:")
+	lines = append(lines, "recent conversations:")
 	for _, item := range summaries {
 		line := fmt.Sprintf("- %s", item.Name)
 		if !item.SavedAt.IsZero() {
@@ -844,6 +853,145 @@ func (r *chatRuntime) describeSessions() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) startNewConversation(name string) (string, error) {
+	next := resolveChatSessionName(name, time.Now())
+	if next == r.sessionName {
+		return fmt.Sprintf("already on conversation %s", r.sessionName), nil
+	}
+	if _, err := os.Stat(session.SessionPath(r.cfg.StateDir, next)); err == nil {
+		return "", fmt.Errorf("conversation %s already exists; use /resume %s", next, next)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	r.setSessionName(next)
+	r.session = r.newSession()
+	r.dirtySession = false
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("started conversation %s", r.sessionName), nil
+}
+
+func (r *chatRuntime) renameConversation(name string) (string, error) {
+	next := strings.TrimSpace(name)
+	if next == "" {
+		return "", fmt.Errorf("missing conversation name")
+	}
+	if next == r.sessionName {
+		return fmt.Sprintf("conversation already named %s", r.sessionName), nil
+	}
+	targetState := session.SessionPath(r.cfg.StateDir, next)
+	if _, err := os.Stat(targetState); err == nil {
+		return "", fmt.Errorf("conversation %s already exists", next)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	oldName := r.sessionName
+	oldState, oldTranscript, oldTrace := r.statePath, r.transcriptPath, r.tracePath
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	if err := renameFileIfExists(oldState, targetState); err != nil {
+		return "", err
+	}
+	if err := renameFileIfExists(oldTranscript, session.TranscriptPath(r.cfg.StateDir, next)); err != nil {
+		return "", err
+	}
+	if err := renameFileIfExists(oldTrace, trace.Path(r.cfg.StateDir, next)); err != nil {
+		return "", err
+	}
+	r.setSessionName(next)
+	if err := r.save(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("renamed conversation %s -> %s", oldName, next), nil
+}
+
+func (r *chatRuntime) forkConversation(name string) (string, error) {
+	next := strings.TrimSpace(name)
+	if next == "" {
+		next = fmt.Sprintf("%s-fork-%s", r.sessionName, time.Now().UTC().Format("20060102-150405"))
+	}
+	if next == r.sessionName {
+		return "", fmt.Errorf("fork name must differ from current conversation")
+	}
+	targetState := session.SessionPath(r.cfg.StateDir, next)
+	if _, err := os.Stat(targetState); err == nil {
+		return "", fmt.Errorf("conversation %s already exists", next)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	state := session.State{
+		SessionName:   next,
+		Model:         r.cfg.Model,
+		OutputMode:    r.outputMode,
+		ApprovalMode:  r.cfg.ApprovalMode,
+		TeamKey:       r.teamKey,
+		ScopeKey:      r.scopeKey,
+		GlobalMemory:  append([]string(nil), r.globalMemory...),
+		TeamMemory:    append([]string(nil), r.teamMemory...),
+		ProjectMemory: append([]string(nil), r.projectMemory...),
+		Messages:      r.session.Messages(),
+	}
+	if err := session.Save(targetState, state); err != nil {
+		return "", err
+	}
+	if err := copyFileIfExists(r.transcriptPath, session.TranscriptPath(r.cfg.StateDir, next)); err != nil {
+		return "", err
+	}
+	if err := copyFileIfExists(r.tracePath, trace.Path(r.cfg.StateDir, next)); err != nil {
+		return "", err
+	}
+	r.setSessionName(next)
+	r.dirtySession = false
+	return fmt.Sprintf("forked conversation to %s", next), nil
+}
+
+func renameFileIfExists(src, dst string) error {
+	if strings.TrimSpace(src) == "" || strings.TrimSpace(dst) == "" || src == dst {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func copyFileIfExists(src, dst string) error {
+	if strings.TrimSpace(src) == "" || strings.TrimSpace(dst) == "" || src == dst {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func (r *chatRuntime) planCommand() string {
@@ -882,8 +1030,8 @@ func (r *chatRuntime) renderSessionRecord() string {
 		return ""
 	}
 	lines := []string{
-		"# tacli session record",
-		fmt.Sprintf("session=%s", r.sessionName),
+		"# tacli conversation record",
+		fmt.Sprintf("conversation=%s", r.sessionName),
 		fmt.Sprintf("model=%s", strings.TrimSpace(r.cfg.Model)),
 		fmt.Sprintf("workdir=%s", r.cfg.WorkDir),
 		fmt.Sprintf("state=%s", r.statePath),
@@ -2913,7 +3061,7 @@ func parseAgentFlags(name string, args []string) (config.Config, runtimeOptions,
 		fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode (raw|json|jsonl|structured)")
 	case "chat":
 		fs.BoolVar(&dangerously, "dangerously", false, "start chat in dangerously mode")
-		fs.StringVar(&opts.session, "session", "", "chat session name to resume or create")
+		fs.StringVar(&opts.conversation, "resume", "", "conversation name to resume or create")
 		fs.StringVar(&opts.outputMode, "output", opts.outputMode, "output mode (terminal|raw)")
 	}
 
@@ -3495,6 +3643,7 @@ func defaultStartupLanguage() string {
 }
 
 func printUsage() {
+	fmt.Fprintf(os.Stderr, "tacli %s\n\n", version)
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  tacli                 # default chat on interactive terminals")
 	fmt.Fprintln(os.Stderr, "  tacli -d              # default chat in dangerously mode")
@@ -3521,5 +3670,5 @@ func printRunUsage() {
 	fmt.Fprintln(os.Stderr, `  tacli -d "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  tacli run --dangerously "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  tacli chat`)
-	fmt.Fprintln(os.Stderr, `  tacli chat --session bugfix`)
+	fmt.Fprintln(os.Stderr, `  tacli chat --resume bugfix`)
 }

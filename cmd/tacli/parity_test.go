@@ -254,7 +254,7 @@ func TestCLIParityChatPolicyScenario(t *testing.T) {
 		"--base-url", "http://example.test/v1",
 		"--model", "test-model",
 		"--api-key", "test-key",
-		"--session", "policy-parity",
+		"--resume", "policy-parity",
 	}, stdin)
 	if result.code != 0 {
 		t.Fatalf("chat policy scenario failed: %#v", result)
@@ -262,7 +262,7 @@ func TestCLIParityChatPolicyScenario(t *testing.T) {
 	for _, want := range []string{
 		"1. deny git push *",
 		"command_rules=1",
-		"session=policy-parity",
+		"conversation=policy-parity",
 	} {
 		if !strings.Contains(result.stderr, want) {
 			t.Fatalf("expected stderr to contain %q, got %q", want, result.stderr)
@@ -279,8 +279,8 @@ func TestCLIParitySessionResumeScenario(t *testing.T) {
 		"--base-url", "http://example.test/v1",
 		"--model", "test-model",
 		"--api-key", "test-key",
-		"--session", "resume-parity",
-	}, []byte("/memory remember alpha\x00/session save\n"))
+		"--resume", "resume-parity",
+	}, []byte("/memory remember alpha\x00/save\n"))
 	if result.code != 0 {
 		t.Fatalf("first chat run failed: %#v", result)
 	}
@@ -291,7 +291,7 @@ func TestCLIParitySessionResumeScenario(t *testing.T) {
 		"--base-url", "http://example.test/v1",
 		"--model", "test-model",
 		"--api-key", "test-key",
-		"--session", "resume-parity",
+		"--resume", "resume-parity",
 	}, []byte("/memory show\n"))
 	if result.code != 0 {
 		t.Fatalf("second chat run failed: %#v", result)

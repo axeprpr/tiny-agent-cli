@@ -60,12 +60,13 @@ var messagesCN = map[string]string{
   /help                 显示此帮助
   /interrupt            中断当前前台任务
   /init                 生成 CLAW.md 与本地仓库脚手架
-  /save                 保存当前会话记录，便于排障
+  /save                 保存当前对话记录，便于排障
   /exit, /quit          退出
   /reset                清除对话上下文
-  /session [name|new]   切换或新建会话
-  /session save         保存当前会话状态
-  /session restore      恢复当前会话状态
+  /new [name]           新建对话
+  /resume [name]        恢复已保存对话或列出最近对话
+  /rename <name>        重命名当前对话
+  /fork [name]          基于当前对话分叉一个新对话
   /status               显示当前状态
   /plan                 显示 plan.md
   /compact              立即压缩上下文
@@ -77,7 +78,7 @@ var messagesCN = map[string]string{
   /skills               列出已发现技能
   /capabilities         列出内置能力包
   /scope                显示项目作用域
-  /model <name>         切换模型
+  /model <name>         切换当前对话使用的模型
   /policy ...           查看或调整持久化工具与命令策略
   /review [base] [target] [--staged] [--path <path>]
                         审查当前 git diff，可带范围参数
@@ -114,7 +115,7 @@ var messagesCN = map[string]string{
 
 	// Commands
 	"cmd.reset":              "上下文已重置",
-	"cmd.save.ok":            "当前会话记录已保存\npath=%s",
+	"cmd.save.ok":            "当前对话记录已保存\npath=%s",
 	"cmd.interrupt.ok":       "已请求中断当前任务",
 	"cmd.interrupt.idle":     "当前没有运行中的前台任务",
 	"cmd.interrupt.pending":  "正在中断当前任务",
@@ -155,9 +156,6 @@ var messagesCN = map[string]string{
 	"cmd.forgetg.ok":         "已删除 %d 条全局记忆",
 	"cmd.memorize.err":       "记忆提取出错：%v",
 	"cmd.memorize.ok":        "已添加 %d 条记忆",
-	"cmd.session.already":    "当前已在会话 %s",
-	"cmd.session.switched":   "已切换到会话 %s",
-	"cmd.session.started":    "已新建会话 %s",
 
 	// Memory responses
 	"mem.reject":               "这条内容不适合记成长期记忆；如果你希望记住稳定偏好或项目事实，请直接说明。",
