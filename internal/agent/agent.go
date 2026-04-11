@@ -33,6 +33,8 @@ const systemReminderTag = "<system-reminder>"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
 const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
+const planGateRetryReminder = "<system-reminder>plan-before-mutate\nThis task is about to perform non-trivial mutating work. Before any mutating tool call, create a concrete plan. Call update_task_contract with semantic deliverables and acceptance checks, and use update_todo if helpful. Then continue."
+const mutatingFailureCooldownRetryReminder = "<system-reminder>diagnose-before-retry\nA mutating action just failed. Do not try a different mutating path yet. First diagnose the failure using read-only steps, or update the task contract/todo with the failure cause and next step. Only then retry or choose a new mutating action."
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
 const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
 const userDeniedActionFinal = "The requested action was denied by the user. I will not try alternative write or command paths automatically. Tell me how you want to proceed."
@@ -571,6 +573,45 @@ func (s *Session) finishGateReminder() string {
 	return strings.Join(lines, "\n")
 }
 
+func (s *Session) planGateReminder(calls []model.ToolCall) string {
+	if s == nil || s.agent == nil || len(calls) == 0 {
+		return ""
+	}
+	if hasPlanningToolCall(calls) {
+		return ""
+	}
+	if strings.TrimSpace(s.agent.TaskContract().Objective) != "" || len(s.agent.TodoItems()) > 0 {
+		return ""
+	}
+	mutatingCount := countMutatingToolCalls(calls)
+	if mutatingCount == 0 {
+		return ""
+	}
+	if mutatingCount >= 2 || (mutatingCount >= 1 && len(calls) > 1) {
+		return planGateRetryReminder
+	}
+	if hasAnyTool(toolCallNames(calls, len(calls)), "run_command", "start_background_job", "delegate_subagent") && containsMutatingToolCalls(calls) {
+		return planGateRetryReminder
+	}
+	return ""
+}
+
+func (s *Session) mutatingFailureCooldownReminder(calls []model.ToolCall) string {
+	if s == nil || len(calls) == 0 {
+		return ""
+	}
+	if hasPlanningToolCall(calls) {
+		return ""
+	}
+	if !latestToolWasMutatingFailure(s.messages) {
+		return ""
+	}
+	if !containsMutatingToolCalls(calls) {
+		return ""
+	}
+	return mutatingFailureCooldownRetryReminder
+}
+
 func shouldStopSession(messages []model.Message) (bool, string) {
 	if hasRepeatedToolLoop(messages, repeatedToolWindow) {
 		return true, "Stopped after detecting a repeated tool-call loop. Ask to continue with a narrower instruction or inspect the latest tool output."
@@ -749,6 +790,99 @@ func latestToolWasExplicitUserDenial(messages []model.Message) bool {
 		}
 	}
 	return false
+}
+
+func latestTrailingToolCalls(messages []model.Message) []model.ToolCall {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
+		return nil
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			return append([]model.ToolCall(nil), msg.ToolCalls...)
+		}
+	}
+	return nil
+}
+
+func hasPlanningToolCall(calls []model.ToolCall) bool {
+	for _, call := range calls {
+		switch strings.TrimSpace(call.Function.Name) {
+		case "update_task_contract", "update_todo", "show_task_contract", "show_todo":
+			return true
+		}
+	}
+	return false
+}
+
+func containsMutatingToolCalls(calls []model.ToolCall) bool {
+	for _, call := range calls {
+		if isMutatingToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func countMutatingToolCalls(calls []model.ToolCall) int {
+	count := 0
+	for _, call := range calls {
+		if isMutatingToolCall(call) {
+			count++
+		}
+	}
+	return count
+}
+
+func isMutatingToolCall(call model.ToolCall) bool {
+	switch strings.TrimSpace(call.Function.Name) {
+	case "write_file", "edit_file", "start_background_job", "delegate_subagent":
+		return true
+	case "run_command":
+		return runCommandLooksMutating(call.Function.Arguments)
+	default:
+		return false
+	}
+}
+
+func runCommandLooksMutating(raw string) bool {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return false
+	}
+	command := strings.ToLower(strings.TrimSpace(args.Command))
+	if command == "" {
+		return false
+	}
+	markers := []string{
+		" npm install", "npm install", "pnpm install", "yarn install", "bun install",
+		" pip install", "pip install", " uv pip install", "uv add ", "poetry add ",
+		" cargo add ", " cargo install", "go install ", " go get ",
+		" apt-get install", " apt install", " yum install", " dnf install",
+		" npm create ", "npm create ", "pnpm create ", " yarn create ", "yarn create ", " cargo new ", "cargo new ", "go mod init", "git clone ",
+		" docker run ", " docker compose up", " docker compose build",
+		" python -m http.server", "python -m http.server", " python3 -m http.server", "python3 -m http.server", " node ", "node ", " vite ", "vite ", " npm run dev", "npm run dev", " npm run start", "npm run start",
+		" mkdir ", " touch ", " cp ", " mv ", " rm ", " sed -i", " chmod ", " chown ",
+	}
+	for _, marker := range markers {
+		if strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return strings.Contains(command, ">>") || strings.Contains(command, " >") || strings.Contains(command, "| tee")
+}
+
+func latestToolWasMutatingFailure(messages []model.Message) bool {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(model.ContentString(messages[len(messages)-1].Content)))
+	if !strings.HasPrefix(lower, "tool error:") {
+		return false
+	}
+	return containsMutatingToolCalls(latestTrailingToolCalls(messages))
 }
 
 func assistantContinuesAfterDeniedAction(msg model.Message) bool {

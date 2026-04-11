@@ -1759,6 +1759,111 @@ func TestVerifyFinishGateRequiresAcceptanceEvidence(t *testing.T) {
 	}
 }
 
+func TestPlanGateReminderRequiresPlanBeforeMutatingShell(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	got := session.planGateReminder([]model.ToolCall{{
+		ID:   "call-1",
+		Type: "function",
+		Function: model.ToolFunction{
+			Name:      "run_command",
+			Arguments: `{"command":"npm create vite@latest web -- --template vue"}`,
+		},
+	}})
+	if got != planGateRetryReminder {
+		t.Fatalf("expected plan gate reminder, got %q", got)
+	}
+}
+
+func TestPlanGateReminderAllowsMutatingShellWithContract(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded app",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "go build passes", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+	session := a.NewSession()
+	got := session.planGateReminder([]model.ToolCall{{
+		ID:   "call-1",
+		Type: "function",
+		Function: model.ToolFunction{
+			Name:      "run_command",
+			Arguments: `{"command":"npm install"}`,
+		},
+	}})
+	if got != "" {
+		t.Fatalf("expected plan gate to allow mutating shell with contract, got %q", got)
+	}
+}
+
+func TestMutatingFailureCooldownBlocksAnotherMutatingAttempt(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	session.messages = []model.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "run_command",
+					Arguments: `{"command":"npm install codex"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-1", Content: "tool error: command failed\nnpm ERR! not found"},
+	}
+	got := session.mutatingFailureCooldownReminder([]model.ToolCall{{
+		ID:   "call-2",
+		Type: "function",
+		Function: model.ToolFunction{
+			Name:      "run_command",
+			Arguments: `{"command":"pip install openai-codex"}`,
+		},
+	}})
+	if got != mutatingFailureCooldownRetryReminder {
+		t.Fatalf("expected mutating failure cooldown reminder, got %q", got)
+	}
+}
+
+func TestMutatingFailureCooldownAllowsReadOnlyDiagnosis(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	session := a.NewSession()
+	session.messages = []model.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "run_command",
+					Arguments: `{"command":"npm install codex"}`,
+				},
+			}},
+		},
+		{Role: "tool", ToolCallID: "call-1", Content: "tool error: command failed\nnpm ERR! not found"},
+	}
+	got := session.mutatingFailureCooldownReminder([]model.ToolCall{{
+		ID:   "call-2",
+		Type: "function",
+		Function: model.ToolFunction{
+			Name:      "read_file",
+			Arguments: `{"path":"README.md"}`,
+		},
+	}})
+	if got != "" {
+		t.Fatalf("expected read-only diagnosis to be allowed, got %q", got)
+	}
+}
+
 func TestRunTaskStopsAfterRepeatedFinishGateBlocks(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{
@@ -1789,6 +1894,39 @@ func TestRunTaskStopsAfterRepeatedFinishGateBlocks(t *testing.T) {
 	}
 	if len(client.requests) != 3 {
 		t.Fatalf("expected three requests before doom-loop stop, got %d", len(client.requests))
+	}
+}
+
+func TestRunTaskRetriesForPlanGateBeforeMutatingShell(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "run_command",
+					Arguments: `{"command":"npm create vite@latest web -- --template vue"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "planned"}}}},
+		},
+	}
+
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	result, err := a.NewSession().RunTask(context.Background(), "create a vue app and deploy it")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "planned" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected plan-gate retry before execution, got %d requests", len(client.requests))
+	}
+	last := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if last.Role != "user" || model.ContentString(last.Content) != planGateRetryReminder {
+		t.Fatalf("expected plan-gate reminder in retry request, got %#v", last)
 	}
 }
 
@@ -1909,6 +2047,18 @@ func TestRunTaskHandlesLongContextDuringLocalPackageInstall(t *testing.T) {
 	}
 
 	a := New(client, tools.NewRegistry(dir, "bash", 90*time.Second, nil), 1200, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "local_package_install",
+		Objective: "Install and verify the local demo tool",
+		Deliverables: []tools.ContractItem{
+			{Text: "demo tool installed into ./bin", Status: "completed", Evidence: "pre-seeded for compaction regression"},
+		},
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "demo tool prints hello-from-demo-tool", Status: "completed", Evidence: "pre-seeded for compaction regression"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
 	session := a.NewSession()
 	history := session.Messages()
 	for i := 0; i < 12; i++ {

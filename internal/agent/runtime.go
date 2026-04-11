@@ -269,6 +269,21 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 	} else {
 		s.finishGateBlocks = 0
 	}
+	if decision.action == turnActionExecuteTools {
+		if reminder := s.planGateReminder(msg.ToolCalls); reminder != "" {
+			decision = turnDecision{
+				action:   turnActionRetry,
+				reminder: reminder,
+				logLine:  "plan gate blocked mutating tool execution",
+			}
+		} else if reminder := s.mutatingFailureCooldownReminder(msg.ToolCalls); reminder != "" {
+			decision = turnDecision{
+				action:   turnActionRetry,
+				reminder: reminder,
+				logLine:  "mutating failure cooldown blocked another mutating attempt",
+			}
+		}
+	}
 	summary := TurnSummary{
 		Turn:      turn,
 		Decision:  decision.action.String(),

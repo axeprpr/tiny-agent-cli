@@ -129,7 +129,9 @@ func TestBuildSystemPromptIncludesCoreToolSelectionGuidance(t *testing.T) {
 		"If the user asks for file or code contents, use a file-reading tool",
 		"If the user asks for a repository, package, or official documentation page, prefer GitHub",
 		"After any tool call, check whether the evidence is sufficient before answering.",
-		"For non-trivial engineering tasks, call update_task_contract early",
+		"must create a concrete plan before the first mutating action",
+		"If a mutating action fails, do not immediately try a different mutating path.",
+		"If the user rejects a write, command, or permission request, stop and return control to the user.",
 		"Do not finish while the task contract or todo list still contains pending or blocked work.",
 	} {
 		if !strings.Contains(prompt, want) {
