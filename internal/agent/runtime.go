@@ -241,6 +241,15 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, msg model.Message) (*Result, bool) {
 	s := r.session
 	decision := decideTurn(s.messages, msg)
+	if decision.action == turnActionFinish {
+		if reminder := s.finishGateReminder(); reminder != "" {
+			decision = turnDecision{
+				action:   turnActionRetry,
+				reminder: reminder,
+				logLine:  "finish gate blocked premature completion",
+			}
+		}
+	}
 	summary := TurnSummary{
 		Turn:      turn,
 		Decision:  decision.action.String(),
@@ -288,7 +297,10 @@ func (r *ConversationRuntime) executeToolCalls(ctx context.Context, turn int, ca
 	s.agent.logf("executing %d tool(s)\n", len(calls))
 	exec := s.agent.executor
 	if exec == nil {
-		exec = registryToolExecutor{agent: s.agent}
+		exec = registryToolExecutor{agent: s.agent, role: s.role}
+	} else if regExec, ok := exec.(registryToolExecutor); ok {
+		regExec.role = s.role
+		exec = regExec
 	}
 	results := make([]model.Message, 0, len(calls))
 	for i, call := range calls {

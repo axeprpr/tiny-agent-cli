@@ -22,6 +22,7 @@ type Tool interface {
 type Registry struct {
 	tools      map[string]Tool
 	todo       *todoStore
+	contract   *contractStore
 	hooks      []ToolHook
 	hookConfig HookConfig
 	hookRunner HookRunner
@@ -51,8 +52,10 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 		policy:     policy,
 	}
 	todos := newTodoStoreWithPath(filepath.Join(workDir, ".tacli", "tasks-v2.json"))
+	contract := newContractStoreWithPath(ContractPath(workDir))
 	taskStore := tasks.New(filepath.Join(workDir, ".tacli", "tasks.json"))
 	r.todo = todos
+	r.contract = contract
 	r.permission = newApprovalPermissionDecider(workDir, approver, policy)
 	r.hookRunner = NewHookRunner(r.hookConfig)
 	r.hooks = append(r.hooks, NewDefaultHooks(r.hookConfig)...)
@@ -60,6 +63,8 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 	toolset := []Tool{
 		newUpdateTodoTool(todos),
 		newShowTodoTool(todos),
+		newUpdateTaskContractTool(contract),
+		newShowTaskContractTool(contract),
 		newCreateTaskTool(taskStore),
 		newListTasksTool(taskStore),
 		newUpdateTaskTool(taskStore),
@@ -107,6 +112,20 @@ func (r *Registry) ReplaceTodo(items []TodoItem) error {
 		return nil
 	}
 	return r.todo.Replace(items)
+}
+
+func (r *Registry) TaskContract() TaskContract {
+	if r.contract == nil {
+		return TaskContract{}
+	}
+	return r.contract.Current()
+}
+
+func (r *Registry) ReplaceTaskContract(contract TaskContract) error {
+	if r.contract == nil {
+		return nil
+	}
+	return r.contract.Replace(contract)
 }
 
 func (r *Registry) Definitions() []model.Tool {
@@ -329,6 +348,11 @@ func (r *Registry) Preview(name string, raw json.RawMessage) string {
 	switch name {
 	case "update_todo":
 		return compactPreviewString(args["items"], 120)
+	case "update_task_contract":
+		return joinPreviewParts(
+			compactKeyValue("task_kind", args["task_kind"], 32),
+			compactKeyValue("objective", args["objective"], 80),
+		)
 	case "run_command":
 		return compactPreviewString(args["command"], 80)
 	case "create_task":

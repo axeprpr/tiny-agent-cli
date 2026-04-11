@@ -107,3 +107,41 @@ func TestRouteBackgroundRole(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldPairBackgroundVerify(t *testing.T) {
+	if !shouldPairBackgroundVerify(backgroundRoleImplement, false) {
+		t.Fatalf("expected default implement role to pair with verify")
+	}
+	if shouldPairBackgroundVerify(backgroundRoleImplement, true) {
+		t.Fatalf("expected explicit implement role to skip automatic verify pairing")
+	}
+	if shouldPairBackgroundVerify(backgroundRoleVerify, false) {
+		t.Fatalf("did not expect verify role to pair again")
+	}
+}
+
+func TestBuildVerifyFollowupTask(t *testing.T) {
+	text := buildVerifyFollowupTask("Implement the auth refresh fix")
+	for _, want := range []string{
+		"read-only mode",
+		"update_task_contract",
+		"Original subtask: Implement the auth refresh fix",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("follow-up task missing %q: %q", want, text)
+		}
+	}
+}
+
+func TestBuildBackgroundTaskContract(t *testing.T) {
+	contract := buildBackgroundTaskContract("Implement the auth refresh fix")
+	if contract.TaskKind != "background_implement" {
+		t.Fatalf("unexpected task kind: %#v", contract)
+	}
+	if !strings.Contains(contract.Objective, "Implement the auth refresh fix") {
+		t.Fatalf("unexpected objective: %#v", contract)
+	}
+	if len(contract.AcceptanceChecks) < 2 {
+		t.Fatalf("expected bootstrap acceptance checks, got %#v", contract)
+	}
+}

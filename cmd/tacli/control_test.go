@@ -110,12 +110,24 @@ func TestRunStatusPrintsWorkspaceState(t *testing.T) {
 	if err := os.WriteFile(tools.AuditPath(stateDir), []byte("[]\n"), 0o644); err != nil {
 		t.Fatalf("write audit file: %v", err)
 	}
+	if err := tools.SaveTaskContract(tools.ContractPath(dir), tools.TaskContract{
+		TaskKind:  "background_implement",
+		Objective: "Ship the embedded app",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "completed", Evidence: "curl / returned index.html"},
+			{Text: "GET /api/health returns 200", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("save task contract: %v", err)
+	}
 
 	output := renderWorkspaceStatus(testWorkspaceConfig(dir, stateDir))
 	for _, want := range []string{
 		"workdir=" + dir,
 		"state=" + stateDir,
 		"plan=" + filepath.Join(dir, "plan.md"),
+		"contract=" + tools.ContractPath(dir),
+		"contract_kind=background_implement checks=1/2 evidenced=1/2",
 		"instructions=0",
 		"sessions=1",
 		"command_rules=1",
@@ -126,6 +138,62 @@ func TestRunStatusPrintsWorkspaceState(t *testing.T) {
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected status output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestRunContractPrintsTaskContract(t *testing.T) {
+	dir := t.TempDir()
+	if err := tools.SaveTaskContract(tools.ContractPath(dir), tools.TaskContract{
+		TaskKind:  "background_implement",
+		Objective: "Ship the embedded app",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "completed", Evidence: "curl / returned index.html"},
+		},
+	}); err != nil {
+		t.Fatalf("save task contract: %v", err)
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	defer stdoutR.Close()
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	defer func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+	}()
+
+	code := runContract([]string{"--workdir", dir})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+
+	stdoutBytes, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runContract exit code = %d, stderr=%q", code, string(stderrBytes))
+	}
+	text := string(stdoutBytes)
+	for _, want := range []string{
+		"path=" + tools.ContractPath(dir),
+		"objective=Ship the embedded app",
+		"GET / returns app html",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected contract output to contain %q, got %q", want, text)
 		}
 	}
 }

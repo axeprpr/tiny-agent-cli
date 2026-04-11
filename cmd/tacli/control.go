@@ -76,6 +76,32 @@ func runStatus(args []string) int {
 	return 0
 }
 
+func runContract(args []string) int {
+	cfg, extra, err := parseWorkspaceFlags("contract", args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid contract config: %v\n", err)
+		printContractUsage()
+		return 2
+	}
+	if len(extra) != 0 {
+		fmt.Fprintf(os.Stderr, "invalid contract config: unexpected arguments: %s\n", strings.Join(extra, " "))
+		printContractUsage()
+		return 2
+	}
+	path, text, err := readTaskContractFile(cfg.WorkDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "contract error: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(text) == "" {
+		fmt.Println("(no task contract)")
+		return 0
+	}
+	fmt.Println("path=" + path)
+	fmt.Println(text)
+	return 0
+}
+
 func runSkills(args []string) int {
 	cfg, extra, err := parseWorkspaceFlags("skills", args)
 	if err != nil {
@@ -135,9 +161,22 @@ func readPlanFile(workDir string) (string, string, error) {
 	return "", "", err
 }
 
+func readTaskContractFile(workDir string) (string, string, error) {
+	path := tools.ContractPath(workDir)
+	contract, err := tools.LoadTaskContract(path)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(contract.Objective) == "" && len(contract.Deliverables) == 0 && len(contract.AcceptanceChecks) == 0 {
+		return path, "", nil
+	}
+	return path, tools.FormatTaskContract(contract), nil
+}
+
 func renderWorkspaceStatus(cfg config.Config) string {
 	ctx := harness.BuildPromptContext(cfg, nil, "", "")
 	planPath, _, planErr := readPlanFile(cfg.WorkDir)
+	contractPath, contractText, contractErr := readTaskContractFile(cfg.WorkDir)
 	summaries, _ := session.ListSessions(cfg.StateDir)
 	memPath := memory.Path(cfg.StateDir)
 	permissionPath := tools.PermissionPath(cfg.StateDir)
@@ -157,6 +196,12 @@ func renderWorkspaceStatus(cfg config.Config) string {
 	} else {
 		lines = append(lines, "plan=(missing)")
 	}
+	if contractErr == nil && strings.TrimSpace(contractText) != "" {
+		lines = append(lines, "contract="+contractPath)
+		lines = append(lines, contractStatusLine(cfg.WorkDir))
+	} else {
+		lines = append(lines, "contract=(missing)")
+	}
 	if strings.TrimSpace(ctx.GitBranch) != "" {
 		lines = append(lines, "git_branch="+ctx.GitBranch)
 	}
@@ -174,6 +219,28 @@ func renderWorkspaceStatus(cfg config.Config) string {
 		"audit="+presenceStatus(auditPath),
 	)
 	return strings.Join(lines, "\n")
+}
+
+func contractStatusLine(workDir string) string {
+	contract, err := tools.LoadTaskContract(tools.ContractPath(workDir))
+	if err != nil || strings.TrimSpace(contract.Objective) == "" {
+		return "contract_summary=(none)"
+	}
+	completedChecks := 0
+	evidencedChecks := 0
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status == "completed" {
+			completedChecks++
+		}
+		if strings.TrimSpace(item.Evidence) != "" {
+			evidencedChecks++
+		}
+	}
+	return fmt.Sprintf("contract_kind=%s checks=%d/%d evidenced=%d/%d",
+		firstNonEmpty(strings.TrimSpace(contract.TaskKind), "(unset)"),
+		completedChecks, len(contract.AcceptanceChecks),
+		evidencedChecks, len(contract.AcceptanceChecks),
+	)
 }
 
 func formatSkills(skills []tools.Skill) string {
@@ -239,6 +306,11 @@ func printPlanUsage() {
 func printStatusUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  tacli status [--workdir <path>]")
+}
+
+func printContractUsage() {
+	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  tacli contract [--workdir <path>]")
 }
 
 func printSkillsUsage() {

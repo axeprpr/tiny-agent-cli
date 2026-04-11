@@ -137,6 +137,8 @@ func run(args []string) int {
 		return runChat(withDangerouslyFlag(args[1:], globalDangerously))
 	case "status":
 		return runStatus(args[1:])
+	case "contract":
+		return runContract(args[1:])
 	case "skills":
 		return runSkills(args[1:])
 	case "capabilities", "capability":
@@ -464,6 +466,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf("session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
 			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
+	case "/contract":
+		return runtimeCommandResult{handled: true, output: r.contractCommand(), exitCode: -1}
 	case "/plan":
 		return runtimeCommandResult{handled: true, output: r.planCommand(), exitCode: -1}
 	case "/compact":
@@ -849,6 +853,17 @@ func (r *chatRuntime) planCommand() string {
 		return "plan read error: no plan.md found"
 	}
 	return fmt.Sprintf("plan read error: %v", err)
+}
+
+func (r *chatRuntime) contractCommand() string {
+	path, text, err := readTaskContractFile(r.cfg.WorkDir)
+	if err != nil {
+		return fmt.Sprintf("contract read error: %v", err)
+	}
+	if strings.TrimSpace(text) == "" {
+		return "(no task contract)"
+	}
+	return "path=" + path + "\n" + text
 }
 
 func (r *chatRuntime) hooksCommand(fields []string) string {

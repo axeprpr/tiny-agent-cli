@@ -14,6 +14,7 @@ type PromptContext struct {
 	ToolNames    []string
 	Skills       []PromptSkill
 	Capabilities []PromptCapability
+	TaskContract string
 	Instructions []PromptInstructionFile
 	GitBranch    string
 	GitStatus    string
@@ -67,6 +68,8 @@ Prefer short answers.
 - Report outcomes faithfully: if verification fails or was not run, say so explicitly.
 - For workspace tasks: inspect first, edit second, verify third.
 - Run the smallest useful command or edit that moves the task forward.
+- For non-trivial engineering tasks, call update_task_contract early with a semantic task kind, concrete deliverables, and concrete acceptance checks.
+- Do not finish while the task contract or todo list still contains pending or blocked work. Update statuses with evidence before finishing.
 - When a user asks for a review, prioritize findings, regressions, and missing tests over summaries.
 - Stop as soon as the task is complete.
 
@@ -80,6 +83,7 @@ func BuildSystemPrompt(ctx PromptContext) string {
 		renderGitSection(ctx),
 		renderInstructionSection(ctx.Instructions),
 		renderRoleSection(ctx),
+		renderTaskContractSection(ctx.TaskContract),
 		renderToolSection(ctx.ToolNames),
 		renderSkillSection(ctx.Skills),
 		renderCapabilitySection(ctx.Capabilities),
@@ -133,11 +137,11 @@ func renderRoleSection(ctx PromptContext) string {
 	case "explore":
 		return "Role guidance (explore):\n- Primary objective: inspect and map the codebase quickly.\n- Prefer read-only tools and commands.\n- Do not edit files unless explicitly requested."
 	case "plan":
-		return "Role guidance (plan):\n- Primary objective: produce a concrete execution plan.\n- Break work into testable steps with clear ordering.\n- Minimize implementation details unless they are blockers."
+		return "Role guidance (plan):\n- Primary objective: produce a concrete execution plan.\n- Break work into testable steps with clear ordering.\n- Stay read-only apart from updating task tracking artifacts such as todo items or the task contract."
 	case "implement":
 		return "Role guidance (implement):\n- Primary objective: make targeted code changes.\n- Prefer minimal diffs and verify affected behavior.\n- Report changed files and remaining risks."
 	case "verify":
-		return "Role guidance (verify):\n- Primary objective: validate implementation quality.\n- Run build/tests/type-check/commands when possible.\n- Return verdict with evidence, failures, and confidence."
+		return "Role guidance (verify):\n- Primary objective: validate implementation quality.\n- Stay read-only: do not edit workspace files or run mutating shell commands.\n- Run build/tests/type-check/read-only commands when possible.\n- Return verdict with evidence, failures, and confidence."
 	default:
 		return ""
 	}
@@ -203,6 +207,26 @@ func renderToolSection(names []string) string {
 		sorted = sorted[:32]
 	}
 	return "Available tools:\n- " + strings.Join(sorted, "\n- ")
+}
+
+func renderTaskContractSection(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "Current task contract:")
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, "- "+line)
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderSkillSection(skills []PromptSkill) string {

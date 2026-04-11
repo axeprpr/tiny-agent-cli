@@ -107,12 +107,30 @@ func TestBuildSystemPromptIncludesInstructionFiles(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptIncludesTaskContract(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		TaskContract: "task_kind=webapp_with_deploy\nobjective=Ship the embedded app\nacceptance_checks:\n1. [todo] GET / returns app html",
+	})
+	for _, want := range []string{
+		"Current task contract:",
+		"task_kind=webapp_with_deploy",
+		"objective=Ship the embedded app",
+		"GET / returns app html",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptIncludesCoreToolSelectionGuidance(t *testing.T) {
 	prompt := BuildSystemPrompt(PromptContext{})
 	for _, want := range []string{
 		"If the user asks for file or code contents, use a file-reading tool",
 		"If the user asks for a repository, package, or official documentation page, prefer GitHub",
 		"After any tool call, check whether the evidence is sufficient before answering.",
+		"For non-trivial engineering tasks, call update_task_contract early",
+		"Do not finish while the task contract or todo list still contains pending or blocked work.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

@@ -22,10 +22,12 @@ const (
 	maxConsecutiveToolErrs = 3
 	repeatedToolWindow     = 4
 	todoNagRoundThreshold  = 3
+	contractNagRoundThresh = 2
 )
 
 const syntheticSummaryPrefix = "[compacted summary]"
 const todoNagPrefix = "[todo reminder]"
+const contractNagPrefix = "[contract reminder]"
 const systemReminderTag = "<system-reminder>"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
@@ -109,7 +111,9 @@ type Session struct {
 	agent                *Agent
 	messages             []model.Message
 	turns                []TurnSummary
+	role                 string
 	roundsSinceTodoPatch int
+	roundsSinceContract  int
 }
 
 func New(client chatClient, registry *tools.Registry, contextWindow int, log io.Writer) *Agent {
@@ -191,8 +195,13 @@ func (a *Agent) NewSessionWithPrompt(prompt PromptContext) *Session {
 	if len(prompt.ToolNames) == 0 {
 		prompt.ToolNames = a.ToolNames()
 	}
+	role := tools.NormalizeAgentRole(prompt.AgentRole)
+	if role == "" {
+		role = tools.NormalizeAgentRole(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(prompt.SessionMode)), "background:"))
+	}
 	return &Session{
 		agent: a,
+		role:  role,
 		messages: []model.Message{
 			{Role: "system", Content: BuildSystemPrompt(prompt)},
 		},
@@ -255,6 +264,20 @@ func (a *Agent) ReplaceTodo(items []tools.TodoItem) error {
 		return nil
 	}
 	return a.registry.ReplaceTodo(items)
+}
+
+func (a *Agent) TaskContract() tools.TaskContract {
+	if a == nil || a.registry == nil {
+		return tools.TaskContract{}
+	}
+	return a.registry.TaskContract()
+}
+
+func (a *Agent) ReplaceTaskContract(contract tools.TaskContract) error {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return a.registry.ReplaceTaskContract(contract)
 }
 
 func (a *Agent) AddTool(tool tools.Tool) {
@@ -357,6 +380,30 @@ func (s *Session) maybeInjectTodoReminder() {
 	s.roundsSinceTodoPatch = 0
 }
 
+func (s *Session) maybeInjectContractReminder() {
+	if s == nil || s.roundsSinceContract < contractNagRoundThresh {
+		return
+	}
+	if !hasRecentToolActivity(s.messages, contractNagRoundThresh) {
+		return
+	}
+	if hasRecentContractReminder(s.messages) {
+		return
+	}
+	if s.agent != nil {
+		contract := s.agent.TaskContract()
+		if strings.TrimSpace(contract.Objective) != "" {
+			return
+		}
+	}
+	s.messages = append(s.messages, model.Message{
+		Role: "user",
+		Content: contractNagPrefix + "\n" +
+			"You are doing non-trivial engineering work. Call update_task_contract with a semantic task kind, concrete deliverables, and concrete acceptance checks before continuing.",
+	})
+	s.roundsSinceContract = 0
+}
+
 func (s *Session) trackTodoRounds(calls []model.ToolCall) {
 	if len(calls) == 0 {
 		return
@@ -368,6 +415,19 @@ func (s *Session) trackTodoRounds(calls []model.ToolCall) {
 		}
 	}
 	s.roundsSinceTodoPatch++
+}
+
+func (s *Session) trackContractRounds(calls []model.ToolCall) {
+	if len(calls) == 0 {
+		return
+	}
+	for _, call := range calls {
+		if strings.EqualFold(strings.TrimSpace(call.Function.Name), "update_task_contract") {
+			s.roundsSinceContract = 0
+			return
+		}
+	}
+	s.roundsSinceContract++
 }
 
 func hasRecentToolActivity(messages []model.Message, rounds int) bool {
@@ -398,6 +458,115 @@ func hasRecentTodoReminder(messages []model.Message) bool {
 		}
 	}
 	return false
+}
+
+func hasRecentContractReminder(messages []model.Message) bool {
+	for i := len(messages) - 1; i >= 0 && i >= len(messages)-4; i-- {
+		msg := messages[i]
+		if msg.Role != "system" && msg.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(model.ContentString(msg.Content)), contractNagPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func incompleteTodoItems(items []tools.TodoItem) []string {
+	var out []string
+	for _, item := range items {
+		if item.Status == "completed" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("todo [%s]: %s", item.Status, item.Text))
+	}
+	return out
+}
+
+func incompleteContractItems(contract tools.TaskContract) []string {
+	var out []string
+	for _, item := range contract.Deliverables {
+		if item.Status == "completed" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("deliverable [%s]: %s", item.Status, item.Text))
+	}
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status == "completed" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("acceptance [%s]: %s", item.Status, item.Text))
+	}
+	return out
+}
+
+func verifyContractIssues(contract tools.TaskContract) []string {
+	if strings.TrimSpace(contract.Objective) == "" {
+		return []string{"task contract is missing"}
+	}
+	if len(contract.AcceptanceChecks) == 0 {
+		return []string{"acceptance checks are missing"}
+	}
+	var out []string
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status != "completed" {
+			out = append(out, fmt.Sprintf("acceptance [%s]: %s", item.Status, item.Text))
+			continue
+		}
+		if strings.TrimSpace(item.Evidence) == "" {
+			out = append(out, fmt.Sprintf("acceptance [completed]: %s (missing evidence)", item.Text))
+		}
+	}
+	return out
+}
+
+func truncateList(items []string, limit int) []string {
+	if len(items) <= limit {
+		return items
+	}
+	out := append([]string(nil), items[:limit]...)
+	out = append(out, fmt.Sprintf("... (%d more)", len(items)-limit))
+	return out
+}
+
+func (s *Session) finishGateReminder() string {
+	if s == nil || s.agent == nil {
+		return ""
+	}
+	if latestToolWasExplicitUserDenial(s.messages) {
+		return ""
+	}
+	var pending []string
+	pending = append(pending, incompleteTodoItems(s.agent.TodoItems())...)
+	contract := s.agent.TaskContract()
+	if s.role == tools.AgentRoleVerify {
+		verifyIssues := verifyContractIssues(contract)
+		if len(verifyIssues) > 0 {
+			lines := []string{
+				"<system-reminder>finish-gate",
+				"Verify work is not done yet.",
+				"Before finishing, update the task contract so every acceptance check is completed with concrete evidence.",
+			}
+			for _, item := range truncateList(verifyIssues, 5) {
+				lines = append(lines, "- "+item)
+			}
+			return strings.Join(lines, "\n")
+		}
+	}
+	pending = append(pending, incompleteContractItems(contract)...)
+	if len(pending) == 0 {
+		return ""
+	}
+	lines := []string{
+		"<system-reminder>finish-gate",
+		"You are not done yet. There is still tracked work that is not completed.",
+	}
+	for _, item := range truncateList(pending, 5) {
+		lines = append(lines, "- "+item)
+	}
+	lines = append(lines, "Update the task contract or todo items with evidence, then continue the work. Do not finish yet.")
+	return strings.Join(lines, "\n")
 }
 
 func shouldStopSession(messages []model.Message) (bool, string) {

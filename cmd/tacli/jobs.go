@@ -193,13 +193,18 @@ func (m *jobManager) Start(task string) (string, error) {
 		}
 	}
 
-	return m.StartWithRole(role, task)
+	return m.startWithResolvedRole(role, task, false)
 }
 
 func (m *jobManager) StartWithRole(role, task string) (string, error) {
-	if strings.TrimSpace(role) == "" {
+	explicitRole := strings.TrimSpace(role) != ""
+	if !explicitRole {
 		role = routeBackgroundRole(task)
 	}
+	return m.startWithResolvedRole(role, task, explicitRole)
+}
+
+func (m *jobManager) startWithResolvedRole(role, task string, explicitRole bool) (string, error) {
 	role = normalizeBackgroundRole(role)
 	task = strings.TrimSpace(task)
 	if task == "" {
@@ -214,7 +219,26 @@ func (m *jobManager) StartWithRole(role, task string) (string, error) {
 	if err := validateBackgroundTask(task); err != nil {
 		return "", err
 	}
+	if err := ensureBackgroundTaskContract(m.cfg.WorkDir, role, task); err != nil {
+		return "", err
+	}
+	id, err := m.startSingleJob(role, task)
+	if err != nil {
+		return "", err
+	}
+	if shouldPairBackgroundVerify(role, explicitRole) {
+		verifyTask := buildVerifyFollowupTask(task)
+		verifyID, verifyErr := m.startSingleJob(backgroundRoleVerify, verifyTask)
+		if verifyErr != nil {
+			m.notify(fmt.Sprintf("%s verify pairing skipped: %s", id, compactJobText(verifyErr.Error(), 120)))
+		} else {
+			m.notify(fmt.Sprintf("%s paired with verify job %s", id, verifyID))
+		}
+	}
+	return id, nil
+}
 
+func (m *jobManager) startSingleJob(role, task string) (string, error) {
 	m.mu.Lock()
 	if m.activeJobsLocked() >= maxActiveBackgroundJobs {
 		m.mu.Unlock()
@@ -259,6 +283,60 @@ func (m *jobManager) StartWithRole(role, task string) (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+func shouldPairBackgroundVerify(role string, explicitRole bool) bool {
+	if explicitRole {
+		return false
+	}
+	return normalizeBackgroundRole(role) == backgroundRoleImplement
+}
+
+func buildVerifyFollowupTask(task string) string {
+	task = strings.TrimSpace(task)
+	lines := []string{
+		"Independently verify the paired implementation subtask in read-only mode.",
+		"Do not edit workspace files or run mutating shell commands.",
+		"Inspect the resulting code and run the smallest useful verification commands.",
+		"Before finishing, update_task_contract so each acceptance check is completed with concrete evidence.",
+	}
+	if task != "" {
+		lines = append(lines, "Original subtask: "+task)
+	}
+	return strings.Join(lines, " ")
+}
+
+func ensureBackgroundTaskContract(workDir, role, task string) error {
+	if normalizeBackgroundRole(role) != backgroundRoleImplement {
+		return nil
+	}
+	path := tools.ContractPath(workDir)
+	contract, err := tools.LoadTaskContract(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(contract.Objective) != "" {
+		return nil
+	}
+	return tools.SaveTaskContract(path, buildBackgroundTaskContract(task))
+}
+
+func buildBackgroundTaskContract(task string) tools.TaskContract {
+	objective := strings.Join(strings.Fields(strings.TrimSpace(task)), " ")
+	if objective == "" {
+		objective = "Complete the delegated implementation task"
+	}
+	return tools.TaskContract{
+		TaskKind:  "background_implement",
+		Objective: objective,
+		Deliverables: []tools.ContractItem{
+			{Text: "requested implementation changes are complete", Status: "in_progress"},
+		},
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "relevant build or test checks pass", Status: "pending"},
+			{Text: "verify role records concrete evidence for the implementation", Status: "pending"},
+		},
+	}
 }
 
 func (m *jobManager) Send(id, task string) error {

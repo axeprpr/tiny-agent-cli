@@ -1420,6 +1420,129 @@ func TestRunTaskEmitsPermissionDecisionAndTurnSummaryEvents(t *testing.T) {
 	}
 }
 
+func TestVerifyRoleBlocksWriteFileToolCalls(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "write_file",
+									Arguments: `{"path":"VERIFY_DENY.txt","content":"x"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "verify role stayed read-only"},
+					},
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "verification",
+		Objective: "Verify the change safely",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "read-only verification completed", Status: "completed", Evidence: "pre-seeded for role test"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+	session := a.NewSessionWithPrompt(PromptContext{AgentRole: tools.AgentRoleVerify})
+	result, err := session.RunTask(context.Background(), "verify the change")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "verify role stayed read-only" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "VERIFY_DENY.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected verify role to block file creation, stat err=%v", err)
+	}
+	found := false
+	for _, msg := range session.Messages() {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "verify role is read-only") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected read-only verify denial in tool output: %#v", session.Messages())
+	}
+}
+
+func TestVerifyRoleAllowsReadOnlyRunCommand(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							ToolCalls: []model.ToolCall{{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "run_command",
+									Arguments: `{"command":"printf verify-ok"}`,
+								},
+							}},
+						},
+					},
+				},
+			},
+			{
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Content: "verify-ok"},
+					},
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "verification",
+		Objective: "Verify the command path",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "read-only command ran", Status: "completed", Evidence: "pre-seeded for role test"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+	session := a.NewSessionWithPrompt(PromptContext{AgentRole: tools.AgentRoleVerify})
+	result, err := session.RunTask(context.Background(), "run a read-only verification command")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "verify-ok" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	found := false
+	for _, msg := range session.Messages() {
+		if msg.Role == "tool" && strings.Contains(model.ContentString(msg.Content), "verify-ok") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected verify role to allow read-only command: %#v", session.Messages())
+	}
+}
+
 func TestRunTaskUsesAgentHookRunnerAroundToolExecution(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{
@@ -1567,7 +1690,8 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 		},
 	}
 
-	a := New(client, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
 	result, err := a.NewSession().RunTask(context.Background(), "inspect repo and summarize")
 	if err != nil {
 		t.Fatalf("run task: %v", err)
@@ -1588,6 +1712,50 @@ func TestRunTaskInjectsTodoReminderAfterSeveralToolRounds(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected todo reminder in request 4 messages: %#v", fourth.Messages)
+	}
+}
+
+func TestFinishGateReminderBlocksPendingAcceptanceChecks(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded app",
+		Deliverables: []tools.ContractItem{
+			{Text: "single binary", Status: "completed", Evidence: "go build ./..."},
+		},
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+	got := a.NewSession().finishGateReminder()
+	if !strings.Contains(got, "acceptance [pending]: GET / returns app html") {
+		t.Fatalf("expected pending acceptance check in finish gate reminder, got %q", got)
+	}
+}
+
+func TestVerifyFinishGateRequiresAcceptanceEvidence(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded app",
+		Deliverables: []tools.ContractItem{
+			{Text: "single binary", Status: "completed", Evidence: "go build ./..."},
+		},
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "completed"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	session := a.NewSessionWithPrompt(PromptContext{AgentRole: tools.AgentRoleVerify})
+	got := session.finishGateReminder()
+	if !strings.Contains(got, "missing evidence") {
+		t.Fatalf("expected verify finish gate to require evidence, got %q", got)
 	}
 }
 
@@ -1728,8 +1896,8 @@ func TestRunTaskHandlesLongContextDuringLocalPackageInstall(t *testing.T) {
 	if len(client.requests) != 3 {
 		t.Fatalf("expected three model requests, got %d", len(client.requests))
 	}
-	if !strings.Contains(model.ContentString(client.requests[0].Messages[0].Content), syntheticSummaryPrefix) {
-		t.Fatalf("expected first request to compact long history, got %#v", client.requests[0].Messages[0])
+	if got, wantMax := len(client.requests[0].Messages), len(history)+1; got >= wantMax {
+		t.Fatalf("expected first request to compact long history, got %d messages from %d-history seed", got, len(history))
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bin", "demo-tool")); err != nil {
 		t.Fatalf("expected installed binary: %v", err)

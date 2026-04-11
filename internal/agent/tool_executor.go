@@ -18,6 +18,7 @@ type toolExecutor interface {
 
 type registryToolExecutor struct {
 	agent *Agent
+	role  string
 }
 
 func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, total int, call model.ToolCall) model.Message {
@@ -41,6 +42,39 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 	})
 
 	inv := tools.ToolInvocation{Name: call.Function.Name, Raw: args}
+	if roleDecision := tools.EvaluateRolePermission(e.role, inv); !roleDecision.Allowed {
+		err := errors.New(strings.TrimSpace(roleDecision.Reason))
+		e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "role_denied")
+		e.agent.emitEvent(ctx, "permission_decision", map[string]any{
+			"turn":          turn,
+			"index":         index,
+			"total":         total,
+			"tool":          call.Function.Name,
+			"call_id":       call.ID,
+			"required_mode": tools.RequiredPermissionMode(call.Function.Name),
+			"decision":      roleDecision,
+			"role":          e.role,
+		})
+		output := truncateToolMessage("tool error: "+err.Error(), maxToolMessageChars)
+		e.agent.logToolFinish(0, output, err)
+		e.agent.emitEvent(ctx, "tool_finish", map[string]any{
+			"turn":        turn,
+			"index":       index,
+			"total":       total,
+			"name":        call.Function.Name,
+			"call_id":     call.ID,
+			"duration_ms": int64(0),
+			"status":      toolEventStatus(err),
+			"summary":     firstOutputSummary(output),
+			"error":       toolEventError(err),
+			"role":        e.role,
+		})
+		return model.Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Content:    annotateToolResult(output),
+		}
+	}
 	if e.agent.permissionPolicy != nil {
 		decision := e.agent.permissionPolicy.Evaluate(ctx, inv)
 		e.agent.emitEvent(ctx, "permission_decision", map[string]any{
@@ -51,6 +85,7 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 			"call_id":       call.ID,
 			"required_mode": tools.RequiredPermissionMode(call.Function.Name),
 			"decision":      decision,
+			"role":          e.role,
 		})
 		if !decision.Allowed {
 			reason := strings.TrimSpace(decision.Reason)
@@ -91,6 +126,7 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 				Allowed: err == nil,
 				Reason:  strings.TrimSpace(toolEventError(err)),
 			},
+			"role": e.role,
 		})
 		if err != nil {
 			e.agent.registry.RecordToolAudit(ctx, inv, tools.ToolOutcome{Err: err}, "permission_denied")

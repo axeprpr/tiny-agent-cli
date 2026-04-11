@@ -56,8 +56,17 @@ func (f Factory) NewModelClient() *openaiapi.Client {
 
 func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memoryText string) agent.PromptContext {
 	var toolNames []string
+	var taskContract string
 	if loop != nil {
 		toolNames = loop.ToolNames()
+		if contract := loop.TaskContract(); strings.TrimSpace(contract.Objective) != "" {
+			taskContract = tools.FormatTaskContract(contract)
+		}
+	}
+	if taskContract == "" {
+		if contract, err := tools.LoadTaskContract(tools.ContractPath(cfg.WorkDir)); err == nil && strings.TrimSpace(contract.Objective) != "" {
+			taskContract = tools.FormatTaskContract(contract)
+		}
 	}
 	var skills []agent.PromptSkill
 	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
@@ -91,6 +100,7 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 		ToolNames:    toolNames,
 		Skills:       skills,
 		Capabilities: capabilities,
+		TaskContract: taskContract,
 		Instructions: instructions,
 		GitBranch:    gitBranch,
 		GitStatus:    gitStatus,
