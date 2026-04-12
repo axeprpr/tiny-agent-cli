@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 type State struct {
@@ -24,6 +25,8 @@ type State struct {
 	ProjectMemory []string        `json:"project_memory,omitempty"`
 	Jobs          json.RawMessage `json:"jobs,omitempty"`
 	SavedAt       time.Time       `json:"saved_at"`
+	TodoItems     []tools.TodoItem `json:"todo_items,omitempty"`
+	TaskContract  tools.TaskContract `json:"task_contract,omitempty"`
 	Messages      []model.Message `json:"messages"`
 }
 

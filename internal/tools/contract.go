@@ -234,6 +234,22 @@ func (s *contractStore) Current() TaskContract {
 	return cloneTaskContract(s.contract)
 }
 
+func (s *contractStore) Clear() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	s.contract = TaskContract{}
+	s.mu.Unlock()
+	if strings.TrimSpace(s.path) == "" {
+		return nil
+	}
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func cloneTaskContract(contract TaskContract) TaskContract {
 	out := TaskContract{
 		TaskKind:  contract.TaskKind,

@@ -284,6 +284,13 @@ func (a *Agent) ReplaceTaskContract(contract tools.TaskContract) error {
 	return a.registry.ReplaceTaskContract(contract)
 }
 
+func (a *Agent) ClearTaskContract() error {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return a.registry.ClearTaskContract()
+}
+
 func (a *Agent) AddTool(tool tools.Tool) {
 	if a == nil || a.registry == nil {
 		return

@@ -63,7 +63,7 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 			taskContract = tools.FormatTaskContract(contract)
 		}
 	}
-	if taskContract == "" {
+	if taskContract == "" && strings.TrimSpace(sessionMode) != "chat" {
 		if contract, err := tools.LoadTaskContract(tools.ContractPath(cfg.WorkDir)); err == nil && strings.TrimSpace(contract.Objective) != "" {
 			taskContract = tools.FormatTaskContract(contract)
 		}

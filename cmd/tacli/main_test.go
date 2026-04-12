@@ -932,6 +932,54 @@ func TestResumeCommandRestoresSavedMemory(t *testing.T) {
 	}
 }
 
+func TestResumeConversationRestoresPlanningState(t *testing.T) {
+	dir := t.TempDir()
+	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
+	if err := r.loop.ReplaceTodo([]tools.TodoItem{{Text: "stale task", Status: "pending"}}); err != nil {
+		t.Fatalf("seed stale todo: %v", err)
+	}
+	if err := r.loop.ReplaceTaskContract(tools.TaskContract{
+		Objective: "stale contract",
+		Deliverables: []tools.ContractItem{
+			{Text: "old deliverable", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed stale contract: %v", err)
+	}
+	if err := session.Save(session.SessionPath(dir, "source"), session.State{
+		SessionName: "source",
+		Model:       "test-model",
+		TodoItems: []tools.TodoItem{
+			{Text: "inspect current issue", Status: "in_progress"},
+		},
+		TaskContract: tools.TaskContract{
+			Objective: "Debug duplicated answers",
+			AcceptanceChecks: []tools.ContractItem{
+				{Text: "identify root cause", Status: "pending"},
+			},
+		},
+		Messages: []model.Message{
+			{Role: "system", Content: "system prompt"},
+			{Role: "user", Content: "help"},
+		},
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	if loaded, err := r.resumeConversation("source"); err != nil || !loaded {
+		t.Fatalf("resume conversation failed: loaded=%t err=%v", loaded, err)
+	}
+
+	todos := r.loop.TodoItems()
+	if len(todos) != 1 || todos[0].Text != "inspect current issue" {
+		t.Fatalf("unexpected restored todo: %#v", todos)
+	}
+	contract := r.loop.TaskContract()
+	if contract.Objective != "Debug duplicated answers" {
+		t.Fatalf("unexpected restored contract: %#v", contract)
+	}
+}
+
 func TestRenameAndForkConversationCommands(t *testing.T) {
 	dir := t.TempDir()
 	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
@@ -966,6 +1014,32 @@ func TestRenameAndForkConversationCommands(t *testing.T) {
 	}
 	if !strings.Contains(model.ContentString(forked.Messages[1].Content), "hello") {
 		t.Fatalf("expected forked conversation to keep history, got %#v", forked.Messages)
+	}
+}
+
+func TestResetClearsPlanningState(t *testing.T) {
+	r := newMemoryTestRuntime(t)
+	if err := r.loop.ReplaceTodo([]tools.TodoItem{{Text: "investigate fish page", Status: "in_progress"}}); err != nil {
+		t.Fatalf("replace todo: %v", err)
+	}
+	if err := r.loop.ReplaceTaskContract(tools.TaskContract{
+		Objective: "Fix fish page",
+		Deliverables: []tools.ContractItem{
+			{Text: "remove stale fish task", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("replace contract: %v", err)
+	}
+
+	result := r.executeCommand("/reset")
+	if !result.handled {
+		t.Fatalf("expected /reset handled")
+	}
+	if got := r.loop.TodoItems(); len(got) != 0 {
+		t.Fatalf("expected reset to clear todo items, got %#v", got)
+	}
+	if got := r.loop.TaskContract(); !isEmptyTaskContract(got) {
+		t.Fatalf("expected reset to clear task contract, got %#v", got)
 	}
 }
 

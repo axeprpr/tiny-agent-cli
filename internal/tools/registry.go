@@ -128,6 +128,13 @@ func (r *Registry) ReplaceTaskContract(contract TaskContract) error {
 	return r.contract.Replace(contract)
 }
 
+func (r *Registry) ClearTaskContract() error {
+	if r.contract == nil {
+		return nil
+	}
+	return r.contract.Clear()
+}
+
 func (r *Registry) Definitions() []model.Tool {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {

@@ -378,6 +378,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	r.setSessionName(sessionName)
 	r.attachAgentEventSink()
 	r.rebuildLoop()
+	r.clearPlanningState()
 	if mem, err := memory.Load(r.memoryPath); err == nil {
 		r.globalMemory = mem.Global
 		r.teamMemory = mem.Teams[r.teamKey]
@@ -430,6 +431,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/exit", "/quit":
 		return runtimeCommandResult{handled: true, exitCode: 0}
 	case "/reset":
+		r.clearPlanningState()
 		r.session = r.newSession()
 		_ = r.save()
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.reset"), exitCode: -1, reloadSessionView: true}
@@ -722,6 +724,14 @@ func (r *chatRuntime) interruptForegroundTask() bool {
 }
 
 func (r *chatRuntime) rebuildLoop() {
+	var (
+		todoItems    []tools.TodoItem
+		taskContract tools.TaskContract
+	)
+	if r.session != nil && r.loop != nil {
+		todoItems = append([]tools.TodoItem(nil), r.loop.TodoItems()...)
+		taskContract = r.loop.TaskContract()
+	}
 	var jobs tools.JobControl
 	if r.jobs != nil {
 		jobs = jobToolAdapter{manager: r.jobs}
@@ -732,6 +742,7 @@ func (r *chatRuntime) rebuildLoop() {
 	if r.session != nil {
 		r.session.SetAgent(r.loop)
 	}
+	r.applyPlanningState(todoItems, taskContract)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
 	if r.jobs != nil {
 		r.jobs.UpdateConfig(r.cfg)
@@ -780,6 +791,7 @@ func (r *chatRuntime) resumeConversation(name string) (bool, error) {
 		}
 	}
 	r.rebuildLoop()
+	r.applyPlanningState(state.TodoItems, state.TaskContract)
 	if state.TeamKey == r.teamKey && state.ScopeKey == r.scopeKey {
 		r.globalMemory = append([]string(nil), state.GlobalMemory...)
 		r.teamMemory = append([]string(nil), state.TeamMemory...)
@@ -799,6 +811,7 @@ func (r *chatRuntime) resumeOrCreateConversation(name string) (string, error) {
 	}
 
 	r.setSessionName(next)
+	r.clearPlanningState()
 	r.session = r.newSession()
 	r.dirtySession = false
 
@@ -869,6 +882,7 @@ func (r *chatRuntime) startNewConversation(name string) (string, error) {
 		return "", err
 	}
 	r.setSessionName(next)
+	r.clearPlanningState()
 	r.session = r.newSession()
 	r.dirtySession = false
 	if err := r.save(); err != nil {
@@ -936,6 +950,8 @@ func (r *chatRuntime) forkConversation(name string) (string, error) {
 		GlobalMemory:  append([]string(nil), r.globalMemory...),
 		TeamMemory:    append([]string(nil), r.teamMemory...),
 		ProjectMemory: append([]string(nil), r.projectMemory...),
+		TodoItems:     append([]tools.TodoItem(nil), r.loop.TodoItems()...),
+		TaskContract:  r.loop.TaskContract(),
 		Messages:      r.session.Messages(),
 	}
 	if err := session.Save(targetState, state); err != nil {
@@ -2427,6 +2443,31 @@ func buildAutoExploreTask(task string) string {
 	)
 }
 
+func isEmptyTaskContract(contract tools.TaskContract) bool {
+	return strings.TrimSpace(contract.Objective) == "" &&
+		len(contract.Deliverables) == 0 &&
+		len(contract.AcceptanceChecks) == 0
+}
+
+func (r *chatRuntime) applyPlanningState(items []tools.TodoItem, contract tools.TaskContract) {
+	if r == nil || r.loop == nil {
+		return
+	}
+	_ = r.loop.ReplaceTodo(items)
+	if isEmptyTaskContract(contract) {
+		_ = r.loop.ClearTaskContract()
+	} else {
+		_ = r.loop.ReplaceTaskContract(contract)
+	}
+	if r.session != nil {
+		r.refreshMemoryContext()
+	}
+}
+
+func (r *chatRuntime) clearPlanningState() {
+	r.applyPlanningState(nil, tools.TaskContract{})
+}
+
 func (r *chatRuntime) newSession() *agent.Session {
 	return r.loop.NewSessionWithPrompt(promptContextFor(r.cfg, r.loop, "chat", r.renderSystemMemory()))
 }
@@ -2503,6 +2544,8 @@ func (r *chatRuntime) save() error {
 		GlobalMemory:  append([]string(nil), r.globalMemory...),
 		TeamMemory:    append([]string(nil), r.teamMemory...),
 		ProjectMemory: append([]string(nil), r.projectMemory...),
+		TodoItems:     append([]tools.TodoItem(nil), r.loop.TodoItems()...),
+		TaskContract:  r.loop.TaskContract(),
 		Messages:      r.session.Messages(),
 	})
 }

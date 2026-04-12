@@ -38,12 +38,16 @@ func FromEnv() Config {
 		workDir = "."
 	}
 	stateDir := defaultStateDir(workDir)
+	model := firstEnv("MODEL_NAME", "OPENAI_MODEL", "OLLAMA_MODEL")
+	if model == "" {
+		model = "qwen2.5-coder:7b"
+	}
 
 	cfg := Config{
 		BaseURL:        firstEnv("MODEL_BASE_URL", "OPENAI_BASE_URL", "OLLAMA_BASE_URL"),
-		Model:          firstEnv("MODEL_NAME", "OPENAI_MODEL", "OLLAMA_MODEL"),
+		Model:          model,
 		APIKey:         firstEnv("MODEL_API_KEY", "OPENAI_API_KEY"),
-		ContextWindow:  getEnvInt("MODEL_CONTEXT_WINDOW", 32768),
+		ContextWindow:  contextWindowFromEnv(model),
 		WorkDir:        getEnv("AGENT_WORKDIR", workDir),
 		StateDir:       getEnv("AGENT_STATE_DIR", stateDir),
 		MaxSteps:       getEnvInt("AGENT_MAX_STEPS", defaultMaxSteps),
@@ -58,9 +62,6 @@ func FromEnv() Config {
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1:11434/v1"
-	}
-	if cfg.Model == "" {
-		cfg.Model = "qwen2.5-coder:7b"
 	}
 
 	return cfg
@@ -180,6 +181,32 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func contextWindowFromEnv(model string) int {
+	raw := strings.TrimSpace(os.Getenv("MODEL_CONTEXT_WINDOW"))
+	if raw == "" {
+		return defaultContextWindowForModel(model)
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return defaultContextWindowForModel(model)
+	}
+	return value
+}
+
+func defaultContextWindowForModel(model string) int {
+	normalized := strings.NewReplacer("_", "-", ".", "-", " ", "").Replace(strings.ToLower(strings.TrimSpace(model)))
+	switch {
+	case strings.HasPrefix(normalized, "gpt-5"), strings.HasPrefix(normalized, "gpt5"):
+		return 400000
+	case strings.HasPrefix(normalized, "gpt-4-1"), strings.HasPrefix(normalized, "gpt4-1"):
+		return 1047576
+	case strings.HasPrefix(normalized, "o4-mini"):
+		return 200000
+	default:
+		return 32768
+	}
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {

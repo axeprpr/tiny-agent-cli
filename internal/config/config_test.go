@@ -61,3 +61,23 @@ func TestFromEnvLoadsSettingsSyncConfig(t *testing.T) {
 		t.Fatalf("unexpected team: %q", cfg.Team)
 	}
 }
+
+func TestFromEnvUsesModelAwareContextWindowDefaults(t *testing.T) {
+	t.Setenv("MODEL_CONTEXT_WINDOW", "")
+	t.Setenv("MODEL_NAME", "gpt-5-mini")
+
+	cfg := FromEnv()
+	if cfg.ContextWindow != 400000 {
+		t.Fatalf("unexpected context window: got %d want %d", cfg.ContextWindow, 400000)
+	}
+}
+
+func TestFromEnvPrefersExplicitContextWindowOverride(t *testing.T) {
+	t.Setenv("MODEL_NAME", "gpt-5-mini")
+	t.Setenv("MODEL_CONTEXT_WINDOW", "123456")
+
+	cfg := FromEnv()
+	if cfg.ContextWindow != 123456 {
+		t.Fatalf("unexpected context window override: got %d want %d", cfg.ContextWindow, 123456)
+	}
+}

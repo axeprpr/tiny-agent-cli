@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/tools"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -19,6 +20,13 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		GlobalMemory:  []string{"Prefer concise answers"},
 		TeamMemory:    []string{"Run reviews before merge"},
 		ProjectMemory: []string{"Repo uses Go"},
+		TodoItems:     []tools.TodoItem{{Text: "inspect repo", Status: "in_progress"}},
+		TaskContract: tools.TaskContract{
+			Objective: "Inspect the repository",
+			Deliverables: []tools.ContractItem{
+				{Text: "Summarize key architecture points", Status: "pending"},
+			},
+		},
 		Messages: []model.Message{
 			{Role: "user", Content: "inspect repo"},
 			{Role: "assistant", Content: "done"},
@@ -50,6 +58,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if len(got.ProjectMemory) != 1 || got.ProjectMemory[0] != want.ProjectMemory[0] {
 		t.Fatalf("unexpected project memory: %#v", got.ProjectMemory)
+	}
+	if len(got.TodoItems) != 1 || got.TodoItems[0] != want.TodoItems[0] {
+		t.Fatalf("unexpected todo items: %#v", got.TodoItems)
+	}
+	if got.TaskContract.Objective != want.TaskContract.Objective {
+		t.Fatalf("unexpected task contract: %#v", got.TaskContract)
 	}
 	if len(got.Messages) != 2 {
 		t.Fatalf("unexpected messages: %#v", got.Messages)

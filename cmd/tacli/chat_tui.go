@@ -1042,7 +1042,8 @@ func parseApprovalFields(body string) map[string]string {
 
 func (m chatTUIModel) renderHeader() string {
 	chips := []string{
-		titleStyle.Render(fmt.Sprintf("tacli %s", version)),
+		titleStyle.Render("tacli"),
+		chipAccentStyle.Render("version " + strings.TrimSpace(version)),
 		chipAccentStyle.Render(m.runtime.cfg.Model),
 		chipMutedStyle.Render(m.runtime.sessionName),
 	}
