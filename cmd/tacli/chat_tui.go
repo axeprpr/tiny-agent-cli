@@ -709,8 +709,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !keyHandled && !mouseHandled {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
-		m.chatViewport, cmd = m.chatViewport.Update(msg)
-		cmds = append(cmds, cmd)
 		// Dynamic input height
 		lines := strings.Count(m.input.Value(), "\n") + 1
 		newHeight := max(1, min(5, lines))
@@ -854,7 +852,7 @@ func (m *chatTUIModel) renderEntries() string {
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
 			label.Render(entry.role),
-			body.Width(bodyWidth).Render(text),
+			renderStyledBody(body, bodyWidth, text),
 		)
 		m.entryKeys[i] = key
 		m.entryBlocks[i] = block
@@ -868,6 +866,15 @@ func (m *chatTUIModel) renderEntries() string {
 		rendered = append(rendered, block)
 	}
 	return strings.Join(rendered, "\n\n")
+}
+
+func renderStyledBody(style lipgloss.Style, width int, text string) string {
+	lines := strings.Split(text, "\n")
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, style.Width(width).Render(line))
+	}
+	return strings.Join(rendered, "\n")
 }
 
 func contextStatus(runtime *chatRuntime, input string) string {

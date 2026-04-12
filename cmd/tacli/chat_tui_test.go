@@ -9,6 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
@@ -150,6 +152,90 @@ func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
 
 	if m.chatViewport.YOffset != 2 {
 		t.Fatalf("expected user scroll offset to be preserved, got %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestArrowKeyEditingDoesNotScrollChatViewport(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport:  viewport.New(80, 3),
+		input:         textarea.New(),
+		stickToBottom: false,
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6",
+	}, "\n"))
+	m.chatViewport.SetYOffset(2)
+	m.input.Focus()
+	m.input.SetWidth(20)
+	m.input.SetHeight(2)
+	m.input.SetValue("first line\nsecond line")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(chatTUIModel)
+
+	if m.chatViewport.YOffset != 2 {
+		t.Fatalf("expected up-arrow editing to leave chat viewport offset unchanged, got %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestRenderComposerKeepsMultilineInputCompact(t *testing.T) {
+	m := chatTUIModel{
+		width: 80,
+		input: textarea.New(),
+	}
+	m.input.SetWidth(20)
+	m.input.SetHeight(2)
+	m.input.SetValue("first line\nsecond line")
+	m.input.Blur()
+
+	lines := strings.Split(m.renderComposer(), "\n")
+	firstIndex := -1
+	secondIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "first line") {
+			firstIndex = i
+		}
+		if strings.Contains(line, "second line") {
+			secondIndex = i
+		}
+	}
+
+	if firstIndex < 0 || secondIndex < 0 {
+		t.Fatalf("expected multiline composer output, got %q", m.renderComposer())
+	}
+	if secondIndex-firstIndex != 1 {
+		t.Fatalf("expected multiline input lines to stay adjacent, got indices %d and %d in %q", firstIndex, secondIndex, m.renderComposer())
+	}
+}
+
+func TestRenderEntriesPreservesStyleOnClippedMultilineBody(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	oldDark := lipgloss.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+		lipgloss.SetHasDarkBackground(oldDark)
+	})
+
+	m := chatTUIModel{
+		chatViewport: viewport.New(40, 1),
+		entries: []tuiEntry{{
+			role: "system",
+			text: "first line\n192.168.23.35",
+		}},
+		entriesDirty: true,
+	}
+
+	m.refreshViewports(false)
+	m.chatViewport.SetYOffset(2)
+	view := m.chatViewport.View()
+
+	if !strings.Contains(view, "192.168.23.35") {
+		t.Fatalf("expected clipped viewport to show second body line, got %q", view)
+	}
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("expected clipped body line to retain ANSI styling, got %q", view)
 	}
 }
 
