@@ -84,12 +84,13 @@ func TestRenderHeaderShowsVersionExplicitly(t *testing.T) {
 
 func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
 	m := chatTUIModel{
-		chatViewport: viewport.New(80, 20),
-		entries:      []tuiEntry{{role: "assistant", text: "hello"}},
-		entriesDirty: true,
+		chatViewport:  viewport.New(80, 20),
+		entries:       []tuiEntry{{role: "assistant", text: "hello"}},
+		entriesDirty:  true,
+		stickToBottom: true,
 	}
 
-	m.refreshViewports()
+	m.refreshViewports(false)
 	if m.entriesDirty {
 		t.Fatalf("expected refresh to clear dirty flag")
 	}
@@ -97,12 +98,58 @@ func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
 	entriesWidth := m.entriesWidth
 	content := m.chatViewport.View()
 
-	m.refreshViewports()
+	m.refreshViewports(false)
 	if m.entriesWidth != entriesWidth {
 		t.Fatalf("expected cached widths to remain unchanged")
 	}
 	if m.chatViewport.View() != content {
 		t.Fatalf("expected viewport content to remain stable without rerender")
+	}
+}
+
+func TestResizeKeepsViewportPinnedToBottomWhenComposerHeightChanges(t *testing.T) {
+	m := chatTUIModel{
+		width:         80,
+		height:        18,
+		chatViewport:  viewport.New(76, 8),
+		input:         textarea.New(),
+		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
+		entriesDirty:  true,
+		stickToBottom: true,
+	}
+
+	m.input.SetHeight(1)
+	m.resize(true)
+	if !m.chatViewport.AtBottom() {
+		t.Fatalf("expected initial viewport to be pinned to bottom")
+	}
+
+	m.input.SetHeight(5)
+	m.resize(true)
+	if !m.chatViewport.AtBottom() {
+		t.Fatalf("expected viewport to stay pinned to bottom after composer resize")
+	}
+}
+
+func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
+	m := chatTUIModel{
+		width:         80,
+		height:        18,
+		chatViewport:  viewport.New(76, 6),
+		input:         textarea.New(),
+		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
+		entriesDirty:  true,
+		stickToBottom: false,
+	}
+
+	m.resize(true)
+	m.chatViewport.SetYOffset(2)
+	m.entries = append(m.entries, tuiEntry{role: "assistant", text: "new line"})
+	m.entriesDirty = true
+	m.refreshViewports(false)
+
+	if m.chatViewport.YOffset != 2 {
+		t.Fatalf("expected user scroll offset to be preserved, got %d", m.chatViewport.YOffset)
 	}
 }
 

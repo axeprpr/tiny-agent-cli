@@ -246,6 +246,7 @@ type chatTUIModel struct {
 	entryBlocks   []string
 	pendingScroll int
 	scrollQueued  bool
+	stickToBottom bool
 	queuedTasks   []string
 	runningTask   string
 	runningCancel context.CancelFunc
@@ -378,7 +379,8 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
 			End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
-		entriesDirty: true,
+		entriesDirty:  true,
+		stickToBottom: true,
 	}
 
 	for _, msg := range runtime.session.Messages() {
@@ -394,7 +396,7 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	}
 	m.statusText = i18n.T("tui.status.ready")
 	m.refreshInputState()
-	m.refreshViewports()
+	m.refreshViewports(false)
 	return m
 }
 
@@ -415,6 +417,7 @@ func (m *chatTUIModel) reloadConversationFromSession() {
 	m.entriesWidth = 0
 	m.chatViewport.SetContent("")
 	m.chatViewport.SetYOffset(0)
+	m.stickToBottom = true
 }
 
 func runChatTUI(runtime *chatRuntime) int {
@@ -507,16 +510,20 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
+			m.stickToBottom = false
 			m.chatViewport.HalfViewUp()
 		case key.Matches(msg, m.keys.PageDown):
 			keyHandled = true
 			m.chatViewport.HalfViewDown()
+			m.stickToBottom = m.chatViewport.AtBottom()
 		case key.Matches(msg, m.keys.Home):
 			keyHandled = true
+			m.stickToBottom = false
 			m.chatViewport.GotoTop()
 		case key.Matches(msg, m.keys.End):
 			keyHandled = true
 			m.chatViewport.GotoBottom()
+			m.stickToBottom = true
 		case key.Matches(msg, m.keys.Newline):
 			keyHandled = true
 			m.input.InsertString("\n")
@@ -681,7 +688,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiMouseScrollMsg:
 		m.scrollQueued = false
 		if m.pendingScroll != 0 {
+			if m.pendingScroll < 0 {
+				m.stickToBottom = false
+			}
 			applyMouseScroll(&m.chatViewport, m.pendingScroll)
+			if m.pendingScroll > 0 {
+				m.stickToBottom = m.chatViewport.AtBottom()
+			}
 			m.pendingScroll = 0
 		}
 	case spinner.TickMsg:
@@ -759,23 +772,24 @@ func (m *chatTUIModel) resize(forceRefresh bool) {
 		m.entriesDirty = true
 	}
 	if widthChanged || forceRefresh {
-		m.refreshViewports()
+		m.refreshViewports(forceRefresh)
 	}
 }
 
-func (m *chatTUIModel) refreshViewports() {
+func (m *chatTUIModel) refreshViewports(forceReanchor bool) {
 	if m.chatViewport.Width > 0 {
 		if m.entriesDirty || m.entriesWidth != m.chatViewport.Width {
-			atBottom := m.chatViewport.AtBottom()
 			offset := m.chatViewport.YOffset
 			m.chatViewport.SetContent(m.renderEntries())
-			if atBottom {
+			if m.stickToBottom {
 				m.chatViewport.GotoBottom()
 			} else {
 				m.chatViewport.SetYOffset(offset)
 			}
 			m.entriesDirty = false
 			m.entriesWidth = m.chatViewport.Width
+		} else if forceReanchor && m.stickToBottom {
+			m.chatViewport.GotoBottom()
 		}
 	}
 }
