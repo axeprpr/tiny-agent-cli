@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -223,6 +224,41 @@ func TestRenderComposerKeepsMultilineInputCompact(t *testing.T) {
 	}
 	if secondIndex-firstIndex != 1 {
 		t.Fatalf("expected multiline input lines to stay adjacent, got indices %d and %d in %q", firstIndex, secondIndex, m.renderComposer())
+	}
+}
+
+func TestDesiredInputHeightGrowsBeyondFiveLinesWhenSpaceAllows(t *testing.T) {
+	m := chatTUIModel{
+		height: 30,
+		input:  textarea.New(),
+	}
+	m.input.SetValue(strings.Repeat("line\n", 7) + "tail")
+
+	if got := m.desiredInputHeight(); got != 8 {
+		t.Fatalf("expected input height to grow with content, got %d", got)
+	}
+}
+
+func TestAltUpScrollsChatViewportWithoutEditingInput(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport:  viewport.New(80, 3),
+		input:         textarea.New(),
+		stickToBottom: false,
+		keys: chatKeyMap{
+			LineUp: key.NewBinding(key.WithKeys("alt+up")),
+		},
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6",
+	}, "\n"))
+	m.chatViewport.SetYOffset(2)
+	m.input.SetValue("first line\nsecond line")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	m = updated.(chatTUIModel)
+
+	if m.chatViewport.YOffset != 1 {
+		t.Fatalf("expected alt+up to scroll chat viewport up by one line, got %d", m.chatViewport.YOffset)
 	}
 }
 

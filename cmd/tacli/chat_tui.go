@@ -206,6 +206,8 @@ type chatKeyMap struct {
 	Interrupt key.Binding
 	Quit      key.Binding
 	Help      key.Binding
+	LineUp    key.Binding
+	LineDown  key.Binding
 	PageDown  key.Binding
 	PageUp    key.Binding
 	Home      key.Binding
@@ -219,7 +221,7 @@ func (k chatKeyMap) ShortHelp() []key.Binding {
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Send, k.Newline, k.Interrupt, k.Help, k.Quit},
-		{k.PageUp, k.PageDown, k.Home, k.End},
+		{k.LineUp, k.LineDown, k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
 
@@ -378,6 +380,8 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
 			Help:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			LineUp:    key.NewBinding(key.WithKeys("alt+up"), key.WithHelp("alt+up", "scroll up")),
+			LineDown:  key.NewBinding(key.WithKeys("alt+down"), key.WithHelp("alt+down", "scroll down")),
 			PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
 			PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
 			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
@@ -512,6 +516,14 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entriesDirty = true
 				immediateRefresh = true
 			}
+		case key.Matches(msg, m.keys.LineUp):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.ScrollUp(1)
+		case key.Matches(msg, m.keys.LineDown):
+			keyHandled = true
+			m.chatViewport.ScrollDown(1)
+			m.stickToBottom = m.chatViewport.AtBottom()
 		case key.Matches(msg, m.keys.PageUp):
 			keyHandled = true
 			m.stickToBottom = false
@@ -714,8 +726,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Dynamic input height
-		lines := strings.Count(m.input.Value(), "\n") + 1
-		newHeight := max(1, min(5, lines))
+		newHeight := m.desiredInputHeight()
 		if newHeight != m.input.Height() {
 			m.input.SetHeight(newHeight)
 		}
@@ -1134,8 +1145,7 @@ func todoLine(item tools.TodoItem) string {
 
 func (m *chatTUIModel) refreshInputState() {
 	m.input.Prompt = ""
-	lines := strings.Count(m.input.Value(), "\n") + 1
-	m.input.SetHeight(max(1, min(5, lines)))
+	m.input.SetHeight(m.desiredInputHeight())
 	switch {
 	case m.approval != nil:
 		m.input.Placeholder = i18n.T("tui.placeholder.approval")
@@ -1144,6 +1154,22 @@ func (m *chatTUIModel) refreshInputState() {
 	default:
 		m.input.Placeholder = i18n.T("tui.placeholder.default")
 	}
+}
+
+func (m chatTUIModel) desiredInputHeight() int {
+	lines := max(1, strings.Count(m.input.Value(), "\n")+1)
+	if m.height <= 0 {
+		return lines
+	}
+	footerHeight := 1
+	if m.showFullHelp {
+		footerHeight = 4
+	}
+	maxVisible := m.height - (7 + footerHeight + 6)
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+	return min(lines, maxVisible)
 }
 
 func (m chatTUIModel) composerHint() string {
