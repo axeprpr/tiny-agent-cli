@@ -132,7 +132,7 @@ func TestBuildSystemPromptIncludesCoreToolSelectionGuidance(t *testing.T) {
 		"must create a concrete plan before the first mutating action",
 		"If a mutating action fails, do not immediately try a different mutating path.",
 		"If the user rejects a write, command, or permission request, stop and return control to the user.",
-		"Do not finish while the task contract or todo list still contains pending or blocked work.",
+		"blocked work without a terminal handoff",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

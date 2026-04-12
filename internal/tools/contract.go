@@ -21,9 +21,20 @@ type TaskContract struct {
 }
 
 type ContractItem struct {
-	Text     string `json:"text"`
-	Status   string `json:"status"`
-	Evidence string `json:"evidence,omitempty"`
+	Text         string `json:"text"`
+	Status       string `json:"status"`
+	Evidence     string `json:"evidence,omitempty"`
+	EvidenceKind string `json:"evidence_kind,omitempty"`
+	Terminal     bool   `json:"terminal,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Handoff      string `json:"handoff,omitempty"`
+}
+
+type TaskContractPatch struct {
+	TaskKind         *string         `json:"task_kind,omitempty"`
+	Objective        *string         `json:"objective,omitempty"`
+	Deliverables     *[]ContractItem `json:"deliverables,omitempty"`
+	AcceptanceChecks *[]ContractItem `json:"acceptance_checks,omitempty"`
 }
 
 type contractStore struct {
@@ -83,10 +94,9 @@ func (t *updateTaskContractTool) Definition() model.Tool {
 		Type: "function",
 		Function: model.FunctionSpec{
 			Name:        "update_task_contract",
-			Description: "Create or replace the semantic task contract for the current work. Use it for non-trivial engineering tasks so the runtime can track deliverables and acceptance checks before finishing.",
+			Description: "Create or patch the semantic task contract for the current work. Omitted fields keep their current values. Use it for non-trivial engineering tasks so the runtime can track deliverables and acceptance checks before finishing.",
 			Parameters: map[string]any{
-				"type":     "object",
-				"required": []string{"objective"},
+				"type": "object",
 				"properties": map[string]any{
 					"task_kind": map[string]any{
 						"type":        "string",
@@ -94,7 +104,7 @@ func (t *updateTaskContractTool) Definition() model.Tool {
 					},
 					"objective": map[string]any{
 						"type":        "string",
-						"description": "Short statement of the user-visible goal.",
+						"description": "Short statement of the user-visible goal. Required when creating a new contract.",
 					},
 					"deliverables":      contractItemsSchema("Concrete outputs that must exist before the task is done."),
 					"acceptance_checks": contractItemsSchema("Concrete checks that must pass before the task is done."),
@@ -125,17 +135,34 @@ func contractItemsSchema(description string) map[string]any {
 					"type":        "string",
 					"description": "Short evidence note showing how this item was verified.",
 				},
+				"evidence_kind": map[string]any{
+					"type":        "string",
+					"description": "Expected evidence type. Use static, test, http, browser, runtime, manual_handoff, or file.",
+					"enum":        []string{"static", "test", "http", "browser", "runtime", "manual_handoff", "file"},
+				},
+				"terminal": map[string]any{
+					"type":        "boolean",
+					"description": "When true, a blocked status can be treated as a terminal handoff state if reason and handoff are provided.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "Reason for a blocked item, especially for environment or permission constraints.",
+				},
+				"handoff": map[string]any{
+					"type":        "string",
+					"description": "Concrete next step for the user or another agent when the item is blocked.",
+				},
 			},
 		},
 	}
 }
 
 func (t *updateTaskContractTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
-	var contract TaskContract
-	if err := json.Unmarshal(raw, &contract); err != nil {
+	var patch TaskContractPatch
+	if err := json.Unmarshal(raw, &patch); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
 	}
-	if err := t.store.Replace(contract); err != nil {
+	if err := t.store.Patch(patch); err != nil {
 		return "", err
 	}
 	return formatTaskContract(t.store.Current()), nil
@@ -178,6 +205,29 @@ func normalizeContractStatus(status string) string {
 	}
 }
 
+func normalizeEvidenceKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "":
+		return ""
+	case "static":
+		return "static"
+	case "test":
+		return "test"
+	case "http":
+		return "http"
+	case "browser":
+		return "browser"
+	case "runtime":
+		return "runtime"
+	case "manual_handoff":
+		return "manual_handoff"
+	case "file":
+		return "file"
+	default:
+		return ""
+	}
+}
+
 func (s *contractStore) Replace(contract TaskContract) error {
 	contract.Objective = strings.Join(strings.Fields(strings.TrimSpace(contract.Objective)), " ")
 	contract.TaskKind = strings.Join(strings.Fields(strings.TrimSpace(contract.TaskKind)), " ")
@@ -206,22 +256,55 @@ func (s *contractStore) Replace(contract TaskContract) error {
 	return s.save()
 }
 
+func (s *contractStore) Patch(patch TaskContractPatch) error {
+	current := s.Current()
+	if patch.TaskKind != nil {
+		current.TaskKind = *patch.TaskKind
+	}
+	if patch.Objective != nil {
+		current.Objective = *patch.Objective
+	}
+	if patch.Deliverables != nil {
+		current.Deliverables = append([]ContractItem(nil), (*patch.Deliverables)...)
+	}
+	if patch.AcceptanceChecks != nil {
+		current.AcceptanceChecks = append([]ContractItem(nil), (*patch.AcceptanceChecks)...)
+	}
+	return s.Replace(current)
+}
+
 func normalizeContractItems(items []ContractItem) ([]ContractItem, error) {
 	normalized := make([]ContractItem, 0, len(items))
 	for _, item := range items {
 		text := strings.Join(strings.Fields(strings.TrimSpace(item.Text)), " ")
 		status := normalizeContractStatus(item.Status)
 		evidence := strings.TrimSpace(item.Evidence)
+		evidenceKind := normalizeEvidenceKind(item.EvidenceKind)
+		reason := strings.Join(strings.Fields(strings.TrimSpace(item.Reason)), " ")
+		handoff := strings.Join(strings.Fields(strings.TrimSpace(item.Handoff)), " ")
 		if text == "" {
 			return nil, fmt.Errorf("item text must not be empty")
 		}
 		if status == "" {
 			return nil, fmt.Errorf("invalid status %q", item.Status)
 		}
+		if item.EvidenceKind != "" && evidenceKind == "" {
+			return nil, fmt.Errorf("invalid evidence_kind %q", item.EvidenceKind)
+		}
+		if status == "blocked" && reason == "" {
+			return nil, fmt.Errorf("blocked item must include reason")
+		}
+		if item.Terminal && status == "blocked" && handoff == "" {
+			return nil, fmt.Errorf("terminal blocked item must include handoff")
+		}
 		normalized = append(normalized, ContractItem{
-			Text:     text,
-			Status:   status,
-			Evidence: evidence,
+			Text:         text,
+			Status:       status,
+			Evidence:     evidence,
+			EvidenceKind: evidenceKind,
+			Terminal:     item.Terminal,
+			Reason:       reason,
+			Handoff:      handoff,
 		})
 	}
 	return normalized, nil
@@ -270,8 +353,20 @@ func formatTaskContract(contract TaskContract) string {
 		lines = append(lines, "deliverables:")
 		for i, item := range contract.Deliverables {
 			lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, contractStatusLabel(item.Status), item.Text))
+			if item.Terminal {
+				lines = append(lines, "   terminal: true")
+			}
+			if strings.TrimSpace(item.EvidenceKind) != "" {
+				lines = append(lines, "   evidence_kind: "+item.EvidenceKind)
+			}
 			if strings.TrimSpace(item.Evidence) != "" {
 				lines = append(lines, "   evidence: "+item.Evidence)
+			}
+			if strings.TrimSpace(item.Reason) != "" {
+				lines = append(lines, "   reason: "+item.Reason)
+			}
+			if strings.TrimSpace(item.Handoff) != "" {
+				lines = append(lines, "   handoff: "+item.Handoff)
 			}
 		}
 	}
@@ -279,8 +374,20 @@ func formatTaskContract(contract TaskContract) string {
 		lines = append(lines, "acceptance_checks:")
 		for i, item := range contract.AcceptanceChecks {
 			lines = append(lines, fmt.Sprintf("%d. [%s] %s", i+1, contractStatusLabel(item.Status), item.Text))
+			if item.Terminal {
+				lines = append(lines, "   terminal: true")
+			}
+			if strings.TrimSpace(item.EvidenceKind) != "" {
+				lines = append(lines, "   evidence_kind: "+item.EvidenceKind)
+			}
 			if strings.TrimSpace(item.Evidence) != "" {
 				lines = append(lines, "   evidence: "+item.Evidence)
+			}
+			if strings.TrimSpace(item.Reason) != "" {
+				lines = append(lines, "   reason: "+item.Reason)
+			}
+			if strings.TrimSpace(item.Handoff) != "" {
+				lines = append(lines, "   handoff: "+item.Handoff)
 			}
 		}
 	}

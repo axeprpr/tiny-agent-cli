@@ -78,3 +78,42 @@ func TestTaskContractReplacePersistsLatestState(t *testing.T) {
 		t.Fatalf("unexpected persisted evidence: %q", got)
 	}
 }
+
+func TestUpdateTaskContractToolPatchesExistingContract(t *testing.T) {
+	store := newContractStoreWithPath(filepath.Join(t.TempDir(), "contract-v1.json"))
+	update := newUpdateTaskContractTool(store)
+
+	_, err := update.Call(context.Background(), json.RawMessage(`{
+		"task_kind":"webapp_with_deploy",
+		"objective":"Ship the embedded app",
+		"acceptance_checks":[{"text":"GET / returns app html","status":"pending","evidence_kind":"http","terminal":true}]
+	}`))
+	if err != nil {
+		t.Fatalf("seed contract failed: %v", err)
+	}
+
+	out, err := update.Call(context.Background(), json.RawMessage(`{
+		"acceptance_checks":[{"text":"GET / returns app html","status":"blocked","evidence_kind":"http","terminal":true,"reason":"local server could not be started","handoff":"Run python3 -m http.server 4173 --bind 0.0.0.0 and retry the HTTP check."}]
+	}`))
+	if err != nil {
+		t.Fatalf("patch contract failed: %v", err)
+	}
+	if !strings.Contains(out, "reason: local server could not be started") {
+		t.Fatalf("expected blocked reason in output: %q", out)
+	}
+	if got := store.Current().Objective; got != "Ship the embedded app" {
+		t.Fatalf("expected objective to be preserved, got %q", got)
+	}
+}
+
+func TestTaskContractRejectsTerminalBlockedWithoutHandoff(t *testing.T) {
+	store := newContractStoreWithPath(filepath.Join(t.TempDir(), "contract-v1.json"))
+	update := newUpdateTaskContractTool(store)
+	_, err := update.Call(context.Background(), json.RawMessage(`{
+		"objective":"Ship the embedded app",
+		"acceptance_checks":[{"text":"GET / returns app html","status":"blocked","terminal":true,"reason":"needs a local server"}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "handoff") {
+		t.Fatalf("expected terminal blocked handoff validation error, got %v", err)
+	}
+}

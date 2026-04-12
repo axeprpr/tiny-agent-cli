@@ -498,16 +498,16 @@ func incompleteTodoItems(items []tools.TodoItem) []string {
 func incompleteContractItems(contract tools.TaskContract) []string {
 	var out []string
 	for _, item := range contract.Deliverables {
-		if item.Status == "completed" {
+		if contractItemIsTerminal(item) {
 			continue
 		}
-		out = append(out, fmt.Sprintf("deliverable [%s]: %s", item.Status, item.Text))
+		out = append(out, "deliverable "+contractItemStateSummary(item))
 	}
 	for _, item := range contract.AcceptanceChecks {
-		if item.Status == "completed" {
+		if contractItemIsTerminal(item) {
 			continue
 		}
-		out = append(out, fmt.Sprintf("acceptance [%s]: %s", item.Status, item.Text))
+		out = append(out, "acceptance "+contractItemStateSummary(item))
 	}
 	return out
 }
@@ -521,8 +521,11 @@ func verifyContractIssues(contract tools.TaskContract) []string {
 	}
 	var out []string
 	for _, item := range contract.AcceptanceChecks {
+		if item.Status == "blocked" && item.Terminal && contractItemHasBlockedHandoff(item) {
+			continue
+		}
 		if item.Status != "completed" {
-			out = append(out, fmt.Sprintf("acceptance [%s]: %s", item.Status, item.Text))
+			out = append(out, "acceptance "+contractItemStateSummary(item))
 			continue
 		}
 		if strings.TrimSpace(item.Evidence) == "" {
@@ -576,15 +579,53 @@ func (s *Session) finishGateReminder() string {
 	for _, item := range truncateList(pending, 5) {
 		lines = append(lines, "- "+item)
 	}
-	lines = append(lines, "Update the task contract or todo items with evidence, then continue the work. Do not finish yet.")
+	lines = append(lines, "Update the task contract or todo items with evidence. For environment or permission limits, use blocked + terminal + reason + handoff. Do not finish yet.")
 	return strings.Join(lines, "\n")
 }
 
 type closeoutEvidence struct {
 	Name         string
 	Summary      string
+	Kind         string
 	Mutating     bool
 	Verification bool
+}
+
+type closeoutProfile struct {
+	kinds           map[string]bool
+	summary         string
+	hasMutation     bool
+	hasVerification bool
+}
+
+type capabilityConstraint struct {
+	evidenceKinds map[string]bool
+	reason        string
+	handoff       string
+}
+
+func contractItemHasBlockedHandoff(item tools.ContractItem) bool {
+	return strings.TrimSpace(item.Reason) != "" && strings.TrimSpace(item.Handoff) != ""
+}
+
+func contractItemIsTerminal(item tools.ContractItem) bool {
+	if item.Status == "completed" {
+		return true
+	}
+	return item.Status == "blocked" && item.Terminal && contractItemHasBlockedHandoff(item)
+}
+
+func contractItemStateSummary(item tools.ContractItem) string {
+	text := fmt.Sprintf("[%s]: %s", item.Status, item.Text)
+	if item.Status == "blocked" && item.Terminal {
+		switch {
+		case !contractItemHasBlockedHandoff(item):
+			return text + " (missing reason or handoff)"
+		default:
+			return text + " (terminal handoff)"
+		}
+	}
+	return text
 }
 
 func (s *Session) tryAutoCloseTaskContract() bool {
@@ -601,61 +642,72 @@ func (s *Session) tryAutoCloseTaskContract() bool {
 	if len(incompleteContractItems(contract)) == 0 {
 		return false
 	}
-	if contractHasBlockedItems(contract) {
+	updated, changed := s.autoDowngradeCapabilityLimitedContract(contract)
+	profile, ok := s.closeoutEvidenceSummary()
+	if ok {
+		var itemChanged bool
+		updated.Deliverables, itemChanged = completeContractItems(updated.Deliverables, profile, false)
+		changed = changed || itemChanged
+		updated.AcceptanceChecks, itemChanged = completeContractItems(updated.AcceptanceChecks, profile, true)
+		changed = changed || itemChanged
+	}
+	if !changed {
 		return false
 	}
-	evidence, ok := s.closeoutEvidenceSummary()
-	if !ok {
-		return false
-	}
-	updated := contract
-	updated.Deliverables = completeContractItems(updated.Deliverables, evidence)
-	updated.AcceptanceChecks = completeContractItems(updated.AcceptanceChecks, evidence)
 	if err := s.agent.ReplaceTaskContract(updated); err != nil {
 		return false
 	}
-	return true
+	return len(incompleteContractItems(updated)) == 0
 }
 
-func contractHasBlockedItems(contract tools.TaskContract) bool {
-	for _, item := range contract.Deliverables {
-		if item.Status == "blocked" {
-			return true
-		}
-	}
-	for _, item := range contract.AcceptanceChecks {
-		if item.Status == "blocked" {
-			return true
-		}
-	}
-	return false
-}
-
-func completeContractItems(items []tools.ContractItem, evidence string) []tools.ContractItem {
+func completeContractItems(items []tools.ContractItem, profile closeoutProfile, requiresVerification bool) ([]tools.ContractItem, bool) {
 	if len(items) == 0 {
-		return nil
+		return nil, false
 	}
 	out := make([]tools.ContractItem, len(items))
+	changed := false
 	for i, item := range items {
 		out[i] = item
-		if item.Status == "completed" {
-			if strings.TrimSpace(out[i].Evidence) == "" {
-				out[i].Evidence = evidence
+		if contractItemIsTerminal(item) {
+			if item.Status == "completed" && strings.TrimSpace(out[i].Evidence) == "" && canAutoCompleteContractItem(item, profile, requiresVerification) {
+				out[i].Evidence = profile.summary
+				changed = true
 			}
+			continue
+		}
+		if !canAutoCompleteContractItem(item, profile, requiresVerification) {
 			continue
 		}
 		out[i].Status = "completed"
 		if strings.TrimSpace(out[i].Evidence) == "" {
-			out[i].Evidence = evidence
+			out[i].Evidence = profile.summary
 		}
+		out[i].Reason = ""
+		out[i].Handoff = ""
+		changed = true
 	}
-	return out
+	return out, changed
 }
 
-func (s *Session) closeoutEvidenceSummary() (string, bool) {
+func canAutoCompleteContractItem(item tools.ContractItem, profile closeoutProfile, requiresVerification bool) bool {
+	kind := strings.TrimSpace(item.EvidenceKind)
+	switch kind {
+	case "":
+		if requiresVerification {
+			return profile.hasMutation && profile.hasVerification
+		}
+		return profile.hasMutation
+	case "manual_handoff":
+		return false
+	default:
+		return profile.kinds[kind]
+	}
+}
+
+func (s *Session) closeoutEvidenceSummary() (closeoutProfile, bool) {
 	facts := s.collectCloseoutEvidence()
 	if len(facts) == 0 {
-		return "", false
+		return closeoutProfile{}, false
 	}
 	lastMutation := -1
 	for i, fact := range facts {
@@ -664,17 +716,21 @@ func (s *Session) closeoutEvidenceSummary() (string, bool) {
 		}
 	}
 	if lastMutation < 0 {
-		return "", false
+		return closeoutProfile{}, false
 	}
 	hasVerification := false
+	kinds := map[string]bool{}
 	for i := lastMutation + 1; i < len(facts); i++ {
 		if facts[i].Verification {
 			hasVerification = true
+			if strings.TrimSpace(facts[i].Kind) != "" {
+				kinds[facts[i].Kind] = true
+			}
 			break
 		}
 	}
 	if !hasVerification {
-		return "", false
+		return closeoutProfile{}, false
 	}
 	seen := map[string]struct{}{}
 	summaries := make([]string, 0, 3)
@@ -690,9 +746,14 @@ func (s *Session) closeoutEvidenceSummary() (string, bool) {
 		summaries = append(summaries, summary)
 	}
 	if len(summaries) == 0 {
-		return "", false
+		return closeoutProfile{}, false
 	}
-	return "runtime auto-closeout from successful mutation and verification; recent evidence: " + strings.Join(summaries, "; "), true
+	return closeoutProfile{
+		kinds:           kinds,
+		summary:         "runtime auto-closeout from successful mutation and verification; recent evidence: " + strings.Join(summaries, "; "),
+		hasMutation:     true,
+		hasVerification: hasVerification,
+	}, true
 }
 
 func (s *Session) collectCloseoutEvidence() []closeoutEvidence {
@@ -721,6 +782,7 @@ func (s *Session) collectCloseoutEvidence() []closeoutEvidence {
 			out = append(out, closeoutEvidence{
 				Name:         name,
 				Summary:      summarizeCloseoutEvidence(name, output),
+				Kind:         classifyCloseoutEvidenceKind(call),
 				Mutating:     isCloseoutMutatingToolCall(call),
 				Verification: isCloseoutVerificationToolCall(call),
 			})
@@ -739,6 +801,40 @@ func summarizeCloseoutEvidence(name, output string) string {
 			return name
 		}
 		return fmt.Sprintf("%s ok", name)
+	}
+}
+
+func classifyCloseoutEvidenceKind(call model.ToolCall) string {
+	name := strings.TrimSpace(call.Function.Name)
+	switch name {
+	case "read_file":
+		return "file"
+	case "list_files", "glob_search", "grep", "review_diff", "fetch_url", "web_search":
+		return "static"
+	case "run_command":
+		return classifyCloseoutRunCommandKind(call.Function.Arguments)
+	default:
+		return ""
+	}
+}
+
+func classifyCloseoutRunCommandKind(raw string) string {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+	command := strings.ToLower(strings.TrimSpace(args.Command))
+	switch {
+	case strings.HasPrefix(command, "curl -"), strings.HasPrefix(command, "curl "):
+		return "http"
+	case strings.HasPrefix(command, "go test "), strings.HasPrefix(command, "pytest "), strings.HasPrefix(command, "npm test"), strings.HasPrefix(command, "pnpm test"), strings.HasPrefix(command, "yarn test"), strings.HasPrefix(command, "bun test"), strings.HasPrefix(command, "cargo test"):
+		return "test"
+	case strings.HasPrefix(command, "grep "), strings.HasPrefix(command, "cat "), strings.HasPrefix(command, "sed -n "), strings.HasPrefix(command, "ls "), strings.HasPrefix(command, "git diff"), strings.HasPrefix(command, "git status"), strings.HasPrefix(command, "node -e "), strings.HasPrefix(command, "node --check"), strings.HasPrefix(command, "node -p "), strings.HasPrefix(command, "python -c "), strings.HasPrefix(command, "python3 -c "), strings.HasPrefix(command, "python - <<"), strings.HasPrefix(command, "python3 - <<"):
+		return "static"
+	default:
+		return "runtime"
 	}
 }
 
@@ -790,6 +886,113 @@ func runCommandLooksMutatingForCloseout(raw string) bool {
 		}
 	}
 	return runCommandLooksMutating(raw)
+}
+
+func (s *Session) autoDowngradeCapabilityLimitedContract(contract tools.TaskContract) (tools.TaskContract, bool) {
+	if s == nil {
+		return contract, false
+	}
+	constraints := s.detectCapabilityConstraints()
+	if len(constraints) == 0 {
+		return contract, false
+	}
+	updated := contract
+	changedDeliverables := false
+	updated.Deliverables, changedDeliverables = applyCapabilityConstraints(updated.Deliverables, constraints)
+	changedChecks := false
+	updated.AcceptanceChecks, changedChecks = applyCapabilityConstraints(updated.AcceptanceChecks, constraints)
+	return updated, changedDeliverables || changedChecks
+}
+
+func applyCapabilityConstraints(items []tools.ContractItem, constraints []capabilityConstraint) ([]tools.ContractItem, bool) {
+	if len(items) == 0 || len(constraints) == 0 {
+		return items, false
+	}
+	out := make([]tools.ContractItem, len(items))
+	changed := false
+	for i, item := range items {
+		out[i] = item
+		if contractItemIsTerminal(item) || !item.Terminal {
+			continue
+		}
+		for _, constraint := range constraints {
+			if !constraintMatchesItem(constraint, item) {
+				continue
+			}
+			out[i].Status = "blocked"
+			if strings.TrimSpace(out[i].Reason) == "" {
+				out[i].Reason = constraint.reason
+			}
+			if strings.TrimSpace(out[i].Handoff) == "" {
+				out[i].Handoff = constraint.handoff
+			}
+			changed = true
+			break
+		}
+	}
+	return out, changed
+}
+
+func constraintMatchesItem(constraint capabilityConstraint, item tools.ContractItem) bool {
+	if len(constraint.evidenceKinds) == 0 {
+		return false
+	}
+	kind := strings.TrimSpace(item.EvidenceKind)
+	if kind == "" {
+		return false
+	}
+	return constraint.evidenceKinds[kind]
+}
+
+func (s *Session) detectCapabilityConstraints() []capabilityConstraint {
+	var constraints []capabilityConstraint
+	if !sessionHasToolWithPrefix(s, "browser_") {
+		constraints = append(constraints, capabilityConstraint{
+			evidenceKinds: map[string]bool{"browser": true},
+			reason:        "current session has no browser automation capability",
+			handoff:       "Open the resulting page in a browser and verify rendering plus console output manually.",
+		})
+	}
+	if reason, handoff, ok := recentServiceCapabilityConstraint(s.messages); ok {
+		constraints = append(constraints, capabilityConstraint{
+			evidenceKinds: map[string]bool{"http": true, "runtime": true, "browser": true},
+			reason:        reason,
+			handoff:       handoff,
+		})
+	}
+	return constraints
+}
+
+func sessionHasToolWithPrefix(s *Session, prefix string) bool {
+	if s == nil || s.agent == nil || s.agent.registry == nil {
+		return false
+	}
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	for _, def := range s.agent.registry.Definitions() {
+		name := strings.ToLower(strings.TrimSpace(def.Function.Name))
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func recentServiceCapabilityConstraint(messages []model.Message) (string, string, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "tool" {
+			continue
+		}
+		text := strings.ToLower(cleanToolOutput(msg.Content))
+		switch {
+		case strings.Contains(text, "long-running service via shell backgrounding"),
+			strings.Contains(text, "long-running foreground process"):
+			return "current session mode cannot start long-running local services", "Run the local server in another terminal or a background-capable session, then verify the HTTP endpoint manually.", true
+		case strings.Contains(text, "permission denied") && strings.Contains(text, "start_background_job"):
+			return "current session permissions do not allow starting background jobs", "Retry from a session with background-job permission, then verify the local endpoint manually.", true
+		}
+	}
+	return "", "", false
 }
 
 func (s *Session) planGateReminder(calls []model.ToolCall) string {

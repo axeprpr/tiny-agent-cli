@@ -1759,6 +1759,30 @@ func TestVerifyFinishGateRequiresAcceptanceEvidence(t *testing.T) {
 	}
 }
 
+func TestFinishGateAllowsTerminalBlockedAcceptanceChecks(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded app",
+		AcceptanceChecks: []tools.ContractItem{
+			{
+				Text:         "GET / returns app html",
+				Status:       "blocked",
+				EvidenceKind: "http",
+				Terminal:     true,
+				Reason:       "current session mode cannot start long-running local services",
+				Handoff:      "Run python3 -m http.server 4173 --bind 0.0.0.0 and retry the HTTP check.",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+	if got := a.NewSession().finishGateReminder(); got != "" {
+		t.Fatalf("expected terminal blocked handoff to satisfy finish gate, got %q", got)
+	}
+}
+
 func TestPlanGateReminderRequiresPlanBeforeMutatingShell(t *testing.T) {
 	dir := t.TempDir()
 	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
@@ -1907,10 +1931,10 @@ func TestTryAutoCloseTaskContractFromRuntimeEvidence(t *testing.T) {
 		TaskKind:  "webapp_with_deploy",
 		Objective: "Ship the aquarium page",
 		Deliverables: []tools.ContractItem{
-			{Text: "index.html exists", Status: "pending"},
+			{Text: "index.html exists", Status: "pending", EvidenceKind: "file"},
 		},
 		AcceptanceChecks: []tools.ContractItem{
-			{Text: "page was verified after edit", Status: "pending"},
+			{Text: "page was verified after edit", Status: "pending", EvidenceKind: "file"},
 		},
 	}); err != nil {
 		t.Fatalf("seed task contract: %v", err)
@@ -1979,7 +2003,7 @@ func TestTryAutoCloseTaskContractRequiresVerificationAfterMutation(t *testing.T)
 		TaskKind:  "webapp_with_deploy",
 		Objective: "Ship the aquarium page",
 		AcceptanceChecks: []tools.ContractItem{
-			{Text: "page was verified after edit", Status: "pending"},
+			{Text: "page was verified after edit", Status: "pending", EvidenceKind: "file"},
 		},
 	}); err != nil {
 		t.Fatalf("seed task contract: %v", err)
@@ -2021,7 +2045,7 @@ func TestRunTaskAutoClosesStaleContractAfterVerifiedMutation(t *testing.T) {
 				Type: "function",
 				Function: model.ToolFunction{
 					Name:      "update_task_contract",
-					Arguments: `{"task_kind":"webapp_with_deploy","objective":"Ship the aquarium page","deliverables":[{"text":"index.html exists","status":"pending"}],"acceptance_checks":[{"text":"page was verified after edit","status":"pending"}]}`,
+					Arguments: `{"task_kind":"webapp_with_deploy","objective":"Ship the aquarium page","deliverables":[{"text":"index.html exists","status":"pending","evidence_kind":"file"}],"acceptance_checks":[{"text":"page was verified after edit","status":"pending","evidence_kind":"file"}]}`,
 				},
 			}}}}}},
 			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
@@ -2084,6 +2108,103 @@ func TestRunTaskAutoClosesStaleContractAfterVerifiedMutation(t *testing.T) {
 		if item.Status != "completed" || strings.TrimSpace(item.Evidence) == "" {
 			t.Fatalf("expected completed acceptance with evidence, got %#v", item)
 		}
+	}
+}
+
+func TestTryAutoCloseTaskContractDoesNotCompleteBrowserChecksFromStaticEvidence(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTodo([]tools.TodoItem{{Text: "ship aquarium page", Status: "completed"}}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the aquarium page",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "page renders without console errors", Status: "pending", EvidenceKind: "browser"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	session := a.NewSession()
+	session.turns = []TurnSummary{
+		{
+			Assistant: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "write_file",
+					Arguments: `{"path":"index.html","content":"<html></html>"}`,
+				},
+			}}},
+			ToolResults: []model.Message{{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("wrote 12 bytes to index.html")}},
+		},
+		{
+			Assistant: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "run_command",
+					Arguments: `{"command":"grep -n \"type=\\\"module\\\"\" index.html"}`,
+				},
+			}}},
+			ToolResults: []model.Message{{Role: "tool", ToolCallID: "call-2", Content: annotateToolResult("12:<script type=\"module\">")}},
+		},
+	}
+
+	if session.tryAutoCloseTaskContract() {
+		t.Fatalf("expected browser evidence requirement to prevent auto-close")
+	}
+	if got := a.TaskContract().AcceptanceChecks[0].Status; got != "pending" {
+		t.Fatalf("expected browser acceptance to remain pending, got %q", got)
+	}
+}
+
+func TestTryAutoCloseTaskContractAutoBlocksTerminalHTTPCheckOnServiceConstraint(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTodo([]tools.TodoItem{{Text: "ship aquarium page", Status: "completed"}}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the aquarium page",
+		AcceptanceChecks: []tools.ContractItem{
+			{
+				Text:         "GET / returns app html",
+				Status:       "pending",
+				EvidenceKind: "http",
+				Terminal:     true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	session := a.NewSession()
+	session.messages = []model.Message{
+		{Role: "system", Content: "base system"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"python3 -m http.server 8000 >/tmp/server.log 2>&1 & sleep 1; curl -I http://127.0.0.1:8000/"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command appears to start a long-running service via shell backgrounding; use start_background_job or detach it with nohup/setsid")},
+	}
+
+	if !session.tryAutoCloseTaskContract() {
+		t.Fatalf("expected blocked handoff downgrade to satisfy finish gate")
+	}
+	item := a.TaskContract().AcceptanceChecks[0]
+	if item.Status != "blocked" || strings.TrimSpace(item.Reason) == "" || strings.TrimSpace(item.Handoff) == "" {
+		t.Fatalf("expected blocked terminal handoff, got %#v", item)
+	}
+	if got := session.finishGateReminder(); got != "" {
+		t.Fatalf("expected blocked terminal handoff to satisfy finish gate, got %q", got)
 	}
 }
 
