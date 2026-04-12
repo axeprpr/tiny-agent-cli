@@ -84,6 +84,24 @@ func TestRenderHeaderShowsVersionExplicitly(t *testing.T) {
 	}
 }
 
+func TestRenderStatusLineShowsVersionBeforeContext(t *testing.T) {
+	r := &chatRuntime{
+		cfg:     config.Config{ContextWindow: 32768},
+		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	m := chatTUIModel{runtime: r, width: 100}
+	got := m.renderStatusLine()
+
+	versionIndex := strings.Index(got, version)
+	ctxIndex := strings.Index(got, "ctx ")
+	if versionIndex < 0 || ctxIndex < 0 {
+		t.Fatalf("expected status line to show version before context, got %q", got)
+	}
+	if versionIndex > ctxIndex {
+		t.Fatalf("expected version to appear before context, got %q", got)
+	}
+}
+
 func TestRefreshViewportsOnlyRerendersDirtyContent(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport:  viewport.New(80, 20),

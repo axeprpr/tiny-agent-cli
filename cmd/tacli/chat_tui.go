@@ -311,6 +311,10 @@ var (
 			Foreground(lipgloss.Color("244")).
 			Padding(0, 0, 1, 0)
 
+	statusVersionStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "252"})
+
 	paneTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("242")).
 			Padding(0, 0, 1, 0)
@@ -723,7 +727,24 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m chatTUIModel) View() string {
 	header := m.renderHeader()
 
+	content := m.renderConversation()
+
+	parts := []string{
+		header,
+		m.renderTodoSummary(),
+		content,
+		m.renderComposer(),
+		m.renderStatusLine(),
+	}
+	if m.showFullHelp {
+		parts = append(parts, m.help.FullHelpView(m.keys.FullHelp()))
+	}
+	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+func (m chatTUIModel) renderStatusLine() string {
 	statusParts := []string{
+		statusVersionStyle.Render(strings.TrimSpace(version)),
 		contextStatus(m.runtime, m.input.Value()),
 	}
 	if m.busy {
@@ -734,20 +755,7 @@ func (m chatTUIModel) View() string {
 	if strings.TrimSpace(m.stepText) != "" {
 		statusParts = append(statusParts, chipAccentStyle.Render(m.stepText))
 	}
-
-	content := m.renderConversation()
-
-	parts := []string{
-		header,
-		m.renderTodoSummary(),
-		content,
-		m.renderComposer(),
-		statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  ")),
-	}
-	if m.showFullHelp {
-		parts = append(parts, m.help.FullHelpView(m.keys.FullHelp()))
-	}
-	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	return statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  "))
 }
 
 func (m *chatTUIModel) resize(forceRefresh bool) {
