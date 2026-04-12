@@ -22,6 +22,11 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type ModelInfo struct {
+	ID            string
+	ContextWindow int
+}
+
 type ClientOption func(*Client)
 
 func WithTimeout(d time.Duration) ClientOption {
@@ -31,9 +36,7 @@ func WithTimeout(d time.Duration) ClientOption {
 }
 
 type modelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
+	Data []map[string]any `json:"data"`
 }
 
 func NewClient(baseURL, defaultModel, apiKey string, opts ...ClientOption) *Client {
@@ -283,7 +286,78 @@ func parseRetryAfter(value string) time.Duration {
 }
 
 func (c *Client) Models(ctx context.Context) ([]string, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	infos, err := c.ModelsInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(infos))
+	for _, item := range infos {
+		if strings.TrimSpace(item.ID) != "" {
+			names = append(names, item.ID)
+		}
+	}
+	return names, nil
+}
+
+func (c *Client) ModelsInfo(ctx context.Context) ([]ModelInfo, error) {
+	endpoints := []string{c.baseURL + "/models"}
+	if apiURL := c.apiModelsURL(); apiURL != "" && apiURL != endpoints[0] {
+		endpoints = append(endpoints, apiURL)
+	}
+
+	var lastErr error
+	for _, url := range endpoints {
+		out, err := c.modelsInfoFromURL(ctx, url)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (c *Client) ModelInfo(ctx context.Context, modelName string) (ModelInfo, bool, error) {
+	modelName = strings.TrimSpace(modelName)
+	infos, err := c.modelsInfoFromURL(ctx, c.baseURL+"/models")
+	if err == nil {
+		for _, info := range infos {
+			if strings.EqualFold(strings.TrimSpace(info.ID), modelName) {
+				if info.ContextWindow == 0 {
+					if apiURL := c.apiModelsURL(); apiURL != "" {
+						if apiInfos, apiErr := c.modelsInfoFromURL(ctx, apiURL); apiErr == nil {
+							for _, apiInfo := range apiInfos {
+								if strings.EqualFold(strings.TrimSpace(apiInfo.ID), modelName) && apiInfo.ContextWindow > 0 {
+									return apiInfo, true, nil
+								}
+							}
+						}
+					}
+				}
+				return info, true, nil
+			}
+		}
+	}
+	lastErr := err
+	if apiURL := c.apiModelsURL(); apiURL != "" {
+		apiInfos, apiErr := c.modelsInfoFromURL(ctx, apiURL)
+		if apiErr == nil {
+			for _, info := range apiInfos {
+				if strings.EqualFold(strings.TrimSpace(info.ID), modelName) {
+					return info, true, nil
+				}
+			}
+			return ModelInfo{}, false, nil
+		}
+		lastErr = apiErr
+	}
+	if lastErr != nil {
+		return ModelInfo{}, false, lastErr
+	}
+	return ModelInfo{}, false, nil
+}
+
+func (c *Client) modelsInfoFromURL(ctx context.Context, url string) ([]ModelInfo, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -307,13 +381,19 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	names := make([]string, 0, len(out.Data))
+	infos := make([]ModelInfo, 0, len(out.Data))
 	for _, item := range out.Data {
-		if strings.TrimSpace(item.ID) != "" {
-			names = append(names, item.ID)
+		id, _ := item["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
+		infos = append(infos, ModelInfo{
+			ID:            id,
+			ContextWindow: extractContextWindow(item),
+		})
 	}
-	return names, nil
+	return infos, nil
 }
 
 func PingRequest(modelName string) model.Request {
@@ -343,4 +423,68 @@ func normalizeBaseURL(base string) string {
 		return base
 	}
 	return base + "/v1"
+}
+
+func (c *Client) apiModelsURL() string {
+	base := strings.TrimRight(strings.TrimSpace(c.baseURL), "/")
+	if strings.HasSuffix(base, "/v1") {
+		base = strings.TrimSuffix(base, "/v1")
+	}
+	if base == "" {
+		return ""
+	}
+	return base + "/api/models"
+}
+
+func extractContextWindow(item map[string]any) int {
+	for _, key := range []string{
+		"max_model_len",
+		"context_window",
+		"context_length",
+		"max_context_length",
+		"max_input_tokens",
+		"input_token_limit",
+		"num_ctx",
+	} {
+		if value := intFromAny(item[key]); value > 0 {
+			return value
+		}
+	}
+	for _, key := range []string{"top_provider", "provider", "capabilities", "metadata"} {
+		nested, ok := item[key].(map[string]any)
+		if !ok || nested == nil {
+			continue
+		}
+		if value := extractContextWindow(nested); value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func intFromAny(value any) int {
+	switch v := value.(type) {
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	case int64:
+		if v > 0 {
+			return int(v)
+		}
+	case json.Number:
+		if n, err := v.Int64(); err == nil && n > 0 {
+			return int(n)
+		}
+	case string:
+		v = strings.TrimSpace(v)
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }

@@ -580,6 +580,218 @@ func (s *Session) finishGateReminder() string {
 	return strings.Join(lines, "\n")
 }
 
+type closeoutEvidence struct {
+	Name         string
+	Summary      string
+	Mutating     bool
+	Verification bool
+}
+
+func (s *Session) tryAutoCloseTaskContract() bool {
+	if s == nil || s.agent == nil || s.role == tools.AgentRoleVerify {
+		return false
+	}
+	if len(incompleteTodoItems(s.agent.TodoItems())) > 0 {
+		return false
+	}
+	contract := s.agent.TaskContract()
+	if strings.TrimSpace(contract.Objective) == "" {
+		return false
+	}
+	if len(incompleteContractItems(contract)) == 0 {
+		return false
+	}
+	if contractHasBlockedItems(contract) {
+		return false
+	}
+	evidence, ok := s.closeoutEvidenceSummary()
+	if !ok {
+		return false
+	}
+	updated := contract
+	updated.Deliverables = completeContractItems(updated.Deliverables, evidence)
+	updated.AcceptanceChecks = completeContractItems(updated.AcceptanceChecks, evidence)
+	if err := s.agent.ReplaceTaskContract(updated); err != nil {
+		return false
+	}
+	return true
+}
+
+func contractHasBlockedItems(contract tools.TaskContract) bool {
+	for _, item := range contract.Deliverables {
+		if item.Status == "blocked" {
+			return true
+		}
+	}
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status == "blocked" {
+			return true
+		}
+	}
+	return false
+}
+
+func completeContractItems(items []tools.ContractItem, evidence string) []tools.ContractItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]tools.ContractItem, len(items))
+	for i, item := range items {
+		out[i] = item
+		if item.Status == "completed" {
+			if strings.TrimSpace(out[i].Evidence) == "" {
+				out[i].Evidence = evidence
+			}
+			continue
+		}
+		out[i].Status = "completed"
+		if strings.TrimSpace(out[i].Evidence) == "" {
+			out[i].Evidence = evidence
+		}
+	}
+	return out
+}
+
+func (s *Session) closeoutEvidenceSummary() (string, bool) {
+	facts := s.collectCloseoutEvidence()
+	if len(facts) == 0 {
+		return "", false
+	}
+	lastMutation := -1
+	for i, fact := range facts {
+		if fact.Mutating {
+			lastMutation = i
+		}
+	}
+	if lastMutation < 0 {
+		return "", false
+	}
+	hasVerification := false
+	for i := lastMutation + 1; i < len(facts); i++ {
+		if facts[i].Verification {
+			hasVerification = true
+			break
+		}
+	}
+	if !hasVerification {
+		return "", false
+	}
+	seen := map[string]struct{}{}
+	summaries := make([]string, 0, 3)
+	for i := lastMutation; i < len(facts) && len(summaries) < 3; i++ {
+		summary := strings.TrimSpace(facts[i].Summary)
+		if summary == "" {
+			continue
+		}
+		if _, ok := seen[summary]; ok {
+			continue
+		}
+		seen[summary] = struct{}{}
+		summaries = append(summaries, summary)
+	}
+	if len(summaries) == 0 {
+		return "", false
+	}
+	return "runtime auto-closeout from successful mutation and verification; recent evidence: " + strings.Join(summaries, "; "), true
+}
+
+func (s *Session) collectCloseoutEvidence() []closeoutEvidence {
+	if s == nil {
+		return nil
+	}
+	var out []closeoutEvidence
+	for _, turn := range s.turns {
+		if len(turn.Assistant.ToolCalls) == 0 || len(turn.ToolResults) == 0 {
+			continue
+		}
+		limit := len(turn.Assistant.ToolCalls)
+		if len(turn.ToolResults) < limit {
+			limit = len(turn.ToolResults)
+		}
+		for i := 0; i < limit; i++ {
+			call := turn.Assistant.ToolCalls[i]
+			output := strings.TrimSpace(cleanToolOutput(turn.ToolResults[i].Content))
+			if output == "" || strings.HasPrefix(strings.ToLower(output), "tool error:") {
+				continue
+			}
+			name := strings.TrimSpace(call.Function.Name)
+			if name == "" {
+				continue
+			}
+			out = append(out, closeoutEvidence{
+				Name:         name,
+				Summary:      summarizeCloseoutEvidence(name, output),
+				Mutating:     isCloseoutMutatingToolCall(call),
+				Verification: isCloseoutVerificationToolCall(call),
+			})
+		}
+	}
+	return out
+}
+
+func summarizeCloseoutEvidence(name, output string) string {
+	output = compactSummaryText(strings.TrimSpace(output), 100)
+	switch strings.TrimSpace(name) {
+	case "write_file", "edit_file", "run_command", "read_file", "review_diff":
+		return fmt.Sprintf("%s: %s", name, output)
+	default:
+		if output == "" {
+			return name
+		}
+		return fmt.Sprintf("%s ok", name)
+	}
+}
+
+func isCloseoutMutatingToolCall(call model.ToolCall) bool {
+	switch strings.TrimSpace(call.Function.Name) {
+	case "write_file", "edit_file", "start_background_job", "delegate_subagent":
+		return true
+	case "run_command":
+		return runCommandLooksMutatingForCloseout(call.Function.Arguments)
+	default:
+		return false
+	}
+}
+
+func isCloseoutVerificationToolCall(call model.ToolCall) bool {
+	name := strings.TrimSpace(call.Function.Name)
+	switch name {
+	case "update_task_contract", "update_todo", "show_task_contract", "show_todo":
+		return false
+	case "read_file", "list_files", "glob_search", "grep", "fetch_url", "web_search", "review_diff":
+		return true
+	case "run_command":
+		return !runCommandLooksMutatingForCloseout(call.Function.Arguments)
+	default:
+		return false
+	}
+}
+
+func runCommandLooksMutatingForCloseout(raw string) bool {
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return false
+	}
+	command := strings.ToLower(strings.TrimSpace(args.Command))
+	if command == "" {
+		return false
+	}
+	readOnlyPrefixes := []string{
+		"node -e ", "node --check", "node -p ",
+		"python -c ", "python3 -c ", "python - <<", "python3 - <<",
+		"go test ", "pytest ", "npm test", "pnpm test", "yarn test", "bun test", "cargo test",
+		"curl -i ", "curl -s ", "curl -I ", "git diff", "git status", "ls ", "cat ", "sed -n ",
+	}
+	for _, prefix := range readOnlyPrefixes {
+		if strings.HasPrefix(command, prefix) {
+			return false
+		}
+	}
+	return runCommandLooksMutating(raw)
+}
+
 func (s *Session) planGateReminder(calls []model.ToolCall) string {
 	if s == nil || s.agent == nil || len(calls) == 0 {
 		return ""

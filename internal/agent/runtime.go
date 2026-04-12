@@ -242,7 +242,16 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 	s := r.session
 	decision := decideTurn(s.messages, msg)
 	if decision.action == turnActionFinish {
-		if reminder := s.finishGateReminder(); reminder != "" {
+		reminder := s.finishGateReminder()
+		if reminder != "" {
+			if s.tryAutoCloseTaskContract() {
+				reminder = s.finishGateReminder()
+				if reminder == "" {
+					s.agent.logf("finish gate auto-closed task contract from runtime evidence\n")
+				}
+			}
+		}
+		if reminder != "" {
 			s.finishGateBlocks++
 			if s.finishGateBlocks >= finishGateLoopLimit {
 				summary := TurnSummary{

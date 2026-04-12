@@ -1897,6 +1897,196 @@ func TestRunTaskStopsAfterRepeatedFinishGateBlocks(t *testing.T) {
 	}
 }
 
+func TestTryAutoCloseTaskContractFromRuntimeEvidence(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTodo([]tools.TodoItem{{Text: "ship aquarium page", Status: "completed"}}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the aquarium page",
+		Deliverables: []tools.ContractItem{
+			{Text: "index.html exists", Status: "pending"},
+		},
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "page was verified after edit", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	session := a.NewSession()
+	session.turns = []TurnSummary{
+		{
+			Assistant: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "write_file",
+					Arguments: `{"path":"index.html","content":"<html></html>"}`,
+				},
+			}}},
+			ToolResults: []model.Message{{
+				Role:       "tool",
+				ToolCallID: "call-1",
+				Content:    annotateToolResult("wrote 12 bytes to index.html"),
+			}},
+		},
+		{
+			Assistant: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "read_file",
+					Arguments: `{"path":"index.html"}`,
+				},
+			}}},
+			ToolResults: []model.Message{{
+				Role:       "tool",
+				ToolCallID: "call-2",
+				Content:    annotateToolResult("<html></html>"),
+			}},
+		},
+	}
+
+	if !session.tryAutoCloseTaskContract() {
+		t.Fatalf("expected runtime evidence to auto-close contract")
+	}
+	contract := a.TaskContract()
+	for _, item := range contract.Deliverables {
+		if item.Status != "completed" {
+			t.Fatalf("expected deliverable completed, got %#v", item)
+		}
+		if !strings.Contains(item.Evidence, "write_file:") {
+			t.Fatalf("expected deliverable evidence to mention write_file, got %q", item.Evidence)
+		}
+	}
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status != "completed" {
+			t.Fatalf("expected acceptance completed, got %#v", item)
+		}
+		if !strings.Contains(item.Evidence, "read_file:") {
+			t.Fatalf("expected acceptance evidence to mention read_file, got %q", item.Evidence)
+		}
+	}
+}
+
+func TestTryAutoCloseTaskContractRequiresVerificationAfterMutation(t *testing.T) {
+	dir := t.TempDir()
+	a := New(stubChatClient{}, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the aquarium page",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "page was verified after edit", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed task contract: %v", err)
+	}
+
+	session := a.NewSession()
+	session.turns = []TurnSummary{
+		{
+			Assistant: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "write_file",
+					Arguments: `{"path":"index.html","content":"<html></html>"}`,
+				},
+			}}},
+			ToolResults: []model.Message{{
+				Role:       "tool",
+				ToolCallID: "call-1",
+				Content:    annotateToolResult("wrote 12 bytes to index.html"),
+			}},
+		},
+	}
+
+	if session.tryAutoCloseTaskContract() {
+		t.Fatalf("expected contract to stay open without post-mutation verification")
+	}
+	contract := a.TaskContract()
+	if got := contract.AcceptanceChecks[0].Status; got != "pending" {
+		t.Fatalf("expected pending acceptance check, got %q", got)
+	}
+}
+
+func TestRunTaskAutoClosesStaleContractAfterVerifiedMutation(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "update_task_contract",
+					Arguments: `{"task_kind":"webapp_with_deploy","objective":"Ship the aquarium page","deliverables":[{"text":"index.html exists","status":"pending"}],"acceptance_checks":[{"text":"page was verified after edit","status":"pending"}]}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-2",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "update_todo",
+					Arguments: `{"items":[{"text":"ship aquarium page","status":"in_progress"}]}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-3",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "write_file",
+					Arguments: `{"path":"index.html","content":"<html></html>"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				{
+					ID:   "call-4",
+					Type: "function",
+					Function: model.ToolFunction{
+						Name:      "read_file",
+						Arguments: `{"path":"index.html"}`,
+					},
+				},
+				{
+					ID:   "call-5",
+					Type: "function",
+					Function: model.ToolFunction{
+						Name:      "update_todo",
+						Arguments: `{"items":[{"text":"ship aquarium page","status":"completed"}]}`,
+					},
+				},
+			}}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done"}}}},
+		},
+	}
+
+	dir := t.TempDir()
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	result, err := a.NewSession().RunTask(context.Background(), "ship the aquarium page")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 5 {
+		t.Fatalf("expected five requests including final closeout, got %d", len(client.requests))
+	}
+	contract := a.TaskContract()
+	for _, item := range contract.Deliverables {
+		if item.Status != "completed" || strings.TrimSpace(item.Evidence) == "" {
+			t.Fatalf("expected completed deliverable with evidence, got %#v", item)
+		}
+	}
+	for _, item := range contract.AcceptanceChecks {
+		if item.Status != "completed" || strings.TrimSpace(item.Evidence) == "" {
+			t.Fatalf("expected completed acceptance with evidence, got %#v", item)
+		}
+	}
+}
+
 func TestRunTaskRetriesForPlanGateBeforeMutatingShell(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []model.Response{

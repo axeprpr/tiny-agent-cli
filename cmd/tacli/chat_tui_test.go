@@ -77,7 +77,7 @@ func TestRenderHeaderShowsVersionExplicitly(t *testing.T) {
 	}
 	m := chatTUIModel{runtime: r, width: 100}
 	got := m.renderHeader()
-	if !strings.Contains(got, "tacli "+version) {
+	if !strings.Contains(got, "tacli") || !strings.Contains(got, "version "+version) {
 		t.Fatalf("expected header to show explicit version, got %q", got)
 	}
 }

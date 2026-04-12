@@ -128,6 +128,80 @@ func TestCompleteReturnsRateLimitErrorWhenRetriesExhausted(t *testing.T) {
 	}
 }
 
+func TestModelsInfoParsesContextWindowFromModelsResponse(t *testing.T) {
+	client := NewClient("https://api.example.test", "test-model", "")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"data":[{"id":"gpt-5-mini","max_model_len":400000}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	info, ok, err := client.ModelInfo(context.Background(), "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected model info to be found")
+	}
+	if info.ContextWindow != 400000 {
+		t.Fatalf("unexpected context window: %#v", info)
+	}
+}
+
+func TestModelsInfoFallsBackToAPIMetadataEndpoint(t *testing.T) {
+	client := NewClient("https://api.example.test", "test-model", "")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/v1/models":
+				body := `{"data":[{"id":"gpt-5-mini"}]}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			case "/api/models":
+				body := `{"data":[{"id":"gpt-5-mini","top_provider":{"context_length":400000}}]}`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			default:
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Status:     "404 Not Found",
+					Body:       io.NopCloser(strings.NewReader(`{"error":"not found"}`)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}
+		}),
+	}
+
+	info, ok, err := client.ModelInfo(context.Background(), "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected model info to be found")
+	}
+	if info.ContextWindow != 400000 {
+		t.Fatalf("unexpected context window after fallback: %#v", info)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

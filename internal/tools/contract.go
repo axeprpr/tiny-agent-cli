@@ -346,10 +346,13 @@ func (s *contractStore) save() error {
 	if s == nil || strings.TrimSpace(s.path) == "" {
 		return nil
 	}
+	s.mu.Lock()
+	contract := cloneTaskContract(s.contract)
+	s.mu.Unlock()
 	payload := contractFileV1{
 		Version:   1,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Contract:  s.Current(),
+		Contract:  contract,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

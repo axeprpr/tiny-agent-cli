@@ -42,35 +42,36 @@ type runtimeOptions struct {
 }
 
 type chatRuntime struct {
-	cfg              config.Config
-	reader           *bufio.Reader
-	approver         tools.Approver
-	loop             *agent.Agent
-	session          *agent.Session
-	jobs             *jobManager
-	sessionName      string
-	outputMode       string
-	transcriptPath   string
-	statePath        string
-	memoryPath       string
-	auditPath        string
-	tracePath        string
-	permissionPath   string
-	teamKey          string
-	scopeKey         string
-	globalMemory     []string
-	teamMemory       []string
-	projectMemory    []string
-	permissions      *tools.PermissionStore
-	taskStore        *tasks.Store
-	autoMemoryExit   bool
-	dirtySession     bool
-	tracer           *trace.FileSink
-	pluginManager    *plugins.Manager
-	pluginCommands   map[string]plugins.Command
-	skills           []tools.Skill
-	foregroundMu     sync.Mutex
-	foregroundCancel context.CancelFunc
+	cfg                config.Config
+	reader             *bufio.Reader
+	approver           tools.Approver
+	loop               *agent.Agent
+	session            *agent.Session
+	jobs               *jobManager
+	sessionName        string
+	outputMode         string
+	transcriptPath     string
+	statePath          string
+	memoryPath         string
+	auditPath          string
+	tracePath          string
+	permissionPath     string
+	teamKey            string
+	scopeKey           string
+	globalMemory       []string
+	teamMemory         []string
+	projectMemory      []string
+	permissions        *tools.PermissionStore
+	taskStore          *tasks.Store
+	modelContextWindow int
+	autoMemoryExit     bool
+	dirtySession       bool
+	tracer             *trace.FileSink
+	pluginManager      *plugins.Manager
+	pluginCommands     map[string]plugins.Command
+	skills             []tools.Skill
+	foregroundMu       sync.Mutex
+	foregroundCancel   context.CancelFunc
 }
 
 type runtimeAgentEventSink struct {
@@ -379,6 +380,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	r.attachAgentEventSink()
 	r.rebuildLoop()
 	r.clearPlanningState()
+	r.refreshModelMetadata()
 	if mem, err := memory.Load(r.memoryPath); err == nil {
 		r.globalMemory = mem.Global
 		r.teamMemory = mem.Teams[r.teamKey]
@@ -401,10 +403,10 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		}
 	}
 	r.recordTrace(context.Background(), "runtime", "runtime_started", map[string]any{
-		"model":      cfg.Model,
-		"workdir":    cfg.WorkDir,
+		"model":        cfg.Model,
+		"workdir":      cfg.WorkDir,
 		"conversation": r.sessionName,
-		"trace_path": r.tracePath,
+		"trace_path":   r.tracePath,
 	})
 
 	return r, nil
@@ -562,6 +564,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		r.cfg.Model = strings.Join(fields[1:], " ")
 		r.rebuildLoop()
+		r.refreshModelMetadata()
 		_ = r.pushRemoteSettings()
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model), exitCode: -1}
 	case "/policy":
@@ -790,8 +793,10 @@ func (r *chatRuntime) resumeConversation(name string) (bool, error) {
 			_ = r.approver.SetMode(state.ApprovalMode)
 		}
 	}
+	r.clearPlanningState()
 	r.rebuildLoop()
 	r.applyPlanningState(state.TodoItems, state.TaskContract)
+	r.refreshModelMetadata()
 	if state.TeamKey == r.teamKey && state.ScopeKey == r.scopeKey {
 		r.globalMemory = append([]string(nil), state.GlobalMemory...)
 		r.teamMemory = append([]string(nil), state.TeamMemory...)
@@ -2466,6 +2471,23 @@ func (r *chatRuntime) applyPlanningState(items []tools.TodoItem, contract tools.
 
 func (r *chatRuntime) clearPlanningState() {
 	r.applyPlanningState(nil, tools.TaskContract{})
+}
+
+func (r *chatRuntime) refreshModelMetadata() {
+	if r == nil {
+		return
+	}
+	r.modelContextWindow = 0
+	client := harness.NewFactory(r.cfg).NewModelClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, ok, err := client.ModelInfo(ctx, r.cfg.Model)
+	if err != nil || !ok {
+		return
+	}
+	if info.ContextWindow > 0 {
+		r.modelContextWindow = info.ContextWindow
+	}
 }
 
 func (r *chatRuntime) newSession() *agent.Session {

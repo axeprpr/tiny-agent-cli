@@ -858,6 +858,9 @@ func (m *chatTUIModel) renderEntries() string {
 
 func contextStatus(runtime *chatRuntime, input string) string {
 	window := runtime.cfg.ContextWindow
+	if runtime.modelContextWindow > 0 {
+		window = runtime.modelContextWindow
+	}
 	if window <= 0 {
 		window = 32768
 	}

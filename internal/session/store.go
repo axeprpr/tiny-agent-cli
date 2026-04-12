@@ -14,20 +14,20 @@ import (
 )
 
 type State struct {
-	SessionName   string          `json:"session_name"`
-	Model         string          `json:"model"`
-	OutputMode    string          `json:"output_mode"`
-	ApprovalMode  string          `json:"approval_mode"`
-	TeamKey       string          `json:"team_key,omitempty"`
-	ScopeKey      string          `json:"scope_key,omitempty"`
-	GlobalMemory  []string        `json:"global_memory,omitempty"`
-	TeamMemory    []string        `json:"team_memory,omitempty"`
-	ProjectMemory []string        `json:"project_memory,omitempty"`
-	Jobs          json.RawMessage `json:"jobs,omitempty"`
-	SavedAt       time.Time       `json:"saved_at"`
-	TodoItems     []tools.TodoItem `json:"todo_items,omitempty"`
+	SessionName   string             `json:"session_name"`
+	Model         string             `json:"model"`
+	OutputMode    string             `json:"output_mode"`
+	ApprovalMode  string             `json:"approval_mode"`
+	TeamKey       string             `json:"team_key,omitempty"`
+	ScopeKey      string             `json:"scope_key,omitempty"`
+	GlobalMemory  []string           `json:"global_memory,omitempty"`
+	TeamMemory    []string           `json:"team_memory,omitempty"`
+	ProjectMemory []string           `json:"project_memory,omitempty"`
+	Jobs          json.RawMessage    `json:"jobs,omitempty"`
+	SavedAt       time.Time          `json:"saved_at"`
+	TodoItems     []tools.TodoItem   `json:"todo_items,omitempty"`
 	TaskContract  tools.TaskContract `json:"task_contract,omitempty"`
-	Messages      []model.Message `json:"messages"`
+	Messages      []model.Message    `json:"messages"`
 }
 
 type Summary struct {
