@@ -303,6 +303,40 @@ func TestTaskDoneStartsQueuedTask(t *testing.T) {
 	}
 }
 
+func TestTaskDoneNormalizesStreamedTerminalOutputWithoutDuplicateAssistant(t *testing.T) {
+	r := &chatRuntime{
+		cfg:        config.Config{Model: "test-model"},
+		outputMode: "terminal",
+	}
+	m := chatTUIModel{
+		runtime:       r,
+		input:         textarea.New(),
+		entries:       []tuiEntry{{role: "streaming", text: "我看到了当前环境里有这些关键信息：\n- 工作目录下有多个项目：`deer-flow/`、`clashctl/`"}},
+		busy:          true,
+		runningTask:   "inspect env",
+		runningCancel: func() {},
+	}
+
+	updated, _ := m.Update(tuiTaskDoneMsg{
+		task:   "inspect env",
+		output: "我看到了当前环境里有这些关键信息：\n- 工作目录下有多个项目：deer-flow/、clashctl/",
+	})
+	m = updated.(chatTUIModel)
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected streamed answer to be reused, got %#v", m.entries)
+	}
+	if m.entries[0].role != "assistant" {
+		t.Fatalf("expected streamed entry to become assistant, got %#v", m.entries[0])
+	}
+	if strings.Contains(m.entries[0].text, "`") {
+		t.Fatalf("expected terminal output normalization to strip markdown markers, got %q", m.entries[0].text)
+	}
+	if m.entries[0].text != "我看到了当前环境里有这些关键信息：\n- 工作目录下有多个项目：deer-flow/、clashctl/" {
+		t.Fatalf("unexpected normalized assistant text: %q", m.entries[0].text)
+	}
+}
+
 func TestSessionLoadReloadsVisibleConversation(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := session.Save(session.SessionPath(stateDir, "source"), session.State{

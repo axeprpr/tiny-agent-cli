@@ -611,9 +611,11 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtime.clearForegroundCancel(m.runningCancel)
 		m.runningCancel = nil
 		m.refreshQueued = false
-		// Convert any streaming entry to assistant
+		// Finalize any streamed assistant text using the active output mode so
+		// dedupe compares against the same normalized content as the final result.
 		for i := range m.entries {
 			if m.entries[i].role == "streaming" {
+				m.entries[i].text = formatRunOutput(m.entries[i].text, m.runtime.outputMode)
 				m.entries[i].role = "assistant"
 			}
 		}
