@@ -34,10 +34,12 @@ const systemReminderTag = "<system-reminder>"
 const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool results are available now. Answer the user's latest request directly using the evidence already gathered. Only call another tool if the current evidence is clearly insufficient. Do not leave the response empty."
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
 const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
+const failedCommandSyntaxRetryReminder = "<system-reminder>recover-command-syntax\nThe last shell command failed with a syntax/parsing error. Fix the command syntax and retry once, or explain clearly why it cannot be retried. Do not leave the response empty."
 const planGateRetryReminder = "<system-reminder>plan-before-mutate\nThis task is about to perform non-trivial mutating work. Before any mutating tool call, create a concrete plan. Call update_task_contract with semantic deliverables and acceptance checks, and use update_todo if helpful. Then continue."
 const mutatingFailureCooldownRetryReminder = "<system-reminder>diagnose-before-retry\nA mutating action just failed. Do not try a different mutating path yet. First diagnose the failure using read-only steps, or update the task contract/todo with the failure cause and next step. Only then retry or choose a new mutating action."
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
 const urlEvidenceRetryReminder = "<system-reminder>need-official-url\nThe user asked for a repository, official page, or exact URL. Prefer GitHub, README, official docs, or fetch_url before answering."
+const completionClaimRetryReminder = "<system-reminder>verify-completion-claims\nYour draft final response claims completion/success, but the evidence is weak or inconsistent with recent tool activity. Before finishing, either: (a) run missing checks and provide concrete evidence (files/commands/results), or (b) clearly report incomplete/failed items without claiming completion."
 const userDeniedActionFinal = "The requested action was denied by the user. I will not try alternative write or command paths automatically. Tell me how you want to proceed."
 
 type turnAction int
@@ -500,9 +502,13 @@ func decideTurn(messages []model.Message, msg model.Message) turnDecision {
 		}
 	}
 	if shouldRetryFailedCommand(messages, msg) {
+		reminder := failedCommandRetryReminder
+		if latestRunCommandFailureKind(messages) == "syntax" {
+			reminder = failedCommandSyntaxRetryReminder
+		}
 		return turnDecision{
 			action:   turnActionRetry,
-			reminder: failedCommandRetryReminder,
+			reminder: reminder,
 			logLine:  "empty final after failed shell command, retrying with recovery reminder",
 		}
 	}
@@ -518,6 +524,13 @@ func decideTurn(messages []model.Message, msg model.Message) turnDecision {
 			action:  turnActionFinish,
 			final:   final,
 			logLine: "model stayed empty after tool reminders, using latest tool output as final answer",
+		}
+	}
+	if reminder := completionClaimRetryReminderFor(messages, msg); reminder != "" {
+		return turnDecision{
+			action:   turnActionRetry,
+			reminder: reminder,
+			logLine:  "completion claim gate requested stronger evidence before finishing",
 		}
 	}
 	return turnDecision{
@@ -1329,6 +1342,9 @@ func latestToolLooksLikeCommandFailure(messages []model.Message) bool {
 	if !hasAnyTool(latestTrailingToolNames(messages), "run_command") {
 		return false
 	}
+	if latestRunCommandFailureKind(messages) != "" {
+		return true
+	}
 	lower := strings.ToLower(latestToolOutput(messages))
 	if lower == "" {
 		return false
@@ -1348,6 +1364,30 @@ func latestToolLooksLikeCommandFailure(messages []model.Message) bool {
 		}
 	}
 	return false
+}
+
+func latestRunCommandFailureKind(messages []model.Message) string {
+	text := strings.ToLower(strings.TrimSpace(latestToolOutput(messages)))
+	if text == "" {
+		return ""
+	}
+	const prefix = "[run_command_error kind="
+	start := strings.Index(text, prefix)
+	if start < 0 {
+		return ""
+	}
+	rest := text[start+len(prefix):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		return ""
+	}
+	kind := strings.TrimSpace(rest[:end])
+	switch kind {
+	case "syntax", "timeout", "not_found", "permission", "other":
+		return kind
+	default:
+		return ""
+	}
 }
 
 func latestToolWasExplicitUserDenial(messages []model.Message) bool {
@@ -1499,7 +1539,8 @@ func shouldRetryFailedCommand(messages []model.Message, msg model.Message) bool 
 	if messages[len(messages)-1].Role != "tool" {
 		return false
 	}
-	if hasReminderSince(messages, failedCommandRetryReminder, latestTrailingToolBlockStart(messages)) {
+	start := latestTrailingToolBlockStart(messages)
+	if hasReminderSince(messages, failedCommandRetryReminder, start) || hasReminderSince(messages, failedCommandSyntaxRetryReminder, start) {
 		return false
 	}
 	return latestToolLooksLikeCommandFailure(messages)
@@ -1564,6 +1605,148 @@ func evidenceRetryReminder(messages []model.Message, msg model.Message) string {
 		}
 	}
 	return ""
+}
+
+func completionClaimRetryReminderFor(messages []model.Message, msg model.Message) string {
+	if len(msg.ToolCalls) > 0 {
+		return ""
+	}
+	finalText := strings.TrimSpace(model.ContentString(msg.Content))
+	if finalText == "" {
+		return ""
+	}
+	if !looksLikeCompletionClaim(finalText) {
+		return ""
+	}
+	if containsFailureLanguage(finalText) {
+		return ""
+	}
+	if hasRecentReminder(messages, completionClaimRetryReminder) {
+		return ""
+	}
+	if latestToolMessageIsError(messages) {
+		return completionClaimRetryReminder
+	}
+	if hasRecentMutatingToolCalls(messages, 12) && !containsConcreteEvidenceReference(finalText) {
+		return completionClaimRetryReminder
+	}
+	if hasRecentToolError(messages, 12) && !containsConcreteEvidenceReference(finalText) {
+		return completionClaimRetryReminder
+	}
+	return ""
+}
+
+func looksLikeCompletionClaim(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	shortCJKClaims := []string{"优化完成", "修复完成", "全部完成", "可以安全使用", "优化完毕"}
+	if utf8.RuneCountInString(lower) < 8 {
+		for _, keyword := range shortCJKClaims {
+			if strings.Contains(lower, keyword) {
+				return true
+			}
+		}
+		return false
+	}
+	keywords := []string{
+		"completed", "finished", "all set", "successfully", "optimized", "optimization complete",
+		"fixed", "implemented", "resolved", "ready to use", "safe to use",
+		"已完成", "完成了", "优化完成", "修复完成", "全部完成", "搞定", "可以安全使用", "优化完毕",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFailureLanguage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	keywords := []string{
+		"failed", "failure", "incomplete", "pending", "blocked", "unable", "could not", "can't",
+		"not completed", "not done", "remaining", "todo",
+		"失败", "未完成", "阻塞", "受限", "无法", "未能", "待处理", "剩余", "未修复",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsConcreteEvidenceReference(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"run_command", "read_file", "edit_file", "write_file", "go test", "pytest", "npm test",
+		"syntax ok", "exit code", "tool error", ".go", ".ts", ".tsx", ".js", ".jsx", ".py",
+		".sh", ".md", ".yaml", ".yml", ".json", ".toml", ".ini", "/",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestToolMessageIsError(messages []model.Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "tool" {
+			continue
+		}
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(cleanToolOutput(messages[i].Content))), "tool error:")
+	}
+	return false
+}
+
+func hasRecentToolError(messages []model.Message, window int) bool {
+	if window <= 0 {
+		window = len(messages)
+	}
+	start := len(messages) - window
+	if start < 0 {
+		start = 0
+	}
+	for i := len(messages) - 1; i >= start; i-- {
+		msg := messages[i]
+		if msg.Role != "tool" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(cleanToolOutput(msg.Content))), "tool error:") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRecentMutatingToolCalls(messages []model.Message, window int) bool {
+	if window <= 0 {
+		window = len(messages)
+	}
+	start := len(messages) - window
+	if start < 0 {
+		start = 0
+	}
+	for i := len(messages) - 1; i >= start; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		if containsMutatingToolCalls(msg.ToolCalls) {
+			return true
+		}
+	}
+	return false
 }
 
 func latestRealUserRequest(messages []model.Message) string {

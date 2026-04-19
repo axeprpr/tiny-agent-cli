@@ -32,6 +32,14 @@ const defaultCommandTimeout = 30 * time.Second
 const maxInlineCommandOutputChars = 32768
 const maxTailCaptureBytes = maxInlineCommandOutputChars * 4
 
+const (
+	runCommandFailureOther      = "other"
+	runCommandFailureTimeout    = "timeout"
+	runCommandFailureSyntax     = "syntax"
+	runCommandFailureNotFound   = "not_found"
+	runCommandFailurePermission = "permission"
+)
+
 func newRunCommandTool(workDir, shell string, commandTimeout time.Duration, approver Approver) Tool {
 	return &runCommandTool{
 		workDir:        workDir,
@@ -125,13 +133,15 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 		out, waitErr := cmd.CombinedOutput()
 		text := finalizeCommandText(t.workDir, strings.TrimSpace(string(out)))
 		if runCtx.Err() == context.DeadlineExceeded {
-			return text, fmt.Errorf("command timed out after %s", timeout)
+			kind := runCommandFailureTimeout
+			return annotateRunCommandFailure(text, kind), fmt.Errorf("command timed out after %s (%s)", timeout, kind)
 		}
 		if waitErr != nil {
 			if text == "" {
 				text = waitErr.Error()
 			}
-			return text, fmt.Errorf("command failed")
+			kind := classifyRunCommandFailureKind(text, waitErr)
+			return annotateRunCommandFailure(text, kind), fmt.Errorf("command failed (%s)", kind)
 		}
 		if text == "" {
 			return "(no output)", nil
@@ -223,13 +233,15 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 	text := finalizeCommandText(t.workDir, strings.TrimSpace(full.String()))
 
 	if runCtx.Err() == context.DeadlineExceeded {
-		return text, fmt.Errorf("command timed out after %s", timeout)
+		kind := runCommandFailureTimeout
+		return annotateRunCommandFailure(text, kind), fmt.Errorf("command timed out after %s (%s)", timeout, kind)
 	}
 	if err != nil {
 		if text == "" {
 			text = err.Error()
 		}
-		return text, fmt.Errorf("command failed")
+		kind := classifyRunCommandFailureKind(text, err)
+		return annotateRunCommandFailure(text, kind), fmt.Errorf("command failed (%s)", kind)
 	}
 	if text == "" {
 		return "(no output)", nil
@@ -252,6 +264,53 @@ func compactCommandPreview(text string) string {
 		text = "...[truncated]\n" + text
 	}
 	return strings.TrimSpace(text)
+}
+
+func annotateRunCommandFailure(text, kind string) string {
+	text = strings.TrimSpace(text)
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		kind = runCommandFailureOther
+	}
+	marker := fmt.Sprintf("[run_command_error kind=%s]", kind)
+	if text == "" {
+		return marker
+	}
+	if strings.HasPrefix(strings.ToLower(text), strings.ToLower(marker)) {
+		return text
+	}
+	return marker + "\n" + text
+}
+
+func classifyRunCommandFailureKind(output string, err error) string {
+	lower := strings.ToLower(strings.TrimSpace(output))
+	if err != nil {
+		errText := strings.ToLower(strings.TrimSpace(err.Error()))
+		if errText != "" {
+			lower += "\n" + errText
+		}
+	}
+	switch {
+	case strings.Contains(lower, "timed out"), strings.Contains(lower, "timeout"):
+		return runCommandFailureTimeout
+	case strings.Contains(lower, "syntax error"),
+		strings.Contains(lower, "unexpected token"),
+		strings.Contains(lower, "unexpected eof"),
+		strings.Contains(lower, "parse error"),
+		strings.Contains(lower, "bad substitution"):
+		return runCommandFailureSyntax
+	case strings.Contains(lower, "command not found"),
+		strings.Contains(lower, "is not recognized as an internal or external command"),
+		strings.Contains(lower, "no such file or directory"),
+		strings.Contains(lower, "not found"):
+		return runCommandFailureNotFound
+	case strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "operation not permitted"),
+		strings.Contains(lower, "access is denied"):
+		return runCommandFailurePermission
+	default:
+		return runCommandFailureOther
+	}
 }
 
 func finalizeCommandText(workDir, text string) string {

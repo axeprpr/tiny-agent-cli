@@ -79,7 +79,7 @@ func (t *editFileTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 	matches := strings.Count(original, args.OldText)
 	switch {
 	case matches == 0:
-		return "", fmt.Errorf("old_text not found in %s", args.Path)
+		return "", fmt.Errorf("old_text not found in %s. %s", args.Path, buildEditNotFoundDiagnostic(original, args.OldText))
 	case matches > 1:
 		return "", fmt.Errorf("old_text matched %d times in %s; provide a more specific block", matches, args.Path)
 	}
@@ -102,4 +102,89 @@ func (t *editFileTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 		return "", err
 	}
 	return fmt.Sprintf("edited %s", path), nil
+}
+
+func buildEditNotFoundDiagnostic(original, oldText string) string {
+	oldText = strings.TrimSpace(oldText)
+	if oldText == "" {
+		return "Use read_file first and provide an exact non-empty old_text block."
+	}
+	anchor := ""
+	for _, line := range strings.Split(oldText, "\n") {
+		candidate := strings.TrimSpace(line)
+		if len(candidate) >= 4 {
+			anchor = candidate
+			break
+		}
+	}
+	if anchor == "" {
+		anchor = oldText
+	}
+	if len(anchor) > 64 {
+		anchor = anchor[:64]
+	}
+
+	type hit struct {
+		line int
+		text string
+	}
+	var hits []hit
+	lines := strings.Split(strings.ReplaceAll(original, "\r\n", "\n"), "\n")
+	lowerAnchor := strings.ToLower(anchor)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lowerLine := strings.ToLower(trimmed)
+		if strings.Contains(trimmed, anchor) || strings.Contains(lowerLine, lowerAnchor) {
+			if len(trimmed) > 100 {
+				trimmed = trimmed[:100] + "..."
+			}
+			hits = append(hits, hit{line: i + 1, text: trimmed})
+			if len(hits) >= 3 {
+				break
+			}
+		}
+	}
+	if len(hits) == 0 {
+		for _, token := range strings.Fields(anchor) {
+			if len(token) < 4 {
+				continue
+			}
+			lowerToken := strings.ToLower(token)
+			for i, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					continue
+				}
+				lowerLine := strings.ToLower(trimmed)
+				if strings.Contains(lowerLine, lowerToken) {
+					if len(trimmed) > 100 {
+						trimmed = trimmed[:100] + "..."
+					}
+					hits = append(hits, hit{line: i + 1, text: trimmed})
+					if len(hits) >= 3 {
+						break
+					}
+				}
+			}
+			if len(hits) > 0 {
+				break
+			}
+		}
+	}
+	if len(hits) == 0 {
+		return "Use read_file to copy the exact block (including whitespace/newlines), then retry with a smaller unique old_text."
+	}
+	var b strings.Builder
+	b.WriteString("Closest anchor matches: ")
+	for i, item := range hits {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(fmt.Sprintf("line %d: %q", item.line, item.text))
+	}
+	b.WriteString(". Copy an exact unique block from read_file output and retry.")
+	return b.String()
 }

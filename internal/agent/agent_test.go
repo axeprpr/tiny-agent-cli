@@ -755,6 +755,63 @@ func TestDecideTurnFinishesWithFinalText(t *testing.T) {
 	}
 }
 
+func TestDecideTurnUsesSyntaxSpecificFailedCommandReminder(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "run this command"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"echo hi | | cat"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command failed (syntax)\n[run_command_error kind=syntax]\nbash: syntax error near unexpected token `|'")},
+	}
+	decision := decideTurn(messages, model.Message{})
+	if decision.action != turnActionRetry || decision.reminder != failedCommandSyntaxRetryReminder {
+		t.Fatalf("expected syntax-specific retry reminder, got %#v", decision)
+	}
+}
+
+func TestDecideTurnRetriesCompletionClaimWithoutEvidence(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "optimize the script"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "edit_file",
+				Arguments: `{"path":"scripts/preflight.sh","old_text":"foo","new_text":"bar"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("edited /repo/scripts/preflight.sh")},
+	}
+	decision := decideTurn(messages, model.Message{Content: "优化完成，全部可以安全使用。"})
+	if decision.action != turnActionRetry || decision.reminder != completionClaimRetryReminder {
+		t.Fatalf("expected completion-claim retry reminder, got %#v", decision)
+	}
+}
+
+func TestDecideTurnAllowsCompletionClaimWithEvidence(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "optimize the script"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "edit_file",
+				Arguments: `{"path":"scripts/preflight.sh","old_text":"foo","new_text":"bar"}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("edited /repo/scripts/preflight.sh")},
+	}
+	decision := decideTurn(messages, model.Message{Content: "优化完成。变更文件 scripts/preflight.sh，并用 run_command 验证语法通过。"})
+	if decision.action != turnActionFinish {
+		t.Fatalf("expected finish decision with evidence, got %#v", decision)
+	}
+}
+
 type scriptedToolExecutor struct {
 	messages []model.Message
 	calls    []model.ToolCall

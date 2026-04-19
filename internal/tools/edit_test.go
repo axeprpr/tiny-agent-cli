@@ -50,6 +50,28 @@ func TestEditFileToolRejectsMissingOldText(t *testing.T) {
 	}
 }
 
+func TestEditFileToolMissingOldTextIncludesAnchorHints(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta target line\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	tool := newEditFileTool(dir, mockApprover{writeAllowed: true})
+	raw := json.RawMessage(`{"path":"note.txt","old_text":"target line changed","new_text":"BETA"}`)
+	_, err := tool.Call(context.Background(), raw)
+	if err == nil {
+		t.Fatalf("expected missing old_text error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "Closest anchor matches") {
+		t.Fatalf("expected diagnostic anchor hints, got %q", text)
+	}
+	if !strings.Contains(text, "line 2") {
+		t.Fatalf("expected line hint in diagnostic, got %q", text)
+	}
+}
+
 func TestEditFileToolRejectsAmbiguousMatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.txt")

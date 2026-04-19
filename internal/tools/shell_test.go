@@ -246,3 +246,43 @@ func TestRunCommandToolCallStreamEmitsUpdates(t *testing.T) {
 		t.Fatalf("expected at least one streaming update")
 	}
 }
+
+func TestRunCommandToolClassifiesNotFoundFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"command_that_does_not_exist_12345"}`))
+	if err == nil {
+		t.Fatalf("expected error for missing command")
+	}
+	if !strings.Contains(err.Error(), "(not_found)") {
+		t.Fatalf("expected not_found kind in error, got %v", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "[run_command_error kind=not_found]") {
+		t.Fatalf("expected failure marker in output, got %q", out)
+	}
+}
+
+func TestRunCommandToolClassifiesSyntaxFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	tool, ok := newRunCommandTool(".", "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"echo hi | | cat"}`))
+	if err == nil {
+		t.Fatalf("expected syntax error")
+	}
+	if !strings.Contains(err.Error(), "(syntax)") {
+		t.Fatalf("expected syntax kind in error, got %v", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "[run_command_error kind=syntax]") {
+		t.Fatalf("expected syntax marker in output, got %q", out)
+	}
+}

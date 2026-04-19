@@ -445,7 +445,11 @@ func runChatTUI(runtime *chatRuntime) int {
 		})
 	}
 
-	p := tea.NewProgram(newChatTUIModel(runtime, events), tea.WithAltScreen())
+	p := tea.NewProgram(
+		newChatTUIModel(runtime, events),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
 		runtime.beforeExit(false)
