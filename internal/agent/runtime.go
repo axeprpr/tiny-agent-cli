@@ -268,6 +268,10 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 				}
 			}
 		}
+		if reminder != "" && s.shouldBypassFinishGateForStalePlanning() {
+			s.agent.logf("finish gate bypassed stale planning state for unrelated run task\n")
+			reminder = ""
+		}
 		if reminder != "" {
 			s.finishGateBlocks++
 			if s.finishGateBlocks >= finishGateLoopLimit {
@@ -341,17 +345,18 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 			s.agent.logf("%s\n", decision.logLine)
 		}
 		return nil, true
-		case turnActionExecuteTools:
-			s.messages = append(s.messages, model.Message{
-				Role:      "assistant",
-				Content:   msg.Content,
-				ToolCalls: msg.ToolCalls,
+	case turnActionExecuteTools:
+		s.messages = append(s.messages, model.Message{
+			Role:      "assistant",
+			Content:   msg.Content,
+			ToolCalls: msg.ToolCalls,
 		})
+		s.markPlanningTouched(msg.ToolCalls)
 		summary.ToolResults = r.executeToolCalls(ctx, turn, msg.ToolCalls)
-			s.turns = append(s.turns, summary)
-			s.agent.emitTurnSummaryEvent(ctx, summary)
-			s.trackTodoRounds(msg.ToolCalls)
-			return nil, true
+		s.turns = append(s.turns, summary)
+		s.agent.emitTurnSummaryEvent(ctx, summary)
+		s.trackTodoRounds(msg.ToolCalls)
+		return nil, true
 	default:
 		s.messages = append(s.messages, model.Message{
 			Role:    "assistant",

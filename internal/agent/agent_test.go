@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2082,6 +2082,48 @@ func TestRunTaskStopsAfterRepeatedFinishGateBlocks(t *testing.T) {
 	}
 	if len(client.requests) != 3 {
 		t.Fatalf("expected three requests before doom-loop stop, got %d", len(client.requests))
+	}
+}
+
+func TestRunTaskBypassesStaleFinishGateForUnrelatedRunTask(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: model.ToolFunction{
+					Name:      "read_file",
+					Arguments: `{"path":"note.txt"}`,
+				},
+			}}}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "NOTE_OK"}}}},
+		},
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("NOTE_OK\n"), 0o644); err != nil {
+		t.Fatalf("write note.txt: %v", err)
+	}
+	a := New(client, tools.NewRegistry(dir, "bash", time.Second, nil), 32768, nil)
+	if err := a.ReplaceTaskContract(tools.TaskContract{
+		TaskKind:  "webapp_with_deploy",
+		Objective: "Ship the embedded aquarium web app",
+		AcceptanceChecks: []tools.ContractItem{
+			{Text: "GET / returns app html", Status: "pending"},
+		},
+	}); err != nil {
+		t.Fatalf("seed stale task contract: %v", err)
+	}
+
+	result, err := a.NewSession().RunTask(context.Background(), "read note.txt and reply exactly NOTE_OK")
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if result.Final != "NOTE_OK" {
+		t.Fatalf("expected NOTE_OK final, got %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected two requests, got %d", len(client.requests))
 	}
 }
 

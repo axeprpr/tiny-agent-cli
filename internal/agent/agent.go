@@ -116,6 +116,11 @@ type Session struct {
 	messages             []model.Message
 	turns                []TurnSummary
 	role                 string
+	mode                 string
+	activeTask           string
+	initialPlanning      bool
+	initialObjective     string
+	planningTouched      bool
 	queueMu              sync.Mutex
 	steeringQueue        []string
 	followUpQueue        []string
@@ -207,13 +212,20 @@ func (a *Agent) NewSessionWithPrompt(prompt PromptContext) *Session {
 	if role == "" {
 		role = tools.NormalizeAgentRole(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(prompt.SessionMode)), "background:"))
 	}
-	return &Session{
+	mode := strings.ToLower(strings.TrimSpace(prompt.SessionMode))
+	if mode == "" {
+		mode = "run"
+	}
+	session := &Session{
 		agent: a,
 		role:  role,
+		mode:  mode,
 		messages: []model.Message{
 			{Role: "system", Content: BuildSystemPrompt(prompt)},
 		},
 	}
+	session.captureInitialPlanningState()
+	return session
 }
 
 func (a *Agent) ToolNames() []string {
@@ -366,6 +378,7 @@ func (a *Agent) AddHook(hook tools.ToolHook) {
 }
 
 func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
+	s.activeTask = strings.TrimSpace(task)
 	return s.Runtime().RunTask(ctx, task)
 }
 
@@ -378,7 +391,88 @@ func (s *Session) Compact() bool {
 
 // RunTaskStreaming is like RunTask but streams assistant tokens via onToken.
 func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken func(string)) (Result, error) {
+	s.activeTask = strings.TrimSpace(task)
 	return s.Runtime().RunTaskStreaming(ctx, task, onToken)
+}
+
+func (s *Session) captureInitialPlanningState() {
+	if s == nil || s.agent == nil {
+		return
+	}
+	contract := s.agent.TaskContract()
+	s.initialObjective = strings.TrimSpace(contract.Objective)
+	s.initialPlanning = len(incompleteTodoItems(s.agent.TodoItems())) > 0 || len(incompleteContractItems(contract)) > 0
+	s.planningTouched = false
+}
+
+func (s *Session) markPlanningTouched(calls []model.ToolCall) {
+	if s == nil || s.planningTouched {
+		return
+	}
+	if hasPlanningToolCall(calls) {
+		s.planningTouched = true
+	}
+}
+
+func keywordSet(text string) map[string]struct{} {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	out := make(map[string]struct{}, len(parts))
+	for _, item := range parts {
+		item = strings.TrimSpace(item)
+		// Ignore tiny fragments/noise tokens.
+		if utf8.RuneCountInString(item) < 3 {
+			continue
+		}
+		out[item] = struct{}{}
+	}
+	return out
+}
+
+func keywordOverlap(a, b string) int {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return 0
+	}
+	lowerA := strings.ToLower(strings.TrimSpace(a))
+	lowerB := strings.ToLower(strings.TrimSpace(b))
+	if strings.Contains(lowerA, lowerB) || strings.Contains(lowerB, lowerA) {
+		return 1
+	}
+	setA := keywordSet(lowerA)
+	setB := keywordSet(lowerB)
+	if len(setA) == 0 || len(setB) == 0 {
+		return 0
+	}
+	count := 0
+	for token := range setA {
+		if _, ok := setB[token]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Session) shouldBypassFinishGateForStalePlanning() bool {
+	if s == nil {
+		return false
+	}
+	if s.mode != "run" {
+		return false
+	}
+	if !s.initialPlanning || s.planningTouched {
+		return false
+	}
+	task := strings.TrimSpace(s.activeTask)
+	objective := strings.TrimSpace(s.initialObjective)
+	if task == "" || objective == "" {
+		return false
+	}
+	return keywordOverlap(task, objective) == 0
 }
 
 func decideTurn(messages []model.Message, msg model.Message) turnDecision {
