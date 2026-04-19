@@ -79,7 +79,8 @@ var messagesCN = map[string]string{
   /skills               列出已发现技能
   /capabilities         列出内置能力包
   /scope                显示项目作用域
-  /model <name>         切换当前对话使用的模型
+  /model [--no-verify] <name>
+                        切换当前对话使用的模型
   /policy ...           查看或调整持久化工具与命令策略
   /review [base] [target] [--staged] [--path <path>]
                         审查当前 git diff，可带范围参数
@@ -128,7 +129,7 @@ var messagesCN = map[string]string{
 	"cmd.approval.usage":     "用法：/approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "审批模式已设为 %s",
 	"cmd.output.deprecated":  "output 命令已弃用；chat 默认使用终端渲染",
-	"cmd.model.usage":        "用法：/model <名称>",
+	"cmd.model.usage":        "用法：/model [--no-verify] <名称>",
 	"cmd.model.set":          "模型已切换为 %s",
 	"cmd.bg.started":         "后台任务已启动 %s",
 	"cmd.bgrole.usage":       "用法：/bg-role <general|explore|plan|implement|verify> <任务>",

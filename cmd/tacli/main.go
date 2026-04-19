@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -157,8 +158,20 @@ func run(args []string) int {
 		printUsage()
 		return 0
 	default:
-		return runTask(withDangerouslyFlag(args, globalDangerously))
+		if isRunShorthand(args) {
+			return runTask(withDangerouslyFlag(args, globalDangerously))
+		}
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
+		printUsage()
+		return 2
 	}
+}
+
+func isRunShorthand(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	return strings.ContainsAny(args[0], " \t\r\n")
 }
 
 func startupMode(args []string, interactive bool) string {
@@ -306,7 +319,7 @@ func runChat(args []string) int {
 			result := runtime.executeCommand(task)
 			if result.handled {
 				if strings.TrimSpace(result.output) != "" {
-					fmt.Fprintln(os.Stderr, result.output)
+					fmt.Fprintln(os.Stdout, result.output)
 				}
 				if result.exitCode >= 0 {
 					runtime.beforeExit(true)
@@ -584,14 +597,28 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/output":
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.output.deprecated"), exitCode: -1}
 	case "/model":
-		if len(fields) < 2 {
-			return runtimeCommandResult{handled: true, output: i18n.T("cmd.model.usage"), exitCode: -1}
+		modelName, verify, err := parseModelCommand(fields)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
-		r.cfg.Model = strings.Join(fields[1:], " ")
+		verificationNotice := ""
+		if verify {
+			ok, verifyErr := r.verifyModelAvailable(modelName)
+			if verifyErr != nil {
+				verificationNotice = "\nmodel verification skipped: " + verifyErr.Error()
+			} else if !ok {
+				return runtimeCommandResult{
+					handled:  true,
+					output:   fmt.Sprintf("model %q was not found on the current endpoint; use /model --no-verify %s to force", modelName, modelName),
+					exitCode: -1,
+				}
+			}
+		}
+		r.cfg.Model = modelName
 		r.rebuildLoop()
 		r.refreshModelMetadata()
 		_ = r.pushRemoteSettings()
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.model.set"), r.cfg.Model) + verificationNotice, exitCode: -1}
 	case "/policy":
 		return runtimeCommandResult{handled: true, output: r.policyCommand(fields, input), exitCode: -1}
 	case "/bg":
@@ -769,6 +796,47 @@ func (r *chatRuntime) enqueueFollowUpMessage(text string) error {
 		return fmt.Errorf("message is empty")
 	}
 	return nil
+}
+
+func parseModelCommand(fields []string) (string, bool, error) {
+	if len(fields) < 2 {
+		return "", true, errors.New(i18n.T("cmd.model.usage"))
+	}
+	verify := true
+	args := append([]string(nil), fields[1:]...)
+	for len(args) > 0 {
+		switch args[0] {
+		case "--no-verify":
+			verify = false
+			args = args[1:]
+		case "--verify":
+			verify = true
+			args = args[1:]
+		default:
+			goto done
+		}
+	}
+done:
+	if len(args) == 0 {
+		return "", verify, errors.New(i18n.T("cmd.model.usage"))
+	}
+	return strings.TrimSpace(strings.Join(args, " ")), verify, nil
+}
+
+func (r *chatRuntime) verifyModelAvailable(name string) (bool, error) {
+	if r == nil {
+		return false, fmt.Errorf("runtime is not configured")
+	}
+	cfg := r.cfg
+	cfg.Model = strings.TrimSpace(name)
+	client := harness.NewFactory(cfg).NewModelClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, ok, err := client.ModelInfo(ctx, cfg.Model)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 func (r *chatRuntime) rebuildLoop() {
@@ -3840,7 +3908,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  tacli status [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli skills [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli capabilities [--workdir <path>] [name]")
-	fmt.Fprintln(os.Stderr, "  tacli <task>          # shorthand for run")
+	fmt.Fprintln(os.Stderr, "  tacli \"<task>\"        # shorthand for run")
 	fmt.Fprintln(os.Stderr, "  tacli ping [flags]")
 	fmt.Fprintln(os.Stderr, "  tacli models [flags]")
 	fmt.Fprintln(os.Stderr, "  tacli version")

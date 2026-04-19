@@ -84,7 +84,8 @@ var messagesEN = map[string]string{
   /skills               List discovered skills
   /capabilities         List bundled capability packs
   /scope                Show current project scope key
-  /model <name>         Switch model for this conversation
+  /model [--no-verify] <name>
+                        Switch model for this conversation
   /policy ...           Show or change persisted tool and command policy
   /tasks ...            Manage persistent project tasks
   /review [base] [target] [--staged] [--path <path>]
@@ -134,7 +135,7 @@ Or just type naturally -- no command needed for most tasks.`,
 	"cmd.approval.usage":     "usage: /approval prompt|read-only|workspace-write|danger-full-access|allow",
 	"cmd.approval.set":       "approval mode set to %s",
 	"cmd.output.deprecated":  "output mode command is deprecated in chat; terminal rendering is now the default",
-	"cmd.model.usage":        "usage: /model <name>",
+	"cmd.model.usage":        "usage: /model [--no-verify] <name>",
 	"cmd.model.set":          "model set to %s for this session",
 	"cmd.bg.started":         "started background job %s",
 	"cmd.bgrole.usage":       "usage: /bg-role <general|explore|plan|implement|verify> <task>",

@@ -264,8 +264,8 @@ func TestCLIParityChatPolicyScenario(t *testing.T) {
 		"command_rules=1",
 		"conversation=policy-parity",
 	} {
-		if !strings.Contains(result.stderr, want) {
-			t.Fatalf("expected stderr to contain %q, got %q", want, result.stderr)
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected stdout to contain %q, got %q", want, result.stdout)
 		}
 	}
 }
@@ -296,7 +296,7 @@ func TestCLIParitySessionResumeScenario(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("second chat run failed: %#v", result)
 	}
-	if !strings.Contains(result.stderr, "alpha") || !strings.Contains(result.stderr, "project_notes=1") {
+	if !strings.Contains(result.stdout, "alpha") || !strings.Contains(result.stdout, "project_notes=1") {
 		t.Fatalf("expected resumed memory note, got %#v", result)
 	}
 }

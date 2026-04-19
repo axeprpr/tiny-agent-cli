@@ -309,6 +309,56 @@ func TestStartupMode(t *testing.T) {
 	}
 }
 
+func TestIsRunShorthand(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "quoted single task", args: []string{"inspect repo"}, want: true},
+		{name: "single token command-like", args: []string{"status"}, want: false},
+		{name: "multi token cli args", args: []string{"inspect", "repo"}, want: false},
+		{name: "empty args", args: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRunShorthand(tt.args); got != tt.want {
+				t.Fatalf("isRunShorthand(%v)=%v want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunUnknownCommandPrintsUsageAndReturnsTwo(t *testing.T) {
+	oldStderr := os.Stderr
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+	os.Stderr = stderrW
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	code := run([]string{"definitely-unknown-subcmd"})
+	_ = stderrW.Close()
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	stderrText := string(stderrBytes)
+	if code != 2 {
+		t.Fatalf("expected exit 2, got %d stderr=%q", code, stderrText)
+	}
+	if !strings.Contains(stderrText, "unknown command: definitely-unknown-subcmd") {
+		t.Fatalf("missing unknown command message: %q", stderrText)
+	}
+	if !strings.Contains(stderrText, "Usage:") {
+		t.Fatalf("missing usage in stderr: %q", stderrText)
+	}
+}
+
 func TestParseAgentFlagsValidatesOutputMode(t *testing.T) {
 	_, opts, _, _, err := parseAgentFlags("run", []string{"--output", "jsonl", "inspect repo"})
 	if err != nil {
@@ -568,6 +618,79 @@ func TestOutputCommandDeprecated(t *testing.T) {
 	}
 	if !strings.Contains(result.output, "deprecated") {
 		t.Fatalf("expected deprecation message, got %q", result.output)
+	}
+}
+
+func TestParseModelCommand(t *testing.T) {
+	name, verify, err := parseModelCommand([]string{"/model", "gpt-5.4-mini"})
+	if err != nil {
+		t.Fatalf("parseModelCommand returned error: %v", err)
+	}
+	if name != "gpt-5.4-mini" || !verify {
+		t.Fatalf("unexpected parse result: name=%q verify=%v", name, verify)
+	}
+
+	name, verify, err = parseModelCommand([]string{"/model", "--no-verify", "custom-model"})
+	if err != nil {
+		t.Fatalf("parseModelCommand returned error: %v", err)
+	}
+	if name != "custom-model" || verify {
+		t.Fatalf("unexpected no-verify parse result: name=%q verify=%v", name, verify)
+	}
+}
+
+func TestModelCommandRejectsUnknownModelWhenVerified(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" && r.URL.Path != "/api/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"known-model"}]}`)
+	}))
+	defer server.Close()
+
+	r := newMemoryTestRuntime(t)
+	original := r.cfg.Model
+	r.cfg.BaseURL = server.URL + "/v1"
+	r.cfg.APIKey = "test-key"
+
+	result := r.executeCommand("/model missing-model")
+	if !result.handled {
+		t.Fatalf("expected /model command to be handled")
+	}
+	if !strings.Contains(result.output, "was not found on the current endpoint") {
+		t.Fatalf("expected not-found output, got %q", result.output)
+	}
+	if r.cfg.Model != original {
+		t.Fatalf("model should remain unchanged on failed verification: got %q want %q", r.cfg.Model, original)
+	}
+}
+
+func TestModelCommandCanSkipVerification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" && r.URL.Path != "/api/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"known-model"}]}`)
+	}))
+	defer server.Close()
+
+	r := newMemoryTestRuntime(t)
+	r.cfg.BaseURL = server.URL + "/v1"
+	r.cfg.APIKey = "test-key"
+
+	result := r.executeCommand("/model --no-verify missing-model")
+	if !result.handled {
+		t.Fatalf("expected /model command to be handled")
+	}
+	if !strings.Contains(result.output, "model set to missing-model") {
+		t.Fatalf("expected model-set output, got %q", result.output)
+	}
+	if r.cfg.Model != "missing-model" {
+		t.Fatalf("model should update when verification is disabled, got %q", r.cfg.Model)
 	}
 }
 
@@ -1651,15 +1774,12 @@ func TestRunChatProcessesNulSeparatedCommandsEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("runChat exit code = %d, stderr=%q", code, string(stderrBytes))
 	}
-	if strings.TrimSpace(string(stdoutBytes)) != "" {
-		t.Fatalf("expected no stdout for slash commands, got %q", string(stdoutBytes))
+	stdoutText := string(stdoutBytes)
+	if !strings.Contains(stdoutText, "project_notes=2") {
+		t.Fatalf("expected both NUL-separated commands to run, got %q", stdoutText)
 	}
-	stderrText := string(stderrBytes)
-	if !strings.Contains(stderrText, "project_notes=2") {
-		t.Fatalf("expected both NUL-separated commands to run, got %q", stderrText)
-	}
-	if !strings.Contains(stderrText, "alpha") || !strings.Contains(stderrText, "beta") {
-		t.Fatalf("expected remembered notes in stderr output, got %q", stderrText)
+	if !strings.Contains(stdoutText, "alpha") || !strings.Contains(stdoutText, "beta") {
+		t.Fatalf("expected remembered notes in stdout output, got %q", stdoutText)
 	}
 }
 
