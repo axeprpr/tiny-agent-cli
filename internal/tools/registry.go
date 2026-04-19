@@ -19,6 +19,10 @@ type Tool interface {
 	Call(ctx context.Context, raw json.RawMessage) (string, error)
 }
 
+type StreamTool interface {
+	CallStream(ctx context.Context, raw json.RawMessage, onUpdate func(string)) (string, error)
+}
+
 type Registry struct {
 	tools      map[string]Tool
 	todo       *todoStore
@@ -35,6 +39,7 @@ type callInternalOptions struct {
 	decidePermission bool
 	runHookRunner    bool
 	recordAudit      bool
+	onUpdate         func(string)
 }
 
 func NewRegistry(workDir, shell string, commandTimeout time.Duration, approver Approver, jobs ...JobControl) *Registry {
@@ -181,10 +186,15 @@ func (r *Registry) CallStructuredWithoutPermission(ctx context.Context, name str
 }
 
 func (r *Registry) CallStructuredForRuntime(ctx context.Context, name string, raw json.RawMessage) (ToolResult, error) {
+	return r.CallStructuredForRuntimeWithUpdates(ctx, name, raw, nil)
+}
+
+func (r *Registry) CallStructuredForRuntimeWithUpdates(ctx context.Context, name string, raw json.RawMessage, onUpdate func(string)) (ToolResult, error) {
 	return r.callInternal(ctx, name, raw, callInternalOptions{
 		decidePermission: false,
 		runHookRunner:    false,
 		recordAudit:      false,
+		onUpdate:         onUpdate,
 	})
 }
 
@@ -238,7 +248,12 @@ func (r *Registry) callInternal(ctx context.Context, name string, raw json.RawMe
 	}
 
 	started := time.Now()
-	output, err := tool.Call(ctx, inv.Raw)
+	var output string
+	if streamTool, ok := tool.(StreamTool); ok && opts.onUpdate != nil {
+		output, err = streamTool.CallStream(ctx, inv.Raw, opts.onUpdate)
+	} else {
+		output, err = tool.Call(ctx, inv.Raw)
+	}
 	out := ToolOutcome{
 		Output:   mergeHookFeedback(preHookResult.Messages(), output, false),
 		Err:      err,

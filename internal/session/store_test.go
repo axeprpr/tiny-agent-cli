@@ -2,6 +2,7 @@ package session
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tiny-agent-cli/internal/model"
@@ -94,5 +95,63 @@ func TestListSessionsSortedBySavedAt(t *testing.T) {
 	}
 	if got[0].MessageCount != 1 {
 		t.Fatalf("unexpected message count: %#v", got[0])
+	}
+	if got[0].Path == "" || got[1].Path == "" {
+		t.Fatalf("expected session paths to be populated: %#v", got)
+	}
+}
+
+func TestBuildSessionTreeResolvesIDAndLegacyPathParents(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := SessionPath(dir, "root")
+	if err := Save(parentPath, State{
+		SessionID:   "root-id",
+		SessionName: "root",
+	}); err != nil {
+		t.Fatalf("save root: %v", err)
+	}
+	if err := Save(SessionPath(dir, "child-by-id"), State{
+		SessionID:     "child-id",
+		ParentSession: "root-id",
+		SessionName:   "child-by-id",
+	}); err != nil {
+		t.Fatalf("save child-by-id: %v", err)
+	}
+	if err := Save(SessionPath(dir, "child-by-path"), State{
+		SessionID:     "child-path-id",
+		ParentSession: parentPath,
+		SessionName:   "child-by-path",
+	}); err != nil {
+		t.Fatalf("save child-by-path: %v", err)
+	}
+
+	roots, err := BuildSessionTree(dir)
+	if err != nil {
+		t.Fatalf("build session tree: %v", err)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root, got %#v", roots)
+	}
+	root := roots[0]
+	if root.Summary.Name != "root" {
+		t.Fatalf("expected root node to be root, got %#v", root.Summary)
+	}
+	if len(root.Children) != 2 {
+		t.Fatalf("expected two children under root, got %#v", root.Children)
+	}
+	for _, child := range root.Children {
+		if child.ParentName != "root" {
+			t.Fatalf("expected child parent to resolve to root, got %#v", child)
+		}
+	}
+}
+
+func TestNewSessionIDHasStablePrefix(t *testing.T) {
+	id := NewSessionID()
+	if !strings.HasPrefix(id, "sess-") {
+		t.Fatalf("unexpected session id format: %q", id)
+	}
+	if len(id) < len("sess-")+6 {
+		t.Fatalf("session id too short: %q", id)
 	}
 }

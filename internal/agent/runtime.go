@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"tiny-agent-cli/internal/model"
 )
@@ -34,6 +35,20 @@ func (r *ConversationRuntime) Session() *Session {
 	return r.session
 }
 
+func (r *ConversationRuntime) QueueSteeringMessage(text string) bool {
+	if r == nil || r.session == nil {
+		return false
+	}
+	return r.session.QueueSteeringMessage(text)
+}
+
+func (r *ConversationRuntime) QueueFollowUpMessage(text string) bool {
+	if r == nil || r.session == nil {
+		return false
+	}
+	return r.session.QueueFollowUpMessage(text)
+}
+
 func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result, error) {
 	if r == nil || r.session == nil {
 		return Result{}, fmt.Errorf("conversation runtime is not configured")
@@ -47,6 +62,7 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 	turn := 0
 	for {
 		turn++
+		s.injectQueuedSteeringMessages()
 		s.maybeInjectTodoReminder()
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
@@ -132,6 +148,7 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 
 	for {
 		turn++
+		s.injectQueuedSteeringMessages()
 		s.maybeInjectTodoReminder()
 		s.compactForContext()
 		if stop, reason := shouldStopSession(s.messages); stop {
@@ -300,6 +317,18 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 		Reminder:  decision.reminder,
 		Final:     decision.final,
 	}
+	if decision.action == turnActionFinish {
+		if followUps := s.drainFollowUpMessages(); len(followUps) > 0 {
+			for _, item := range followUps {
+				s.messages = append(s.messages, model.Message{Role: "user", Content: item})
+			}
+			summary.Decision = "follow_up"
+			s.turns = append(s.turns, summary)
+			s.agent.emitTurnSummaryEvent(ctx, summary)
+			s.agent.logf("continuing with %d queued follow-up message(s)\n", len(followUps))
+			return nil, true
+		}
+	}
 	switch decision.action {
 	case turnActionRetry:
 		s.messages = append(s.messages, model.Message{
@@ -312,17 +341,17 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 			s.agent.logf("%s\n", decision.logLine)
 		}
 		return nil, true
-	case turnActionExecuteTools:
-		s.messages = append(s.messages, model.Message{
-			Role:      "assistant",
-			Content:   msg.Content,
-			ToolCalls: msg.ToolCalls,
+		case turnActionExecuteTools:
+			s.messages = append(s.messages, model.Message{
+				Role:      "assistant",
+				Content:   msg.Content,
+				ToolCalls: msg.ToolCalls,
 		})
 		summary.ToolResults = r.executeToolCalls(ctx, turn, msg.ToolCalls)
-		s.turns = append(s.turns, summary)
-		s.agent.emitTurnSummaryEvent(ctx, summary)
-		s.trackTodoRounds(msg.ToolCalls)
-		return nil, true
+			s.turns = append(s.turns, summary)
+			s.agent.emitTurnSummaryEvent(ctx, summary)
+			s.trackTodoRounds(msg.ToolCalls)
+			return nil, true
 	default:
 		s.messages = append(s.messages, model.Message{
 			Role:    "assistant",
@@ -346,10 +375,61 @@ func (r *ConversationRuntime) executeToolCalls(ctx context.Context, turn int, ca
 		exec = regExec
 	}
 	results := make([]model.Message, 0, len(calls))
+	if shouldExecuteToolCallsSequential(calls) {
+		for i, call := range calls {
+			msg := exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call)
+			s.messages = append(s.messages, msg)
+			results = append(results, copyMessage(msg))
+		}
+		return results
+	}
+
+	s.agent.logf("executing %d tool(s) in parallel (read-only batch)\n", len(calls))
+	ordered := make([]model.Message, len(calls))
+	var wg sync.WaitGroup
 	for i, call := range calls {
-		msg := exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call)
+		wg.Add(1)
+		go func(i int, call model.ToolCall) {
+			defer wg.Done()
+			ordered[i] = exec.ExecuteToolCall(ctx, turn, i+1, len(calls), call)
+		}(i, call)
+	}
+	wg.Wait()
+	for i := range ordered {
+		msg := ordered[i]
 		s.messages = append(s.messages, msg)
 		results = append(results, copyMessage(msg))
 	}
 	return results
+}
+
+func shouldExecuteToolCallsSequential(calls []model.ToolCall) bool {
+	if len(calls) <= 1 {
+		return true
+	}
+	for _, call := range calls {
+		if isMutatingToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) injectQueuedSteeringMessages() {
+	if s == nil {
+		return
+	}
+	queued := s.drainSteeringMessages()
+	if len(queued) == 0 {
+		return
+	}
+	for _, item := range queued {
+		s.messages = append(s.messages, model.Message{
+			Role:    "user",
+			Content: item,
+		})
+	}
+	if s.agent != nil {
+		s.agent.logf("injected %d steering message(s)\n", len(queued))
+	}
 }

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -188,5 +189,60 @@ func TestRunCommandToolAllowsDetachedBackgroundingForLongRunningCommands(t *test
 	}
 	if strings.TrimSpace(out) != "ok" {
 		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+func TestRunCommandToolPersistsLargeOutputToLogFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	workDir := t.TempDir()
+	tool, ok := newRunCommandTool(workDir, "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"command":"python3 - <<'PY'\nprint('x'*40000)\nPY"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "[output truncated; full log:") {
+		t.Fatalf("expected truncated output hint, got %q", out)
+	}
+	marker := "[output truncated; full log:"
+	start := strings.Index(out, marker)
+	if start < 0 {
+		t.Fatalf("missing output marker: %q", out)
+	}
+	tail := out[start+len(marker):]
+	end := strings.Index(tail, "]")
+	if end < 0 {
+		t.Fatalf("expected closing bracket in output marker: %q", out)
+	}
+	path := strings.TrimSpace(tail[:end])
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("expected full log file to exist at %q: %v", path, statErr)
+	}
+}
+
+func TestRunCommandToolCallStreamEmitsUpdates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell assertions are bash-specific")
+	}
+	workDir := t.TempDir()
+	tool, ok := newRunCommandTool(workDir, "bash", 5*time.Second, nil).(*runCommandTool)
+	if !ok {
+		t.Fatalf("unexpected tool type")
+	}
+	var updates []string
+	_, err := tool.CallStream(context.Background(), json.RawMessage(`{"command":"printf 'first\\nsecond\\n'"}`), func(update string) {
+		if strings.TrimSpace(update) != "" {
+			updates = append(updates, update)
+		}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatalf("expected at least one streaming update")
 	}
 }

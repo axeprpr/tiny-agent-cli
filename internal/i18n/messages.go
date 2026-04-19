@@ -70,6 +70,7 @@ var messagesEN = map[string]string{
   /reset                Clear conversation context
   /new [name]           Start a new conversation
   /resume [name]        Resume a saved conversation or list recent ones
+  /tree                 Show saved conversation tree and lineage
   /rename <name>        Rename the current conversation
   /fork [name]          Fork the current conversation into a new one
   /status               Show conversation and config status

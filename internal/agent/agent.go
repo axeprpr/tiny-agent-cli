@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -115,6 +116,9 @@ type Session struct {
 	messages             []model.Message
 	turns                []TurnSummary
 	role                 string
+	queueMu              sync.Mutex
+	steeringQueue        []string
+	followUpQueue        []string
 	roundsSinceTodoPatch int
 	roundsSinceContract  int
 	finishGateBlocks     int
@@ -254,6 +258,62 @@ func (s *Session) ReplaceMessages(messages []model.Message) {
 
 func (s *Session) SetAgent(agent *Agent) {
 	s.agent = agent
+}
+
+func (s *Session) QueueSteeringMessage(text string) bool {
+	if s == nil {
+		return false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	s.steeringQueue = append(s.steeringQueue, text)
+	return true
+}
+
+func (s *Session) QueueFollowUpMessage(text string) bool {
+	if s == nil {
+		return false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	s.followUpQueue = append(s.followUpQueue, text)
+	return true
+}
+
+func (s *Session) drainSteeringMessages() []string {
+	if s == nil {
+		return nil
+	}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if len(s.steeringQueue) == 0 {
+		return nil
+	}
+	out := append([]string(nil), s.steeringQueue...)
+	s.steeringQueue = nil
+	return out
+}
+
+func (s *Session) drainFollowUpMessages() []string {
+	if s == nil {
+		return nil
+	}
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if len(s.followUpQueue) == 0 {
+		return nil
+	}
+	out := append([]string(nil), s.followUpQueue...)
+	s.followUpQueue = nil
+	return out
 }
 
 func (a *Agent) TodoItems() []tools.TodoItem {

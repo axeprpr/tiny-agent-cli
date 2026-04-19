@@ -421,8 +421,8 @@ func TestBusySendQueuesPrompt(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(chatTUIModel)
 
-	if len(m.queuedTasks) != 1 || m.queuedTasks[0] != "follow-up question" {
-		t.Fatalf("expected queued task, got %#v", m.queuedTasks)
+	if len(m.queuedTasks) != 0 {
+		t.Fatalf("expected local task queue to remain empty, got %#v", m.queuedTasks)
 	}
 	if m.input.Value() != "" {
 		t.Fatalf("expected input to reset after queueing, got %q", m.input.Value())
@@ -430,8 +430,8 @@ func TestBusySendQueuesPrompt(t *testing.T) {
 	if len(m.entries) != 2 {
 		t.Fatalf("expected user entry plus queue note, got %d entries", len(m.entries))
 	}
-	if m.entries[1].role != "system" || !strings.Contains(m.entries[1].text, "queued") {
-		t.Fatalf("expected queue note, got %#v", m.entries[1])
+	if m.entries[1].role != "system" || !strings.Contains(strings.ToLower(m.entries[1].text), "steering") {
+		t.Fatalf("expected steering queue note, got %#v", m.entries[1])
 	}
 }
 

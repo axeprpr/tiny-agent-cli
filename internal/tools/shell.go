@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -11,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -25,6 +29,8 @@ type runCommandTool struct {
 }
 
 const defaultCommandTimeout = 30 * time.Second
+const maxInlineCommandOutputChars = 32768
+const maxTailCaptureBytes = maxInlineCommandOutputChars * 4
 
 func newRunCommandTool(workDir, shell string, commandTimeout time.Duration, approver Approver) Tool {
 	return &runCommandTool{
@@ -62,6 +68,14 @@ func (t *runCommandTool) Definition() model.Tool {
 }
 
 func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string, error) {
+	return t.call(ctx, raw, nil)
+}
+
+func (t *runCommandTool) CallStream(ctx context.Context, raw json.RawMessage, onUpdate func(string)) (string, error) {
+	return t.call(ctx, raw, onUpdate)
+}
+
+func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate func(string)) (string, error) {
 	var args struct {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
@@ -107,11 +121,106 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 	cmd.Env = commandEnv(t.workDir)
 	configureCommandCancellation(cmd)
 
-	data, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(data))
-	if len(text) > 32768 {
-		text = text[:32768] + "\n...[truncated]"
+	if onUpdate == nil {
+		out, waitErr := cmd.CombinedOutput()
+		text := finalizeCommandText(t.workDir, strings.TrimSpace(string(out)))
+		if runCtx.Err() == context.DeadlineExceeded {
+			return text, fmt.Errorf("command timed out after %s", timeout)
+		}
+		if waitErr != nil {
+			if text == "" {
+				text = waitErr.Error()
+			}
+			return text, fmt.Errorf("command failed")
+		}
+		if text == "" {
+			return "(no output)", nil
+		}
+		return text, nil
 	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	chunks := make(chan []byte, 64)
+	readErrCh := make(chan error, 2)
+	var readers sync.WaitGroup
+	streamReader := func(r io.Reader) {
+		defer readers.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				part := append([]byte(nil), buf[:n]...)
+				select {
+				case chunks <- part:
+				case <-runCtx.Done():
+					return
+				}
+			}
+			if err == nil {
+				continue
+			}
+			if err != io.EOF && !ignorablePipeReadError(err) {
+				readErrCh <- err
+			}
+			return
+		}
+	}
+	readers.Add(2)
+	go streamReader(stdout)
+	go streamReader(stderr)
+	go func() {
+		readers.Wait()
+		close(chunks)
+	}()
+
+	waitErrCh := make(chan error, 1)
+	go func() {
+		waitErrCh <- cmd.Wait()
+	}()
+
+	var full bytes.Buffer
+	tail := make([]byte, 0, maxTailCaptureBytes)
+	lastEmit := time.Time{}
+	for chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		full.Write(chunk)
+		tail = append(tail, chunk...)
+		if len(tail) > maxTailCaptureBytes {
+			tail = tail[len(tail)-maxTailCaptureBytes:]
+		}
+		if onUpdate != nil {
+			now := time.Now()
+			if lastEmit.IsZero() || now.Sub(lastEmit) >= 250*time.Millisecond {
+				onUpdate(compactCommandPreview(string(tail)))
+				lastEmit = now
+			}
+		}
+	}
+	close(readErrCh)
+	for readErr := range readErrCh {
+		if readErr != nil && err == nil {
+			err = readErr
+		}
+	}
+	waitErr := <-waitErrCh
+	if err == nil {
+		err = waitErr
+	}
+
+	text := finalizeCommandText(t.workDir, strings.TrimSpace(full.String()))
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("command timed out after %s", timeout)
@@ -126,6 +235,71 @@ func (t *runCommandTool) Call(ctx context.Context, raw json.RawMessage) (string,
 		return "(no output)", nil
 	}
 	return text, nil
+}
+
+func compactCommandPreview(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > 120 {
+		lines = append(lines[len(lines)-120:], "...[truncated]")
+		text = strings.Join(lines, "\n")
+	}
+	if len(text) > maxInlineCommandOutputChars {
+		text = text[len(text)-maxInlineCommandOutputChars:]
+		text = "...[truncated]\n" + text
+	}
+	return strings.TrimSpace(text)
+}
+
+func finalizeCommandText(workDir, text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if strings.Count(text, "\n") > 250 || len(text) > maxInlineCommandOutputChars {
+		path, persistErr := persistCommandOutputLog(workDir, []byte(text))
+		text = compactCommandPreview(text)
+		if path != "" {
+			return text + fmt.Sprintf("\n\n[output truncated; full log: %s]", path)
+		}
+		if persistErr != nil {
+			return text + fmt.Sprintf("\n\n[output truncated; failed to persist full log: %v]", persistErr)
+		}
+		return text + "\n\n[output truncated]"
+	}
+	if len(text) > maxInlineCommandOutputChars {
+		return compactCommandPreview(text)
+	}
+	return text
+}
+
+func persistCommandOutputLog(workDir string, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	dir := filepath.Join(workDir, ".tacli", "command-logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "cmd-"+time.Now().UTC().Format("20060102-150405.000")+".log")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func ignorablePipeReadError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "file already closed") || strings.Contains(text, "closed pipe")
 }
 
 func commandEnv(workDir string) []string {

@@ -569,7 +569,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy && !strings.HasPrefix(task, "/") {
 				m.input.Reset()
 				m.entries = append(m.entries, tuiEntry{role: "user", text: task})
-				m.enqueueTask(task)
+				if err := m.runtime.enqueueSteeringMessage(task); err != nil {
+					m.entries = append(m.entries, tuiEntry{role: "error", text: err.Error()})
+					m.statusText = i18n.T("tui.status.error")
+				} else {
+					m.entries = append(m.entries, tuiEntry{role: "system", text: "queued steering message"})
+					m.statusText = i18n.T("tui.status.running")
+				}
 				m.entriesDirty = true
 				m.refreshInputState()
 				immediateRefresh = true

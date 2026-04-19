@@ -65,6 +65,7 @@ var messagesCN = map[string]string{
   /reset                清除对话上下文
   /new [name]           新建对话
   /resume [name]        恢复已保存对话或列出最近对话
+  /tree                 显示已保存对话树与分支关系
   /rename <name>        重命名当前对话
   /fork [name]          基于当前对话分叉一个新对话
   /status               显示当前状态

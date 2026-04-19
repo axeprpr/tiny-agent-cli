@@ -49,6 +49,8 @@ type chatRuntime struct {
 	session            *agent.Session
 	jobs               *jobManager
 	sessionName        string
+	sessionID          string
+	parentSession      string
 	outputMode         string
 	transcriptPath     string
 	statePath          string
@@ -387,6 +389,7 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 		r.projectMemory = mem.Projects[r.scopeKey]
 	}
 	r.session = r.newSession()
+	r.setSessionIdentity(session.NewSessionID(), "")
 	r.jobs = newJobManager(cfg, r.renderSystemMemory())
 	r.jobs.SetRoleRouter(llmBackgroundRoleRouter(cfg))
 	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
@@ -444,6 +447,26 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.interrupt.ok"), exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: i18n.T("cmd.interrupt.idle"), exitCode: -1}
+	case "/steer":
+		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		if body == "" {
+			return runtimeCommandResult{handled: true, output: "usage: /steer <message>", exitCode: -1}
+		}
+		err := r.enqueueSteeringMessage(body)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: "queued steering message", exitCode: -1}
+	case "/follow", "/followup":
+		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]))
+		if body == "" {
+			return runtimeCommandResult{handled: true, output: "usage: /follow <message>", exitCode: -1}
+		}
+		err := r.enqueueFollowUpMessage(body)
+		if err != nil {
+			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
+		}
+		return runtimeCommandResult{handled: true, output: "queued follow-up message", exitCode: -1}
 	case "/init":
 		report, err := initializeRepo(r.cfg.WorkDir)
 		if err != nil {
@@ -469,8 +492,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if r.permissions != nil {
 			commandRuleSummary = fmt.Sprintf("command_rules=%d", len(r.permissions.CommandRules()))
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
-			r.sessionName, firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation=%s\nsession_id=%s\nparent_session=%s\nteam=%s\nmemory_scope=%s\nglobal_memory_notes=%d\nteam_memory_notes=%d\nproject_memory_notes=%d\nstate=%s\ntranscript=%s\nmemory=%s\npolicy=%s\naudit=%s\ntrace=%s\n%s\n%s\n%s\n%s",
+			r.sessionName, firstNonEmpty(r.sessionID, "(none)"), firstNonEmpty(r.parentSession, "(none)"), firstNonEmpty(r.teamKey, "(none)"), r.scopeKey, len(r.globalMemory), len(r.teamMemory), len(r.projectMemory), r.statePath, r.transcriptPath, r.memoryPath, r.permissionPath, auditSummary, traceSummary, settingsSummary, jobSummary, pluginSummary, commandRuleSummary), exitCode: -1}
 	case "/contract":
 		return runtimeCommandResult{handled: true, output: r.contractCommand(), exitCode: -1}
 	case "/save":
@@ -504,6 +527,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: fmt.Sprintf("no saved conversation %s", target), exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf("conversation resumed: %s", r.sessionName), exitCode: -1, reloadSessionView: true}
+	case "/tree":
+		return runtimeCommandResult{handled: true, output: r.describeConversationTree(), exitCode: -1}
 	case "/rename":
 		if len(fields) < 2 {
 			return runtimeCommandResult{handled: true, output: "usage: /rename <name>", exitCode: -1}
@@ -726,6 +751,26 @@ func (r *chatRuntime) interruptForegroundTask() bool {
 	return true
 }
 
+func (r *chatRuntime) enqueueSteeringMessage(text string) error {
+	if r == nil || r.session == nil {
+		return fmt.Errorf("session is not configured")
+	}
+	if ok := r.session.QueueSteeringMessage(text); !ok {
+		return fmt.Errorf("message is empty")
+	}
+	return nil
+}
+
+func (r *chatRuntime) enqueueFollowUpMessage(text string) error {
+	if r == nil || r.session == nil {
+		return fmt.Errorf("session is not configured")
+	}
+	if ok := r.session.QueueFollowUpMessage(text); !ok {
+		return fmt.Errorf("message is empty")
+	}
+	return nil
+}
+
 func (r *chatRuntime) rebuildLoop() {
 	var (
 		todoItems    []tools.TodoItem
@@ -760,6 +805,14 @@ func (r *chatRuntime) setSessionName(name string) {
 	r.tracer = trace.NewFileSink(r.tracePath)
 }
 
+func (r *chatRuntime) setSessionIdentity(id, parent string) {
+	r.sessionID = strings.TrimSpace(id)
+	r.parentSession = strings.TrimSpace(parent)
+	if r.sessionID == "" {
+		r.sessionID = session.NewSessionID()
+	}
+}
+
 func (r *chatRuntime) loadCurrentSessionState() (bool, error) {
 	return r.resumeConversation(r.sessionName)
 }
@@ -778,6 +831,7 @@ func (r *chatRuntime) resumeConversation(name string) (bool, error) {
 		return false, err
 	}
 	r.setSessionName(next)
+	r.setSessionIdentity(state.SessionID, state.ParentSession)
 	if len(state.Messages) > 0 {
 		r.session.ReplaceMessages(state.Messages)
 	}
@@ -818,6 +872,7 @@ func (r *chatRuntime) resumeOrCreateConversation(name string) (string, error) {
 	r.setSessionName(next)
 	r.clearPlanningState()
 	r.session = r.newSession()
+	r.setSessionIdentity(session.NewSessionID(), "")
 	r.dirtySession = false
 
 	loaded, err := r.loadCurrentSessionState()
@@ -843,6 +898,7 @@ func (r *chatRuntime) describeConversations() string {
 		"usage: /new [name]",
 		"usage: /rename <name>",
 		"usage: /fork [name]",
+		"usage: /tree",
 	}
 
 	summaries, err := session.ListSessions(r.cfg.StateDir)
@@ -856,6 +912,12 @@ func (r *chatRuntime) describeConversations() string {
 	lines = append(lines, "recent conversations:")
 	for _, item := range summaries {
 		line := fmt.Sprintf("- %s", item.Name)
+		if strings.TrimSpace(item.SessionID) != "" {
+			line += " id=" + item.SessionID
+		}
+		if strings.TrimSpace(item.Parent) != "" {
+			line += " parent=" + item.Parent
+		}
 		if !item.SavedAt.IsZero() {
 			line += " saved=" + item.SavedAt.Format(time.RFC3339)
 		}
@@ -871,6 +933,54 @@ func (r *chatRuntime) describeConversations() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r *chatRuntime) describeConversationTree() string {
+	lines := []string{
+		"current_conversation=" + r.sessionName,
+		"usage: /tree",
+	}
+	roots, err := session.BuildSessionTree(r.cfg.StateDir)
+	if err != nil {
+		lines = append(lines, "tree_error="+err.Error())
+		return strings.Join(lines, "\n")
+	}
+	if len(roots) == 0 {
+		lines = append(lines, "conversation tree: (empty)")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, "conversation tree:")
+	for i, root := range roots {
+		appendConversationTreeLines(&lines, root, "", i == len(roots)-1, r.sessionName)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func appendConversationTreeLines(lines *[]string, node *session.TreeNode, prefix string, last bool, current string) {
+	if node == nil || lines == nil {
+		return
+	}
+	connector := "├─ "
+	nextPrefix := prefix + "│  "
+	if last {
+		connector = "└─ "
+		nextPrefix = prefix + "   "
+	}
+	summary := node.Summary
+	label := summary.Name
+	if strings.TrimSpace(summary.SessionID) != "" {
+		label += " [" + summary.SessionID + "]"
+	}
+	if summary.Name == current {
+		label += " (current)"
+	}
+	if !summary.SavedAt.IsZero() {
+		label += " saved=" + summary.SavedAt.Format(time.RFC3339)
+	}
+	*lines = append(*lines, prefix+connector+label)
+	for i, child := range node.Children {
+		appendConversationTreeLines(lines, child, nextPrefix, i == len(node.Children)-1, current)
+	}
 }
 
 func (r *chatRuntime) startNewConversation(name string) (string, error) {
@@ -889,6 +999,7 @@ func (r *chatRuntime) startNewConversation(name string) (string, error) {
 	r.setSessionName(next)
 	r.clearPlanningState()
 	r.session = r.newSession()
+	r.setSessionIdentity(session.NewSessionID(), "")
 	r.dirtySession = false
 	if err := r.save(); err != nil {
 		return "", err
@@ -925,6 +1036,7 @@ func (r *chatRuntime) renameConversation(name string) (string, error) {
 		return "", err
 	}
 	r.setSessionName(next)
+	r.setSessionIdentity(r.sessionID, r.parentSession)
 	if err := r.save(); err != nil {
 		return "", err
 	}
@@ -945,7 +1057,13 @@ func (r *chatRuntime) forkConversation(name string) (string, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
+	parentRef := r.sessionID
+	if parentRef == "" {
+		parentRef = r.statePath
+	}
 	state := session.State{
+		SessionID:     session.NewSessionID(),
+		ParentSession: parentRef,
 		SessionName:   next,
 		Model:         r.cfg.Model,
 		OutputMode:    r.outputMode,
@@ -969,6 +1087,7 @@ func (r *chatRuntime) forkConversation(name string) (string, error) {
 		return "", err
 	}
 	r.setSessionName(next)
+	r.setSessionIdentity(state.SessionID, state.ParentSession)
 	r.dirtySession = false
 	return fmt.Sprintf("forked conversation to %s", next), nil
 }
@@ -2557,6 +2676,8 @@ func (r *chatRuntime) describeMemory() string {
 
 func (r *chatRuntime) save() error {
 	return session.Save(r.statePath, session.State{
+		SessionID:     r.sessionID,
+		ParentSession: r.parentSession,
 		SessionName:   r.sessionName,
 		Model:         r.cfg.Model,
 		OutputMode:    r.outputMode,

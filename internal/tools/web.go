@@ -104,9 +104,16 @@ func (t *fetchURLTool) Call(ctx context.Context, raw json.RawMessage) (string, e
 		text = "(empty body)"
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("fetch failed with %s", resp.Status)
+		return "", fmt.Errorf("fetch failed with %s: %s", resp.Status, compactWebText(text, 240))
 	}
-	return fmt.Sprintf("status: %s\nurl: %s\ncontent_type: %s\n\n%s", resp.Status, target, firstNonEmptyContentType(contentType), text), nil
+	return fmt.Sprintf("status: %s\nurl: %s\ncontent_type: %s\nfetched_at: %s\ncontent_bytes: %d\n\n%s",
+		resp.Status,
+		target,
+		firstNonEmptyContentType(contentType),
+		time.Now().UTC().Format(time.RFC3339),
+		len(body),
+		text,
+	), nil
 }
 
 type webSearchTool struct {
@@ -166,9 +173,13 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	hints := buildSearchQueryHints(query)
 
 	results := []ddgResult{}
+	source := ""
 	var lastErr error
 	if hints.wantGitHub && len(hints.repoTerms) > 0 {
 		results, lastErr = t.searchGitHubRepositories(ctx, hints, args.Limit)
+		if len(results) > 0 {
+			source = "github_api"
+		}
 	}
 
 	endpoints := defaultSearchEndpoints(query)
@@ -196,19 +207,24 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 				lastErr = err
 				continue
 			}
-			results = parseDDGResults(string(body))
-			if len(results) > 0 {
-				break
+				results = parseDDGResults(string(body))
+				if len(results) > 0 {
+					source = endpoint
+					break
+				}
 			}
 		}
-	}
 	if len(results) == 0 && lastErr != nil {
 		return "", lastErr
 	}
 	results = rerankSearchResults(query, results)
+	results = dedupeSearchResults(results)
 
 	var lines []string
 	lines = append(lines, "query: "+query)
+	if strings.TrimSpace(source) != "" {
+		lines = append(lines, "source: "+source)
+	}
 
 	if len(results) == 0 {
 		lines = append(lines, "(no search results returned)")
@@ -228,6 +244,26 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		}
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func dedupeSearchResults(results []ddgResult) []ddgResult {
+	if len(results) <= 1 {
+		return results
+	}
+	seen := map[string]bool{}
+	out := make([]ddgResult, 0, len(results))
+	for _, item := range results {
+		key := strings.ToLower(strings.TrimSpace(item.url))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(item.title))
+		}
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 func (t *webSearchTool) searchGitHubRepositories(ctx context.Context, hints searchQueryHints, limit int) ([]ddgResult, error) {
@@ -671,4 +707,12 @@ func compactHTML(body string) string {
 		body = body[:4000] + " ...[truncated]"
 	}
 	return body
+}
+
+func compactWebText(text string, limit int) string {
+	text = strings.TrimSpace(spacePattern.ReplaceAllString(text, " "))
+	if limit > 0 && len(text) > limit {
+		return text[:limit] + "..."
+	}
+	return text
 }

@@ -179,7 +179,29 @@ func (e registryToolExecutor) ExecuteToolCall(ctx context.Context, turn, index, 
 		}
 	}
 
-	result, err := e.agent.registry.CallStructuredForRuntime(ctx, call.Function.Name, args)
+	lastUpdate := ""
+	lastUpdateAt := time.Time{}
+	result, err := e.agent.registry.CallStructuredForRuntimeWithUpdates(ctx, call.Function.Name, args, func(update string) {
+		summary := strings.TrimSpace(firstOutputSummary(update))
+		if summary == "" {
+			return
+		}
+		now := time.Now()
+		if summary == lastUpdate && !lastUpdateAt.IsZero() && now.Sub(lastUpdateAt) < 300*time.Millisecond {
+			return
+		}
+		lastUpdate = summary
+		lastUpdateAt = now
+		e.agent.logf("        | %s\n", summary)
+		e.agent.emitEvent(ctx, "tool_update", map[string]any{
+			"turn":    turn,
+			"index":   index,
+			"total":   total,
+			"name":    call.Function.Name,
+			"call_id": call.ID,
+			"summary": summary,
+		})
+	})
 	outcome := tools.ToolOutcome{
 		Output:   tools.MergeHookFeedback(preHookResult.Messages(), result.Output, false),
 		Err:      err,

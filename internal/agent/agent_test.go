@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"strings"
 	"testing"
 	"time"
@@ -779,6 +780,36 @@ func (e *scriptedToolExecutor) ExecuteToolCall(_ context.Context, _ int, _ int, 
 	return msg
 }
 
+type timingToolExecutor struct {
+	mu    sync.Mutex
+	start map[string]time.Time
+	delay time.Duration
+}
+
+func (e *timingToolExecutor) ExecuteToolCall(_ context.Context, _ int, _ int, _ int, call model.ToolCall) model.Message {
+	if e.delay <= 0 {
+		e.delay = 150 * time.Millisecond
+	}
+	e.mu.Lock()
+	if e.start == nil {
+		e.start = map[string]time.Time{}
+	}
+	e.start[call.Function.Name] = time.Now()
+	e.mu.Unlock()
+	time.Sleep(e.delay)
+	return model.Message{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		Content:    annotateToolResult(call.Function.Name + " ok"),
+	}
+}
+
+func (e *timingToolExecutor) started(name string) time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.start[name]
+}
+
 func testHookShellSnippet(script string) string {
 	if runtime.GOOS == "windows" {
 		return strings.ReplaceAll(script, "'", "\"")
@@ -1035,6 +1066,139 @@ func TestRunTaskStreamingFiltersThinkingTagsInTokens(t *testing.T) {
 	}
 	if got := streamed.String(); got != "Visible  done" {
 		t.Fatalf("unexpected streamed content: %q", got)
+	}
+}
+
+func TestSessionQueueFollowUpContinuesAfterFirstFinish(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{Content: "first"}}}},
+			{Choices: []model.Choice{{Message: model.Message{Content: "second"}}}},
+		},
+	}
+	registry := tools.NewRegistry(".", "bash", time.Second, nil)
+	a := New(client, registry, 32768, nil)
+	session := a.NewSession()
+	if !session.QueueFollowUpMessage("follow-up question") {
+		t.Fatalf("expected follow-up message to be queued")
+	}
+
+	result, err := session.RunTask(context.Background(), "initial question")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "second" {
+		t.Fatalf("expected second response after follow-up, got %q", result.Final)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(client.requests))
+	}
+	var sawFollowUp bool
+	for _, msg := range session.Messages() {
+		if msg.Role == "user" && model.ContentString(msg.Content) == "follow-up question" {
+			sawFollowUp = true
+			break
+		}
+	}
+	if !sawFollowUp {
+		t.Fatalf("expected queued follow-up message in session history")
+	}
+}
+
+func TestSessionQueueSteeringInjectsBeforeModelRequest(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{Choices: []model.Choice{{Message: model.Message{Content: "done"}}}},
+		},
+	}
+	registry := tools.NewRegistry(".", "bash", time.Second, nil)
+	a := New(client, registry, 32768, nil)
+	session := a.NewSession()
+	if !session.QueueSteeringMessage("extra steering context") {
+		t.Fatalf("expected steering message to be queued")
+	}
+
+	result, err := session.RunTask(context.Background(), "initial question")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one request, got %d", len(client.requests))
+	}
+	req := client.requests[0]
+	var sawSteering bool
+	for _, msg := range req.Messages {
+		if msg.Role == "user" && strings.Contains(model.ContentString(msg.Content), "extra steering context") {
+			sawSteering = true
+			break
+		}
+	}
+	if !sawSteering {
+		t.Fatalf("expected steering message in model request: %#v", req.Messages)
+	}
+}
+
+func TestRunTaskExecutesReadOnlyToolBatchInParallel(t *testing.T) {
+	client := &scriptedChatClient{
+		responses: []model.Response{
+			{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						ToolCalls: []model.ToolCall{
+							{
+								ID:   "call-1",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "read_file",
+									Arguments: `{"path":"README.md"}`,
+								},
+							},
+							{
+								ID:   "call-2",
+								Type: "function",
+								Function: model.ToolFunction{
+									Name:      "list_files",
+									Arguments: `{"path":"."}`,
+								},
+							},
+						},
+					},
+				}},
+			},
+			{Choices: []model.Choice{{Message: model.Message{Content: "done"}}}},
+		},
+	}
+	registry := tools.NewRegistry(".", "bash", time.Second, nil)
+	a := New(client, registry, 32768, nil)
+	exec := &timingToolExecutor{delay: 180 * time.Millisecond}
+	a.SetToolExecutor(exec)
+
+	started := time.Now()
+	result, err := a.NewSession().RunTask(context.Background(), "inspect in parallel")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Final != "done" {
+		t.Fatalf("unexpected final: %q", result.Final)
+	}
+	elapsed := time.Since(started)
+	if elapsed >= 320*time.Millisecond {
+		t.Fatalf("expected read-only tools to execute in parallel, elapsed=%s", elapsed)
+	}
+	t1 := exec.started("read_file")
+	t2 := exec.started("list_files")
+	if t1.IsZero() || t2.IsZero() {
+		t.Fatalf("expected both tool calls to start: %#v", exec.start)
+	}
+	diff := t1.Sub(t2)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 80*time.Millisecond {
+		t.Fatalf("expected near-concurrent start times, diff=%s", diff)
 	}
 }
 
@@ -2463,8 +2627,8 @@ func TestRunTaskCompactsOversizedToolOutputBeforeNextRequest(t *testing.T) {
 	if toolText == "" {
 		t.Fatalf("expected compacted tool output in second request")
 	}
-	if !strings.Contains(toolText, "[tool output truncated:") {
-		t.Fatalf("expected truncation header, got %q", toolText)
+	if !strings.Contains(toolText, "[tool output truncated:") && !strings.Contains(toolText, "[output truncated; full log:") {
+		t.Fatalf("expected truncation marker, got %q", toolText)
 	}
 	if !strings.Contains(toolText, "TAIL=omega") {
 		t.Fatalf("expected tail fact to survive compaction, got %q", toolText)

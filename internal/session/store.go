@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +16,8 @@ import (
 )
 
 type State struct {
+	SessionID     string             `json:"session_id,omitempty"`
+	ParentSession string             `json:"parent_session,omitempty"`
 	SessionName   string             `json:"session_name"`
 	Model         string             `json:"model"`
 	OutputMode    string             `json:"output_mode"`
@@ -32,10 +36,19 @@ type State struct {
 
 type Summary struct {
 	Name         string
+	Path         string
+	SessionID    string
+	Parent       string
 	SavedAt      time.Time
 	Model        string
 	ApprovalMode string
 	MessageCount int
+}
+
+type TreeNode struct {
+	Summary    Summary
+	ParentName string
+	Children   []*TreeNode
 }
 
 func SessionPath(stateDir, name string) string {
@@ -84,6 +97,9 @@ func ListSessions(stateDir string) ([]Summary, error) {
 		}
 		out = append(out, Summary{
 			Name:         name,
+			Path:         path,
+			SessionID:    strings.TrimSpace(state.SessionID),
+			Parent:       strings.TrimSpace(state.ParentSession),
 			SavedAt:      state.SavedAt,
 			Model:        strings.TrimSpace(state.Model),
 			ApprovalMode: strings.TrimSpace(state.ApprovalMode),
@@ -95,6 +111,52 @@ func ListSessions(stateDir string) ([]Summary, error) {
 		return out[i].SavedAt.After(out[j].SavedAt)
 	})
 	return out, nil
+}
+
+func BuildSessionTree(stateDir string) ([]*TreeNode, error) {
+	summaries, err := ListSessions(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(summaries) == 0 {
+		return nil, nil
+	}
+
+	nodes := make(map[string]*TreeNode, len(summaries))
+	idToName := make(map[string]string, len(summaries))
+	pathToName := make(map[string]string, len(summaries))
+	safeToName := make(map[string]string, len(summaries))
+	for _, item := range summaries {
+		copied := item
+		nodes[item.Name] = &TreeNode{Summary: copied}
+		if id := strings.TrimSpace(item.SessionID); id != "" {
+			idToName[id] = item.Name
+		}
+		if p := strings.TrimSpace(item.Path); p != "" {
+			pathToName[p] = item.Name
+		}
+		safeToName[safeName(item.Name)] = item.Name
+	}
+
+	roots := make([]*TreeNode, 0, len(summaries))
+	for _, item := range summaries {
+		node := nodes[item.Name]
+		parent := resolveParentName(item.Parent, idToName, pathToName, safeToName, nodes)
+		node.ParentName = parent
+		if parent == "" || parent == item.Name {
+			roots = append(roots, node)
+			continue
+		}
+		parentNode := nodes[parent]
+		if parentNode == nil {
+			roots = append(roots, node)
+			continue
+		}
+		parentNode.Children = append(parentNode.Children, node)
+	}
+
+	sortTreeNodes(roots)
+	return roots, nil
 }
 
 func Load(path string) (State, error) {
@@ -125,6 +187,14 @@ func Save(path string, state State) error {
 	return os.Rename(tmp, path)
 }
 
+func NewSessionID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("sess-%d", time.Now().UTC().UnixNano())
+	}
+	return "sess-" + hex.EncodeToString(buf)
+}
+
 func AppendTranscript(path, role, text string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -149,4 +219,50 @@ func safeName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "-")
 	name = strings.ReplaceAll(name, " ", "-")
 	return name
+}
+
+func resolveParentName(parent string, idToName, pathToName, safeToName map[string]string, nodes map[string]*TreeNode) string {
+	ref := strings.TrimSpace(parent)
+	if ref == "" {
+		return ""
+	}
+	if name := strings.TrimSpace(idToName[ref]); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(pathToName[ref]); name != "" {
+		return name
+	}
+	base := strings.TrimSuffix(filepath.Base(ref), filepath.Ext(ref))
+	if name := strings.TrimSpace(safeToName[base]); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(safeToName[safeName(ref)]); name != "" {
+		return name
+	}
+	if _, ok := nodes[ref]; ok {
+		return ref
+	}
+	return ""
+}
+
+func sortTreeNodes(nodes []*TreeNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		left := nodes[i].Summary
+		right := nodes[j].Summary
+		switch {
+		case left.SavedAt.Equal(right.SavedAt):
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		case left.SavedAt.IsZero():
+			return false
+		case right.SavedAt.IsZero():
+			return true
+		default:
+			return left.SavedAt.After(right.SavedAt)
+		}
+	})
+	for _, node := range nodes {
+		if len(node.Children) > 0 {
+			sortTreeNodes(node.Children)
+		}
+	}
 }

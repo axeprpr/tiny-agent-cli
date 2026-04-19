@@ -62,6 +62,9 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	if !strings.Contains(out, "https://example.com/fallback") {
 		t.Fatalf("expected fallback url in output, got: %q", out)
 	}
+	if !strings.Contains(out, "source: https://search.test/lite") {
+		t.Fatalf("expected source endpoint in output, got: %q", out)
+	}
 }
 
 func TestWebSearchPrefersGitHubRepositorySearchForRepoQueries(t *testing.T) {
@@ -87,6 +90,9 @@ func TestWebSearchPrefersGitHubRepositorySearchForRepoQueries(t *testing.T) {
 	}
 	if !strings.Contains(out, "https://github.com/axeprpr/tiny-agent-cli") {
 		t.Fatalf("expected GitHub repository result in output, got: %q", out)
+	}
+	if !strings.Contains(out, "source: github_api") {
+		t.Fatalf("expected github source in output, got: %q", out)
 	}
 }
 
@@ -143,6 +149,9 @@ func TestFetchURLReturnsErrorForHTTPFailure(t *testing.T) {
 	_, err := tool.Call(context.Background(), json.RawMessage(`{"url":"https://example.com/missing"}`))
 	if err == nil || !strings.Contains(err.Error(), "404 Not Found") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected error to include response snippet, got: %v", err)
 	}
 }
 

@@ -983,6 +983,10 @@ func TestResumeConversationRestoresPlanningState(t *testing.T) {
 func TestRenameAndForkConversationCommands(t *testing.T) {
 	dir := t.TempDir()
 	r := newScriptedRuntime(t, dir, "source", &scriptedChatClient{})
+	sourceSessionID := r.sessionID
+	if sourceSessionID == "" {
+		t.Fatalf("expected source session id")
+	}
 	r.session.ReplaceMessages([]model.Message{
 		{Role: "system", Content: "system prompt"},
 		{Role: "user", Content: "hello"},
@@ -1014,6 +1018,48 @@ func TestRenameAndForkConversationCommands(t *testing.T) {
 	}
 	if !strings.Contains(model.ContentString(forked.Messages[1].Content), "hello") {
 		t.Fatalf("expected forked conversation to keep history, got %#v", forked.Messages)
+	}
+	if strings.TrimSpace(forked.SessionID) == "" {
+		t.Fatalf("expected forked session id to be persisted")
+	}
+	if forked.ParentSession != sourceSessionID {
+		t.Fatalf("expected forked parent to be source session id %q, got %q", sourceSessionID, forked.ParentSession)
+	}
+}
+
+func TestTreeCommandShowsConversationHierarchy(t *testing.T) {
+	dir := t.TempDir()
+	r := newScriptedRuntime(t, dir, "root", &scriptedChatClient{})
+	r.session.ReplaceMessages([]model.Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "root"},
+	})
+	if err := r.save(); err != nil {
+		t.Fatalf("save root: %v", err)
+	}
+	rootID := r.sessionID
+	if strings.TrimSpace(rootID) == "" {
+		t.Fatalf("expected root session id")
+	}
+
+	if result := r.executeCommand("/fork child"); !result.handled {
+		t.Fatalf("expected fork command handled")
+	}
+	tree := r.executeCommand("/tree")
+	if !tree.handled {
+		t.Fatalf("expected tree command handled")
+	}
+	if !strings.Contains(tree.output, "conversation tree:") {
+		t.Fatalf("expected tree header, got %q", tree.output)
+	}
+	if !strings.Contains(tree.output, "root ["+rootID+"]") {
+		t.Fatalf("expected root node with id in tree output: %q", tree.output)
+	}
+	if !strings.Contains(tree.output, "child") {
+		t.Fatalf("expected child node in tree output: %q", tree.output)
+	}
+	if !strings.Contains(tree.output, "(current)") {
+		t.Fatalf("expected current marker in tree output: %q", tree.output)
 	}
 }
 
@@ -1215,6 +1261,7 @@ func newMemoryTestRuntime(t *testing.T) *chatRuntime {
 		loop:           loop,
 		session:        loop.NewSession(),
 		sessionName:    "chat-test",
+		sessionID:      session.NewSessionID(),
 		outputMode:     "terminal",
 		transcriptPath: session.TranscriptPath(dir, "chat-test"),
 		statePath:      session.SessionPath(dir, "chat-test"),
@@ -1640,6 +1687,7 @@ func newScriptedRuntime(t *testing.T, dir, sessionName string, client *scriptedC
 		loop:           loop,
 		session:        loop.NewSession(),
 		sessionName:    sessionName,
+		sessionID:      session.NewSessionID(),
 		outputMode:     "raw",
 		transcriptPath: session.TranscriptPath(dir, sessionName),
 		statePath:      session.SessionPath(dir, sessionName),
