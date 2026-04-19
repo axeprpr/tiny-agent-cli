@@ -35,6 +35,7 @@ const postToolAnswerReminder = "<system-reminder>tool-results-ready\nTool result
 const emptyToolAnswerRetryReminder = "<system-reminder>answer-now\nAnswer the user's latest request directly using the tool results above. Do not leave the response empty."
 const failedCommandRetryReminder = "<system-reminder>recover-command\nThe last shell command failed. If the task can still be completed by correcting or retrying the command, do that now. Otherwise answer directly using the failure output. Do not leave the response empty."
 const failedCommandSyntaxRetryReminder = "<system-reminder>recover-command-syntax\nThe last shell command failed with a syntax/parsing error. Fix the command syntax and retry once, or explain clearly why it cannot be retried. Do not leave the response empty."
+const failedCommandTimeoutLoopRetryReminder = "<system-reminder>avoid-timeout-loop\nThe last mutating shell command timed out. Do not immediately rerun the same command with the same timeout. First diagnose the bottleneck from logs/output, then adjust strategy (for example raise timeout_seconds, split steps, or use a cached/prebuilt path)."
 const planGateRetryReminder = "<system-reminder>plan-before-mutate\nThis task is about to perform non-trivial mutating work. Before any mutating tool call, create a concrete plan. Call update_task_contract with semantic deliverables and acceptance checks, and use update_todo if helpful. Then continue."
 const mutatingFailureCooldownRetryReminder = "<system-reminder>diagnose-before-retry\nA mutating action just failed. Do not try a different mutating path yet. First diagnose the failure using read-only steps, or update the task contract/todo with the failure cause and next step. Only then retry or choose a new mutating action."
 const fileEvidenceRetryReminder = "<system-reminder>need-direct-content\nThe user asked for actual file or content details. Use read_file or another direct content tool before answering."
@@ -492,6 +493,13 @@ func decideTurn(messages []model.Message, msg model.Message) turnDecision {
 		}
 	}
 	if len(msg.ToolCalls) > 0 {
+		if reminder := timeoutRetryLoopReminder(messages, msg.ToolCalls); reminder != "" {
+			return turnDecision{
+				action:   turnActionRetry,
+				reminder: reminder,
+				logLine:  "timeout retry loop blocked repeating the same mutating command",
+			}
+		}
 		return turnDecision{action: turnActionExecuteTools}
 	}
 	if reminder := evidenceRetryReminder(messages, msg); reminder != "" {
@@ -1472,22 +1480,112 @@ func runCommandLooksMutating(raw string) bool {
 	if command == "" {
 		return false
 	}
+	padded := " " + command + " "
 	markers := []string{
-		" npm install", "npm install", "pnpm install", "yarn install", "bun install",
-		" pip install", "pip install", " uv pip install", "uv add ", "poetry add ",
-		" cargo add ", " cargo install", "go install ", " go get ",
-		" apt-get install", " apt install", " yum install", " dnf install",
-		" npm create ", "npm create ", "pnpm create ", " yarn create ", "yarn create ", " cargo new ", "cargo new ", "go mod init", "git clone ",
-		" docker run ", " docker compose up", " docker compose build",
-		" python -m http.server", "python -m http.server", " python3 -m http.server", "python3 -m http.server", " node ", "node ", " vite ", "vite ", " npm run dev", "npm run dev", " npm run start", "npm run start",
-		" mkdir ", " touch ", " cp ", " mv ", " rm ", " sed -i", " chmod ", " chown ",
+		" npm install ", " pnpm install ", " yarn install ", " bun install ",
+		" pip install ", " uv pip install ", " uv add ", " poetry add ",
+		" cargo add ", " cargo install ", " go install ", " go get ",
+		" apt-get install ", " apt install ", " yum install ", " dnf install ",
+		" npm create ", " pnpm create ", " yarn create ", " cargo new ", " go mod init ", " git clone ",
+		" docker run ", " docker build ", " docker buildx build ", " docker pull ", " docker compose up ", " docker compose build ",
+		" python -m http.server ", " python3 -m http.server ", " node ", " vite ", " npm run dev ", " npm run start ",
+		" mkdir ", " touch ", " cp ", " mv ", " rm ", " sed -i ", " chmod ", " chown ",
 	}
 	for _, marker := range markers {
-		if strings.Contains(command, marker) {
+		if strings.Contains(padded, marker) {
 			return true
 		}
 	}
 	return strings.Contains(command, ">>") || strings.Contains(command, " >") || strings.Contains(command, "| tee")
+}
+
+func timeoutRetryLoopReminder(messages []model.Message, calls []model.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	prevCall, ok := latestTimedOutRunCommandCall(messages)
+	if !ok || !runCommandLooksMutating(prevCall.Function.Arguments) {
+		return ""
+	}
+	prevCommand, prevTimeout, ok := parseRunCommandCall(prevCall.Function.Arguments)
+	if !ok {
+		return ""
+	}
+	prevNormalized := normalizeShellCommandForComparison(prevCommand)
+	if prevNormalized == "" {
+		return ""
+	}
+	for _, call := range calls {
+		if strings.TrimSpace(call.Function.Name) != "run_command" {
+			continue
+		}
+		command, timeout, ok := parseRunCommandCall(call.Function.Arguments)
+		if !ok {
+			continue
+		}
+		if normalizeShellCommandForComparison(command) != prevNormalized {
+			continue
+		}
+		if timeout <= prevTimeout {
+			return failedCommandTimeoutLoopRetryReminder
+		}
+	}
+	return ""
+}
+
+func latestTimedOutRunCommandCall(messages []model.Message) (model.ToolCall, bool) {
+	if latestRunCommandFailureKind(messages) != "timeout" {
+		return model.ToolCall{}, false
+	}
+	if len(messages) == 0 || messages[len(messages)-1].Role != "tool" {
+		return model.ToolCall{}, false
+	}
+	callID := strings.TrimSpace(messages[len(messages)-1].ToolCallID)
+	calls := latestTrailingToolCalls(messages)
+	if len(calls) == 0 {
+		return model.ToolCall{}, false
+	}
+	if callID != "" {
+		for _, call := range calls {
+			if strings.TrimSpace(call.ID) != callID {
+				continue
+			}
+			if strings.TrimSpace(call.Function.Name) != "run_command" {
+				return model.ToolCall{}, false
+			}
+			return call, true
+		}
+	}
+	for i := len(calls) - 1; i >= 0; i-- {
+		call := calls[i]
+		if strings.TrimSpace(call.Function.Name) == "run_command" {
+			return call, true
+		}
+	}
+	return model.ToolCall{}, false
+}
+
+func parseRunCommandCall(raw string) (string, int, bool) {
+	var args struct {
+		Command        string `json:"command"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return "", 0, false
+	}
+	command := strings.TrimSpace(args.Command)
+	if command == "" {
+		return "", 0, false
+	}
+	return command, args.TimeoutSeconds, true
+}
+
+func normalizeShellCommandForComparison(command string) string {
+	parts := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ")
 }
 
 func latestToolWasMutatingFailure(messages []model.Message) bool {

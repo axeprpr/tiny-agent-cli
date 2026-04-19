@@ -568,6 +568,90 @@ func TestDecideTurnExecutesToolCalls(t *testing.T) {
 	}
 }
 
+func TestDecideTurnRetriesOnTimedOutMutatingCommandLoop(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "build the docker image"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"docker build -t whoami-demo:latest .","timeout_seconds":120}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command timed out after 2m0s (timeout)\n[run_command_error kind=timeout]\n#0 building with \"default\" instance")},
+	}
+	decision := decideTurn(messages, model.Message{
+		ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"docker build -t whoami-demo:latest .","timeout_seconds":120}`,
+			},
+		}},
+	})
+	if decision.action != turnActionRetry || decision.reminder != failedCommandTimeoutLoopRetryReminder {
+		t.Fatalf("expected timeout-loop retry reminder, got %#v", decision)
+	}
+}
+
+func TestDecideTurnAllowsTimedOutMutatingCommandWithLongerTimeout(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "build the docker image"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"docker build -t whoami-demo:latest .","timeout_seconds":120}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command timed out after 2m0s (timeout)\n[run_command_error kind=timeout]")},
+	}
+	decision := decideTurn(messages, model.Message{
+		ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"docker build -t whoami-demo:latest .","timeout_seconds":300}`,
+			},
+		}},
+	})
+	if decision.action != turnActionExecuteTools {
+		t.Fatalf("expected execute-tools decision with larger timeout, got %#v", decision)
+	}
+}
+
+func TestDecideTurnAllowsTimedOutReadOnlyCommandRetry(t *testing.T) {
+	messages := []model.Message{
+		{Role: "user", Content: "run tests"},
+		{Role: "assistant", ToolCalls: []model.ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"go test ./...","timeout_seconds":120}`,
+			},
+		}}},
+		{Role: "tool", ToolCallID: "call-1", Content: annotateToolResult("tool error: command timed out after 2m0s (timeout)\n[run_command_error kind=timeout]")},
+	}
+	decision := decideTurn(messages, model.Message{
+		ToolCalls: []model.ToolCall{{
+			ID:   "call-2",
+			Type: "function",
+			Function: model.ToolFunction{
+				Name:      "run_command",
+				Arguments: `{"command":"go test ./...","timeout_seconds":120}`,
+			},
+		}},
+	})
+	if decision.action != turnActionExecuteTools {
+		t.Fatalf("expected execute-tools decision for read-only retry, got %#v", decision)
+	}
+}
+
 func TestDecideTurnStopsAfterExplicitUserDenial(t *testing.T) {
 	messages := []model.Message{
 		{Role: "user", Content: "update the file"},
@@ -2075,6 +2159,20 @@ func TestMutatingFailureCooldownBlocksAnotherMutatingAttempt(t *testing.T) {
 	}})
 	if got != mutatingFailureCooldownRetryReminder {
 		t.Fatalf("expected mutating failure cooldown reminder, got %q", got)
+	}
+}
+
+func TestRunCommandLooksMutatingDetectsDockerStartCommands(t *testing.T) {
+	cases := []string{
+		`{"command":"docker run --rm alpine:3.20 echo hi"}`,
+		`{"command":"docker build -t whoami-demo:latest ."}`,
+		`{"command":"docker buildx build -t whoami-demo:latest ."}`,
+		`{"command":"docker pull traefik/whoami:latest"}`,
+	}
+	for _, raw := range cases {
+		if !runCommandLooksMutating(raw) {
+			t.Fatalf("expected mutating command detection for %s", raw)
+		}
 	}
 }
 
