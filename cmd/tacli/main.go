@@ -305,7 +305,10 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		return runChatTUI(runtime)
+		if useLegacyTUIMode() {
+			return runChatTUI(runtime)
+		}
+		return runChatPlain(runtime, reader, true)
 	}
 
 	tasks, err := readNonInteractiveTasks(reader)
@@ -334,6 +337,65 @@ func runChat(args []string) int {
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		} else {
 			fmt.Println(output)
+		}
+	}
+	runtime.beforeExit(true)
+	return 0
+}
+
+func useLegacyTUIMode() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func runChatPlain(runtime *chatRuntime, reader *bufio.Reader, interactive bool) int {
+	if reader == nil {
+		reader = bufio.NewReader(os.Stdin)
+	}
+	for {
+		if interactive {
+			fmt.Fprint(os.Stdout, "> ")
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+			runtime.beforeExit(true)
+			return 1
+		}
+		task := strings.TrimSpace(line)
+		if task != "" {
+			if strings.HasPrefix(task, "/") {
+				result := runtime.executeCommand(task)
+				if result.handled {
+					if strings.TrimSpace(result.output) != "" {
+						fmt.Fprintln(os.Stdout, result.output)
+					}
+					if result.exitCode >= 0 {
+						runtime.beforeExit(true)
+						return result.exitCode
+					}
+				}
+			} else {
+				hadToken := false
+				output, runErr := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
+					clean := sanitizeDisplayText(token)
+					if clean == "" {
+						return
+					}
+					hadToken = true
+					fmt.Fprint(os.Stdout, clean)
+				})
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
+				} else if !hadToken {
+					fmt.Fprintln(os.Stdout, output)
+				} else if !strings.HasSuffix(output, "\n") {
+					fmt.Fprintln(os.Stdout)
+				}
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
 		}
 	}
 	runtime.beforeExit(true)

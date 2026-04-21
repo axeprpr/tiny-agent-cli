@@ -481,6 +481,17 @@ func TestDefaultStartupLanguage(t *testing.T) {
 	}
 }
 
+func TestUseLegacyTUIModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_TUI", "1")
+	if !useLegacyTUIMode() {
+		t.Fatalf("expected legacy tui mode enabled")
+	}
+	t.Setenv("TACLI_TUI", "0")
+	if useLegacyTUIMode() {
+		t.Fatalf("expected legacy tui mode disabled")
+	}
+}
+
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",
