@@ -305,7 +305,7 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		if !useLegacyTUIMode() {
+		if usePlainChatMode() {
 			runtime.rebuildLoopWithLog(io.Discard)
 			return runChatPlain(runtime, reader)
 		}
@@ -344,8 +344,8 @@ func runChat(args []string) int {
 	return 0
 }
 
-func useLegacyTUIMode() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
+func usePlainChatMode() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_PLAIN")))
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 

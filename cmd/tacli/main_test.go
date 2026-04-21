@@ -481,14 +481,14 @@ func TestDefaultStartupLanguage(t *testing.T) {
 	}
 }
 
-func TestUseLegacyTUIModeFromEnv(t *testing.T) {
-	t.Setenv("TACLI_TUI", "1")
-	if !useLegacyTUIMode() {
-		t.Fatalf("expected legacy tui mode enabled")
+func TestUsePlainChatModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_PLAIN", "1")
+	if !usePlainChatMode() {
+		t.Fatalf("expected plain chat mode enabled")
 	}
-	t.Setenv("TACLI_TUI", "0")
-	if useLegacyTUIMode() {
-		t.Fatalf("expected legacy tui mode disabled")
+	t.Setenv("TACLI_PLAIN", "0")
+	if usePlainChatMode() {
+		t.Fatalf("expected plain chat mode disabled")
 	}
 }
 
