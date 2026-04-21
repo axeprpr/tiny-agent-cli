@@ -1201,8 +1201,7 @@ func sliceByDisplayCols(s string, fromCol, toCol int) string {
 }
 
 func (m chatTUIModel) selectedContentText() string {
-	content := m.renderEntries()
-	lines := strings.Split(content, "\n")
+	lines := m.wrappedContentLines()
 	if len(lines) == 0 {
 		return ""
 	}
@@ -1236,7 +1235,7 @@ func (m chatTUIModel) selectedContentText() string {
 		}
 		out = append(out, sliceByDisplayCols(plain, from, to))
 	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
+	return strings.Trim(strings.Join(out, "\n"), "\n")
 }
 
 func (m chatTUIModel) highlightViewportSelection(view string) string {
@@ -1285,12 +1284,28 @@ func (m chatTUIModel) isDoubleClick(line, col int) bool {
 }
 
 func (m chatTUIModel) lineTextAt(globalLine int) (string, bool) {
-	content := m.renderEntries()
-	lines := strings.Split(content, "\n")
+	lines := m.wrappedContentLines()
 	if globalLine < 0 || globalLine >= len(lines) {
 		return "", false
 	}
 	return strings.TrimRight(ansi.Strip(lines[globalLine]), " \t"), true
+}
+
+func (m chatTUIModel) wrappedContentLines() []string {
+	content := m.renderEntries()
+	if content == "" {
+		return nil
+	}
+	width := max(1, m.chatViewport.Width)
+	vp := viewport.New(width, 1)
+	vp.SetContent(content)
+	total := max(1, vp.TotalLineCount())
+	vp.Height = total
+	view := vp.View()
+	if view == "" {
+		return nil
+	}
+	return strings.Split(view, "\n")
 }
 
 func (m chatTUIModel) wordBoundsAt(line, col int) (int, int, bool) {

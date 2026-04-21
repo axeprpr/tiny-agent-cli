@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"tiny-agent-cli/internal/agent"
@@ -565,10 +566,42 @@ func TestSelectedContentTextUsesDisplayCoordinates(t *testing.T) {
 	}
 }
 
+func TestSelectedContentTextUsesWrappedViewportLines(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(18, 20),
+		entries:      []tuiEntry{{role: "assistant", text: "alpha beta gamma delta epsilon zeta eta theta"}},
+	}
+	m.entriesDirty = true
+	m.refreshViewports(true)
+	lines := m.wrappedContentLines()
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped lines, got %d", len(lines))
+	}
+	targetLine := -1
+	targetCol := -1
+	for i, line := range lines {
+		if idx := strings.Index(ansi.Strip(line), "gamma"); idx >= 0 {
+			targetLine = i
+			targetCol = idx + 1
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("expected gamma in wrapped content lines")
+	}
+	m.selStartLine = targetLine
+	m.selEndLine = targetLine
+	m.selStartCol = targetCol
+	m.selEndCol = targetCol + 3
+	if got := m.selectedContentText(); got != "amm" {
+		t.Fatalf("unexpected selection on wrapped lines: got %q want %q", got, "amm")
+	}
+}
+
 func TestSelectedContentTextTrimsRightPadding(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 20),
-		entries:      []tuiEntry{{role: "assistant", text: "abc"}},
+		entries:      []tuiEntry{{role: "system", text: "abc"}},
 	}
 	m.entriesDirty = true
 	m.refreshViewports(true)
