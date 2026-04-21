@@ -356,6 +356,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	fmt.Fprintf(os.Stdout, "tacli %s  model=%s  (native input)\n", strings.TrimSpace(version), strings.TrimSpace(runtime.cfg.Model))
 	fmt.Fprintln(os.Stdout, "输入问题开始对话，/help 查看命令，/exit 退出")
 	for {
+		fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
 		fmt.Fprint(os.Stdout, "> ")
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -378,6 +379,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 					}
 				}
 			} else {
+				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "running"))
 				output, runErr := runtime.executeTask(context.Background(), task)
 				if runErr != nil {
 					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
@@ -395,6 +397,18 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	}
 	runtime.beforeExit(true)
 	return 0
+}
+
+func nativeStatusLine(runtime *chatRuntime, state string) string {
+	modelName := ""
+	if runtime != nil {
+		modelName = strings.TrimSpace(runtime.cfg.Model)
+	}
+	state = strings.TrimSpace(strings.ToLower(state))
+	if state == "" {
+		state = "ready"
+	}
+	return fmt.Sprintf("[tacli %s] model=%s status=%s", strings.TrimSpace(version), modelName, state)
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {

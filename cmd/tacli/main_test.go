@@ -492,6 +492,20 @@ func TestUseNativeChatInputModeTracksFullscreenFlag(t *testing.T) {
 	}
 }
 
+func TestNativeStatusLineIncludesVersionModelAndState(t *testing.T) {
+	r := &chatRuntime{cfg: config.Config{Model: "test-model"}}
+	line := nativeStatusLine(r, "running")
+	if !strings.Contains(line, "tacli "+strings.TrimSpace(version)) {
+		t.Fatalf("missing version in status line: %q", line)
+	}
+	if !strings.Contains(line, "model=test-model") {
+		t.Fatalf("missing model in status line: %q", line)
+	}
+	if !strings.Contains(line, "status=running") {
+		t.Fatalf("missing state in status line: %q", line)
+	}
+}
+
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",
