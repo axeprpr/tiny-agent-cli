@@ -305,6 +305,10 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
+		if useNativeChatInputMode() {
+			runtime.rebuildLoopWithLog(io.Discard)
+			return runChatNative(runtime, reader)
+		}
 		return runChatTUI(runtime)
 	}
 
@@ -334,6 +338,59 @@ func runChat(args []string) int {
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		} else {
 			fmt.Println(output)
+		}
+	}
+	runtime.beforeExit(true)
+	return 0
+}
+
+func useNativeChatInputMode() bool {
+	// Native mode is the default whenever fullscreen TUI is not enabled.
+	return !useAltScreenMode()
+}
+
+func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
+	if reader == nil {
+		reader = bufio.NewReader(os.Stdin)
+	}
+	fmt.Fprintf(os.Stdout, "tacli %s  model=%s  (native input)\n", strings.TrimSpace(version), strings.TrimSpace(runtime.cfg.Model))
+	fmt.Fprintln(os.Stdout, "输入问题开始对话，/help 查看命令，/exit 退出")
+	for {
+		fmt.Fprint(os.Stdout, "> ")
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+			runtime.beforeExit(true)
+			return 1
+		}
+
+		task := strings.TrimSpace(line)
+		if task != "" {
+			if strings.HasPrefix(task, "/") {
+				result := runtime.executeCommand(task)
+				if result.handled {
+					if strings.TrimSpace(result.output) != "" {
+						fmt.Fprintln(os.Stdout, result.output)
+					}
+					if result.exitCode >= 0 {
+						runtime.beforeExit(true)
+						return result.exitCode
+					}
+				}
+			} else {
+				output, runErr := runtime.executeTask(context.Background(), task)
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
+				} else if strings.TrimSpace(output) != "" {
+					fmt.Fprintln(os.Stdout, output)
+				} else {
+					fmt.Fprintln(os.Stdout)
+				}
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			break
 		}
 	}
 	runtime.beforeExit(true)

@@ -481,6 +481,17 @@ func TestDefaultStartupLanguage(t *testing.T) {
 	}
 }
 
+func TestUseNativeChatInputModeTracksFullscreenFlag(t *testing.T) {
+	t.Setenv("TACLI_FULLSCREEN", "1")
+	if useNativeChatInputMode() {
+		t.Fatalf("expected native mode off when fullscreen is enabled")
+	}
+	t.Setenv("TACLI_FULLSCREEN", "0")
+	if !useNativeChatInputMode() {
+		t.Fatalf("expected native mode on when fullscreen is disabled")
+	}
+}
+
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",
