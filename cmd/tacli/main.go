@@ -846,7 +846,7 @@ func (r *chatRuntime) verifyModelAvailable(name string) (bool, error) {
 }
 
 func (r *chatRuntime) rebuildLoop() {
-	r.rebuildLoopWithLog(os.Stderr)
+	r.rebuildLoopWithLog(chatAgentLogWriter())
 }
 
 func (r *chatRuntime) rebuildLoopWithLog(logWriter io.Writer) {
@@ -3384,11 +3384,28 @@ func defaultChatSessionName(now time.Time) string {
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	factory := harness.NewFactory(cfg)
 	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
-	return factory.NewAgent(approver, os.Stderr, nil, loadRuntimePolicy(cfg)), approver
+	return factory.NewAgent(approver, chatAgentLogWriter(), nil, loadRuntimePolicy(cfg)), approver
 }
 
 func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, policy *tools.PermissionStore, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
 	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, policy, extraAuditSinks...)
+}
+
+func chatAgentLogWriter() io.Writer {
+	if debugLogsEnabled() {
+		return os.Stderr
+	}
+	return io.Discard
+}
+
+func debugLogsEnabled() bool {
+	for _, key := range []string{"TACLI_DEBUG", "TACLI_VERBOSE"} {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func loadRuntimePolicy(cfg config.Config) *tools.PermissionStore {

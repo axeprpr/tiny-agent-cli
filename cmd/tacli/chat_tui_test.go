@@ -765,6 +765,19 @@ func TestSanitizeUserVisibleLogLineStripsAnsiAndCR(t *testing.T) {
 	}
 }
 
+func TestSanitizeSubmittedInputDropsTerminalProbeLine(t *testing.T) {
+	got := sanitizeSubmittedInput("\x1b]11;rgb:1414/1717/2929\\\x07\n你好")
+	if got != "你好" {
+		t.Fatalf("unexpected sanitized input: %q", got)
+	}
+}
+
+func TestSanitizeUserVisibleLogLineDropsTerminalProbeLine(t *testing.T) {
+	if got := sanitizeUserVisibleLogLine("11;rgb:1414/1717/2929\\"); got != "" {
+		t.Fatalf("expected probe line dropped, got %q", got)
+	}
+}
+
 func TestUseAltScreenModeFromEnv(t *testing.T) {
 	t.Setenv("TACLI_FULLSCREEN", "1")
 	if !useAltScreenMode() {

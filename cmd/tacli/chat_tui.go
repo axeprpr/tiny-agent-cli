@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -272,6 +273,8 @@ type chatTUIModel struct {
 }
 
 var (
+	terminalProbeLineRE = regexp.MustCompile(`^\]?11;rgb:[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}\\?$`)
+
 	appStyle    = lipgloss.NewStyle().Padding(0, 1)
 	headerStyle = lipgloss.NewStyle().
 			Padding(0, 0, 1, 0)
@@ -559,7 +562,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.InsertString("\n")
 		case key.Matches(msg, m.keys.Send):
 			keyHandled = true
-			task := strings.TrimSpace(m.input.Value())
+			task := sanitizeSubmittedInput(m.input.Value())
 			if task == "" {
 				break
 			}
@@ -1371,6 +1374,24 @@ func sanitizeDisplayText(s string) string {
 	return b.String()
 }
 
+func sanitizeSubmittedInput(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = sanitizeDisplayText(ansi.Strip(text))
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if terminalProbeLineRE.MatchString(trimmed) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 func (m chatTUIModel) wordBoundsAt(line, col int) (int, int, bool) {
 	text, ok := m.lineTextAt(line)
 	if !ok {
@@ -1840,6 +1861,9 @@ func (m chatTUIModel) visibleConversationEntries() []tuiEntry {
 func sanitizeUserVisibleLogLine(text string) string {
 	text = strings.TrimSpace(sanitizeDisplayText(ansi.Strip(text)))
 	if text == "" {
+		return ""
+	}
+	if terminalProbeLineRE.MatchString(text) {
 		return ""
 	}
 	fields := strings.Fields(text)
