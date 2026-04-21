@@ -420,7 +420,7 @@ func TestMouseWheelEventsAreThrottled(t *testing.T) {
 	}
 }
 
-func TestMouseClickCopiesEntry(t *testing.T) {
+func TestMouseSingleClickDoesNotCopy(t *testing.T) {
 	r := &chatRuntime{
 		cfg:         config.Config{Model: "test-model"},
 		sessionName: "chat-test",
@@ -457,15 +457,67 @@ func TestMouseClickCopiesEntry(t *testing.T) {
 		Y:      m.chatViewportTop() + 1,
 	}
 	updated, cmd = m.Update(release)
+	_ = updated.(chatTUIModel)
+	if cmd != nil {
+		t.Fatalf("expected no copy command on single click")
+	}
+}
+
+func TestMouseDoubleClickCopiesWord(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.chatViewport.Width = 80
+	m.chatViewport.Height = 4
+	m.entries = []tuiEntry{
+		{role: "assistant", text: "alpha beta gamma"},
+	}
+	m.entriesDirty = true
+	m.refreshViewports(true)
+
+	contentLines := strings.Split(m.renderEntries(), "\n")
+	targetLine := -1
+	targetCol := -1
+	for i, line := range contentLines {
+		if idx := strings.Index(line, "beta"); idx >= 0 {
+			targetLine = i
+			targetCol = idx + 1
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("expected beta in rendered content")
+	}
+	y := m.chatViewportTop() + targetLine - m.chatViewport.YOffset
+	x := appStyle.GetPaddingLeft() + targetCol
+	press := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y}
+	release := tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, X: x, Y: y}
+
+	updated, _ := m.Update(press)
+	m = updated.(chatTUIModel)
+	updated, _ = m.Update(release) // first click, no copy
+	m = updated.(chatTUIModel)
+	m.lastClickTime = time.Now()
+	updated, _ = m.Update(press)
+	m = updated.(chatTUIModel)
+	updated, cmd := m.Update(release)
 	m = updated.(chatTUIModel)
 	if cmd == nil {
-		t.Fatalf("expected copy command from mouse release")
+		t.Fatalf("expected copy command on double click")
 	}
 	copyMsg := cmd()
 	updated, _ = m.Update(copyMsg)
 	m = updated.(chatTUIModel)
 	if m.statusText != "copied" {
 		t.Fatalf("expected copied status, got %q", m.statusText)
+	}
+	if got := m.selectedContentText(); got != "beta" {
+		t.Fatalf("expected selected word beta, got %q", got)
 	}
 }
 

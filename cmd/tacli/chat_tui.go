@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/atotto/clipboard"
 	osc52 "github.com/aymanbagabas/go-osc52/v2"
@@ -253,6 +254,13 @@ type chatTUIModel struct {
 	mdRenderer    *glamour.TermRenderer
 	stickToBottom bool
 	lastMouseTime time.Time
+	mousePressed  bool
+	mouseDragged  bool
+	pressLine     int
+	pressCol      int
+	lastClickTime time.Time
+	lastClickLine int
+	lastClickCol  int
 	queuedTasks   []string
 	runningTask   string
 	runningCancel context.CancelFunc
@@ -597,6 +605,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if isLeftMousePress(msg) {
 			if line, col, ok := m.contentPosAtMouse(msg); ok {
+				m.mousePressed = true
+				m.mouseDragged = false
+				m.pressLine = line
+				m.pressCol = col
 				m.selActive = true
 				m.selStartLine = line
 				m.selStartCol = col
@@ -621,21 +633,40 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if line != m.selEndLine || col != m.selEndCol {
 					m.selEndLine = line
 					m.selEndCol = col
+					m.mouseDragged = true
 					immediateRefresh = true
 				}
 			}
 			break
 		}
 		if m.selActive && isLeftMouseRelease(msg) {
+			releaseLine, releaseCol := m.selEndLine, m.selEndCol
 			if line, col, ok := m.contentPosAtMouse(msg); ok {
 				m.selEndLine = line
 				m.selEndCol = col
+				releaseLine, releaseCol = line, col
 			}
-			text := m.selectedContentText()
+			text := ""
+			if m.mouseDragged || m.selStartLine != m.selEndLine || m.selStartCol != m.selEndCol {
+				text = m.selectedContentText()
+			} else if m.isDoubleClick(releaseLine, releaseCol) {
+				if startCol, endCol, ok := m.wordBoundsAt(releaseLine, releaseCol); ok {
+					m.selStartLine = releaseLine
+					m.selEndLine = releaseLine
+					m.selStartCol = startCol
+					m.selEndCol = endCol
+					text = m.selectedContentText()
+				}
+			}
 			if cmd := copyTextCmd(text); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 			m.selActive = false
+			m.mousePressed = false
+			m.mouseDragged = false
+			m.lastClickTime = time.Now()
+			m.lastClickLine = releaseLine
+			m.lastClickCol = releaseCol
 			immediateRefresh = true
 		}
 	case tuiCopyResultMsg:
@@ -1004,6 +1035,13 @@ func compactTokenCount(n int) string {
 	}
 }
 
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
 func estimateTokenUsage(messages []model.Message, draft string) int {
 	count := 0
 	for _, msg := range messages {
@@ -1231,6 +1269,85 @@ func (m chatTUIModel) chatViewportTop() int {
 func (m chatTUIModel) conversationTitleHeight() int {
 	width := max(20, m.chatViewport.Width)
 	return lipgloss.Height(paneTitleStyle.Width(width).Render("messages"))
+}
+
+func (m chatTUIModel) isDoubleClick(line, col int) bool {
+	if m.lastClickTime.IsZero() {
+		return false
+	}
+	if time.Since(m.lastClickTime) > 450*time.Millisecond {
+		return false
+	}
+	if line != m.lastClickLine {
+		return false
+	}
+	return abs(col-m.lastClickCol) <= 2
+}
+
+func (m chatTUIModel) lineTextAt(globalLine int) (string, bool) {
+	content := m.renderEntries()
+	lines := strings.Split(content, "\n")
+	if globalLine < 0 || globalLine >= len(lines) {
+		return "", false
+	}
+	return strings.TrimRight(ansi.Strip(lines[globalLine]), " \t"), true
+}
+
+func (m chatTUIModel) wordBoundsAt(line, col int) (int, int, bool) {
+	text, ok := m.lineTextAt(line)
+	if !ok {
+		return 0, 0, false
+	}
+	type cell struct {
+		start int
+		end   int
+		r     rune
+	}
+	var cells []cell
+	displayCol := 0
+	for _, r := range text {
+		w := runewidth.RuneWidth(r)
+		if w <= 0 {
+			w = 1
+		}
+		cells = append(cells, cell{start: displayCol, end: displayCol + w, r: r})
+		displayCol += w
+	}
+	if len(cells) == 0 {
+		return 0, 0, false
+	}
+	if col < 0 {
+		col = 0
+	}
+	if col >= displayCol {
+		col = displayCol - 1
+	}
+	idx := -1
+	for i, c := range cells {
+		if col >= c.start && col < c.end {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, 0, false
+	}
+	if !isWordRune(cells[idx].r) {
+		return cells[idx].start, cells[idx].end, true
+	}
+	left := idx
+	for left > 0 && isWordRune(cells[left-1].r) {
+		left--
+	}
+	right := idx
+	for right+1 < len(cells) && isWordRune(cells[right+1].r) {
+		right++
+	}
+	return cells[left].start, cells[right].end, true
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 func shouldForwardToInput(msg tea.Msg) bool {
