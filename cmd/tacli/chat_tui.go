@@ -1026,7 +1026,7 @@ func (m *chatTUIModel) markdownRenderer(width int) (*glamour.TermRenderer, error
 		return m.mdRenderer, nil
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle("notty"),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
