@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	osc52 "github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -51,7 +52,10 @@ type tuiStreamMsg struct {
 
 type tuiRefreshMsg struct{}
 
-type tuiMouseScrollMsg struct{}
+type tuiCopyResultMsg struct {
+	ok     bool
+	detail string
+}
 
 type tuiEntry struct {
 	role string
@@ -241,10 +245,9 @@ type chatTUIModel struct {
 	mouseDragOn   bool
 	mouseDragFrom int
 	mouseDragTo   int
+	chatTop       int
 	mdWidth       int
 	mdRenderer    *glamour.TermRenderer
-	pendingScroll int
-	scrollQueued  bool
 	stickToBottom bool
 	lastMouseTime time.Time
 	queuedTasks   []string
@@ -440,6 +443,7 @@ func runChatTUI(runtime *chatRuntime) int {
 		newChatTUIModel(runtime, events),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithFilter(chatMouseEventFilter),
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
@@ -458,12 +462,6 @@ func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
 func scheduleViewportRefresh() tea.Cmd {
 	return tea.Tick(time.Second/30, func(time.Time) tea.Msg {
 		return tuiRefreshMsg{}
-	})
-}
-
-func scheduleMouseScroll() tea.Cmd {
-	return tea.Tick(time.Second/60, func(time.Time) tea.Msg {
-		return tuiMouseScrollMsg{}
 	})
 }
 
@@ -585,10 +583,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastMouseTime = time.Now()
 		}
 		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
-			m.pendingScroll += delta
-			if !m.scrollQueued {
-				m.scrollQueued = true
-				cmds = append(cmds, scheduleMouseScroll())
+			if delta < 0 {
+				m.stickToBottom = false
+			}
+			applyMouseScroll(&m.chatViewport, delta)
+			if delta > 0 {
+				m.stickToBottom = m.chatViewport.AtBottom()
 			}
 			break
 		}
@@ -603,10 +603,22 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if m.mouseDragOn && msg.Action == tea.MouseActionMotion {
+			// Dragging near viewport boundaries auto-scrolls, matching crush behavior.
+			if m.chatViewport.Height > 0 {
+				if msg.Y <= m.chatTop {
+					m.stickToBottom = false
+					m.chatViewport.ScrollUp(1)
+				} else if msg.Y >= m.chatTop+m.chatViewport.Height-1 {
+					m.chatViewport.ScrollDown(1)
+					m.stickToBottom = m.chatViewport.AtBottom()
+				}
+			}
 			if idx, ok := m.entryIndexAtMouse(msg); ok {
-				m.mouseDragTo = idx
-				m.entriesDirty = true
-				immediateRefresh = true
+				if idx != m.mouseDragTo {
+					m.mouseDragTo = idx
+					m.entriesDirty = true
+					immediateRefresh = true
+				}
 			}
 			break
 		}
@@ -617,12 +629,21 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			text := selectedEntryText(m.entries, m.mouseDragFrom, m.mouseDragTo)
 			if cmd := copyTextCmd(text); cmd != nil {
 				cmds = append(cmds, cmd)
-				m.statusText = "copied"
-				immediateRefresh = true
 			}
 			m.mouseDragOn = false
 			m.entriesDirty = true
 		}
+	case tuiCopyResultMsg:
+		if msg.ok {
+			m.statusText = "copied"
+		} else {
+			m.statusText = "copy failed"
+			if strings.TrimSpace(msg.detail) != "" {
+				m.entries = append(m.entries, tuiEntry{role: "system", text: "copy failed: " + msg.detail})
+				m.entriesDirty = true
+			}
+		}
+		immediateRefresh = true
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.appendActivityEntry(msg.kind, msg.text)
@@ -713,18 +734,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
 		}
-	case tuiMouseScrollMsg:
-		m.scrollQueued = false
-		if m.pendingScroll != 0 {
-			if m.pendingScroll < 0 {
-				m.stickToBottom = false
-			}
-			applyMouseScroll(&m.chatViewport, m.pendingScroll)
-			if m.pendingScroll > 0 {
-				m.stickToBottom = m.chatViewport.AtBottom()
-			}
-			m.pendingScroll = 0
-		}
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -759,7 +768,12 @@ func (m chatTUIModel) View() string {
 		m.renderComposer(),
 		m.renderStatusLine(),
 	}
-	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	view := appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	lines := strings.Split(strings.ReplaceAll(view, "\r\n", "\n"), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m chatTUIModel) renderStatusLine() string {
@@ -787,6 +801,14 @@ func (m *chatTUIModel) resize(forceRefresh bool) {
 	contentWidth := max(20, m.width-4)
 	availableHeight := m.height - extra
 	m.chatViewport.Height = max(6, availableHeight)
+	if m.runtime != nil {
+		m.chatTop = lipgloss.Height(m.renderHeader())
+		if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
+			m.chatTop += lipgloss.Height(todo)
+		}
+	} else {
+		m.chatTop = 0
+	}
 	newChatWidth := max(18, contentWidth)
 	widthChanged := m.chatViewport.Width != newChatWidth
 	m.chatViewport.Width = newChatWidth
@@ -916,7 +938,9 @@ func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, wid
 		body = renderStyledBody(style, width, text)
 	}
 	if selected {
-		body = highlightRenderedBody(width, body)
+		// Keep selected content plain to avoid markdown ANSI resetting selection
+		// background, which can make highlighting invisible.
+		body = renderStyledBody(selectBodyStyle, width, text)
 	}
 	return body
 }
@@ -1087,9 +1111,31 @@ func copyTextCmd(text string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		_ = clipboard.WriteAll(text)
-		return nil
+		oscErr := writeOSC52(text)
+		sysErr := clipboard.WriteAll(text)
+		if oscErr == nil || sysErr == nil {
+			return tuiCopyResultMsg{ok: true}
+		}
+		return tuiCopyResultMsg{
+			ok:     false,
+			detail: fmt.Sprintf("osc52=%v; system=%v", oscErr, sysErr),
+		}
 	}
+}
+
+func buildOSC52Sequence(text string) string {
+	seq := osc52.New(text)
+	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
+		seq = seq.Tmux()
+	} else if strings.TrimSpace(os.Getenv("STY")) != "" {
+		seq = seq.Screen()
+	}
+	return seq.String()
+}
+
+func writeOSC52(text string) error {
+	_, err := io.WriteString(os.Stdout, buildOSC52Sequence(text))
+	return err
 }
 
 func selectedEntryText(entries []tuiEntry, from, to int) string {
@@ -1150,7 +1196,11 @@ func (m chatTUIModel) isEntrySelected(idx int) bool {
 }
 
 func (m chatTUIModel) chatViewportTop() int {
-	top := lipgloss.Height(m.renderHeader())
+	top := m.chatTop
+	if top > 0 {
+		return top
+	}
+	top = lipgloss.Height(m.renderHeader())
 	if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
 		top += lipgloss.Height(todo)
 	}
@@ -1183,6 +1233,24 @@ func shouldForwardToInput(msg tea.Msg) bool {
 	default:
 		return false
 	}
+}
+
+var lastFilteredMouseEvent time.Time
+
+func chatMouseEventFilter(_ tea.Model, msg tea.Msg) tea.Msg {
+	mouseMsg, ok := msg.(tea.MouseMsg)
+	if !ok {
+		return msg
+	}
+	if !isBurstMouseMsg(mouseMsg) {
+		return msg
+	}
+	now := time.Now()
+	if !lastFilteredMouseEvent.IsZero() && now.Sub(lastFilteredMouseEvent) < 12*time.Millisecond {
+		return nil
+	}
+	lastFilteredMouseEvent = now
+	return msg
 }
 
 func classifyLogKind(line string) string {

@@ -352,7 +352,7 @@ func TestContextStatusShowsTokenCounts(t *testing.T) {
 	}
 }
 
-func TestMouseWheelScrollIsBatched(t *testing.T) {
+func TestMouseWheelScrollAppliesImmediately(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 3),
 		input:        textarea.New(),
@@ -365,27 +365,11 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 
 	updated, cmd := m.Update(msg)
 	m = updated.(chatTUIModel)
-	if cmd == nil {
-		t.Fatalf("expected scroll tick to be scheduled")
+	if cmd != nil {
+		t.Fatalf("expected immediate wheel handling without scheduling")
 	}
-	if m.chatViewport.YOffset != 0 {
-		t.Fatalf("expected wheel event to defer viewport movement, got offset %d", m.chatViewport.YOffset)
-	}
-
-	m.lastMouseTime = time.Time{}
-	updated, _ = m.Update(msg)
-	m = updated.(chatTUIModel)
-	if m.pendingScroll != 6 {
-		t.Fatalf("expected pending scroll to accumulate, got %d", m.pendingScroll)
-	}
-
-	updated, _ = m.Update(tuiMouseScrollMsg{})
-	m = updated.(chatTUIModel)
-	if m.pendingScroll != 0 {
-		t.Fatalf("expected pending scroll to flush, got %d", m.pendingScroll)
-	}
-	if m.chatViewport.YOffset != 5 {
-		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
+	if m.chatViewport.YOffset == 0 {
+		t.Fatalf("expected wheel to move viewport immediately")
 	}
 }
 
@@ -405,8 +389,6 @@ func TestMouseScrollFlushKeepsComposerStable(t *testing.T) {
 
 	before := m.renderComposer()
 	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
-	m = updated.(chatTUIModel)
-	updated, _ = m.Update(tuiMouseScrollMsg{})
 	m = updated.(chatTUIModel)
 	after := m.renderComposer()
 
@@ -433,8 +415,8 @@ func TestMouseWheelEventsAreThrottled(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("expected throttled wheel to skip scheduling")
 	}
-	if m.pendingScroll != 0 || m.scrollQueued {
-		t.Fatalf("expected no queued scroll when throttled, pending=%d queued=%v", m.pendingScroll, m.scrollQueued)
+	if m.chatViewport.YOffset != 0 {
+		t.Fatalf("expected no viewport movement when throttled, got %d", m.chatViewport.YOffset)
 	}
 }
 
@@ -477,6 +459,9 @@ func TestMouseClickCopiesEntry(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected copy command from mouse release")
 	}
+	copyMsg := cmd()
+	updated, _ = m.Update(copyMsg)
+	m = updated.(chatTUIModel)
 	if m.statusText != "copied" {
 		t.Fatalf("expected copied status, got %q", m.statusText)
 	}
@@ -499,6 +484,13 @@ func TestSelectedEntryRange(t *testing.T) {
 	start, end, ok := selectedEntryRange(3, 1, 5)
 	if !ok || start != 1 || end != 3 {
 		t.Fatalf("unexpected selected range: ok=%v start=%d end=%d", ok, start, end)
+	}
+}
+
+func TestBuildOSC52SequenceProducesControlSequence(t *testing.T) {
+	seq := buildOSC52Sequence("copy me")
+	if !strings.Contains(seq, "]52;") {
+		t.Fatalf("expected OSC52 sequence, got %q", seq)
 	}
 }
 
