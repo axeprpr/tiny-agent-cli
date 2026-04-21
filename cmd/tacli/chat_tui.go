@@ -811,6 +811,7 @@ func (m *chatTUIModel) resize(forceRefresh bool) {
 		if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
 			m.chatTop += lipgloss.Height(todo)
 		}
+		m.chatTop += m.conversationTitleHeight()
 	} else {
 		m.chatTop = 0
 	}
@@ -1127,7 +1128,7 @@ func (m chatTUIModel) contentPosAtMouse(msg tea.MouseMsg) (int, int, bool) {
 		return 0, 0, false
 	}
 	line := m.chatViewport.YOffset + relY
-	col := max(0, msg.X-1)
+	col := max(0, msg.X-appStyle.GetPaddingLeft())
 	return line, col, true
 }
 
@@ -1179,7 +1180,9 @@ func (m chatTUIModel) selectedContentText() string {
 	}
 	out := make([]string, 0, endLine-startLine+1)
 	for i := startLine; i <= endLine; i++ {
-		plain := ansi.Strip(lines[i])
+		// renderStyledBody widens lines to viewport width, so trim only right
+		// padding spaces before copying to avoid huge trailing whitespace.
+		plain := strings.TrimRight(ansi.Strip(lines[i]), " \t")
 		width := runewidth.StringWidth(plain)
 		from := 0
 		to := width
@@ -1221,7 +1224,13 @@ func (m chatTUIModel) chatViewportTop() int {
 	if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
 		top += lipgloss.Height(todo)
 	}
+	top += m.conversationTitleHeight()
 	return top
+}
+
+func (m chatTUIModel) conversationTitleHeight() int {
+	width := max(20, m.chatViewport.Width)
+	return lipgloss.Height(paneTitleStyle.Width(width).Render("messages"))
 }
 
 func shouldForwardToInput(msg tea.Msg) bool {

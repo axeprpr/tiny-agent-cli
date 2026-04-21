@@ -513,6 +513,66 @@ func TestSelectedContentTextUsesDisplayCoordinates(t *testing.T) {
 	}
 }
 
+func TestSelectedContentTextTrimsRightPadding(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 20),
+		entries:      []tuiEntry{{role: "assistant", text: "abc"}},
+	}
+	m.entriesDirty = true
+	m.refreshViewports(true)
+	lines := strings.Split(m.renderEntries(), "\n")
+	targetLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "abc") {
+			targetLine = i
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("expected body line in rendered entries")
+	}
+	m.selStartLine = targetLine
+	m.selEndLine = targetLine
+	m.selStartCol = 0
+	m.selEndCol = 100
+
+	got := m.selectedContentText()
+	if got != "abc" {
+		t.Fatalf("unexpected selected text with right padding: got %q want %q", got, "abc")
+	}
+}
+
+func TestContentPosAtMouseAccountsForConversationTitle(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.width = 100
+	m.height = 30
+	m.entries = []tuiEntry{{role: "assistant", text: "line1\nline2"}}
+	m.entriesDirty = true
+	m.resize(true)
+	m.refreshViewports(true)
+
+	line, _, ok := m.contentPosAtMouse(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      appStyle.GetPaddingLeft(),
+		Y:      m.chatTop,
+	})
+	if !ok {
+		t.Fatalf("expected mouse point at viewport top to be valid")
+	}
+	if line != m.chatViewport.YOffset {
+		t.Fatalf("unexpected line mapping: got %d want %d", line, m.chatViewport.YOffset)
+	}
+}
+
 func TestRenderConversationHighlightsSelectionDuringDrag(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDark := lipgloss.HasDarkBackground()
