@@ -305,6 +305,10 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
+		if !useLegacyTUIMode() {
+			runtime.rebuildLoopWithLog(io.Discard)
+			return runChatPlain(runtime, reader)
+		}
 		return runChatTUI(runtime)
 	}
 
@@ -338,6 +342,67 @@ func runChat(args []string) int {
 	}
 	runtime.beforeExit(true)
 	return 0
+}
+
+func useLegacyTUIMode() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func runChatPlain(runtime *chatRuntime, reader *bufio.Reader) int {
+	if reader == nil {
+		reader = bufio.NewReader(os.Stdin)
+	}
+	printPlainChatBanner()
+	for {
+		fmt.Fprint(os.Stdout, "> ")
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+			runtime.beforeExit(true)
+			return 1
+		}
+
+		task := strings.TrimSpace(line)
+		if task != "" {
+			if strings.HasPrefix(task, "/") {
+				result := runtime.executeCommand(task)
+				if result.handled {
+					if strings.TrimSpace(result.output) != "" {
+						fmt.Fprintln(os.Stdout, result.output)
+					}
+					if result.exitCode >= 0 {
+						runtime.beforeExit(true)
+						return result.exitCode
+					}
+				}
+			} else {
+				output, runErr := runtime.executeTask(context.Background(), task)
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
+				} else if strings.TrimSpace(output) != "" {
+					fmt.Fprintln(os.Stdout, output)
+				} else {
+					fmt.Fprintln(os.Stdout)
+				}
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	runtime.beforeExit(true)
+	return 0
+}
+
+func printPlainChatBanner() {
+	fmt.Fprintln(os.Stdout, "████████  █████   ██████ ██      ██")
+	fmt.Fprintln(os.Stdout, "   ██    ██   ██ ██      ██      ██")
+	fmt.Fprintln(os.Stdout, "   ██    ███████ ██      ██      ██")
+	fmt.Fprintln(os.Stdout, "   ██    ██   ██ ██      ██      ██")
+	fmt.Fprintln(os.Stdout, "   ██    ██   ██  ██████ ███████ ██")
+	fmt.Fprintln(os.Stdout, "tacli chat ready · 输入问题开始对话 · /help 查看命令 · /exit 退出")
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {
@@ -846,6 +911,10 @@ func (r *chatRuntime) verifyModelAvailable(name string) (bool, error) {
 }
 
 func (r *chatRuntime) rebuildLoop() {
+	r.rebuildLoopWithLog(os.Stderr)
+}
+
+func (r *chatRuntime) rebuildLoopWithLog(logWriter io.Writer) {
 	var (
 		todoItems    []tools.TodoItem
 		taskContract tools.TaskContract
@@ -858,7 +927,10 @@ func (r *chatRuntime) rebuildLoop() {
 	if r.jobs != nil {
 		jobs = jobToolAdapter{manager: r.jobs}
 	}
-	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs, r.permissions)
+	if logWriter == nil {
+		logWriter = io.Discard
+	}
+	r.loop = buildAgentWith(r.cfg, r.approver, logWriter, jobs, r.permissions)
 	r.attachAgentEventSink()
 	r.applyLoadedPlugins()
 	if r.session != nil {
