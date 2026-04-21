@@ -1638,6 +1638,9 @@ func busyPlaceholder(queued int) string {
 
 func busyHint(queued int) string {
 	base := strings.TrimSpace(i18n.T("tui.hint.busy"))
+	if base == "" {
+		return ""
+	}
 	if queued <= 0 {
 		return base
 	}
