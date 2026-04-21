@@ -506,6 +506,13 @@ func TestNativeStatusLineIncludesVersionModelAndState(t *testing.T) {
 	}
 }
 
+func TestNormalizeNativeInputLineHandlesCJKBackspace(t *testing.T) {
+	got := normalizeNativeInputLine("你好吗\x7f\n")
+	if got != "你好\n" {
+		t.Fatalf("unexpected normalized line: got %q want %q", got, "你好\n")
+	}
+}
+
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",

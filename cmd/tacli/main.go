@@ -365,7 +365,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 			return 1
 		}
 
-		task := strings.TrimSpace(line)
+		task := strings.TrimSpace(normalizeNativeInputLine(line))
 		if task != "" {
 			if strings.HasPrefix(task, "/") {
 				result := runtime.executeCommand(task)
@@ -397,6 +397,28 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	}
 	runtime.beforeExit(true)
 	return 0
+}
+
+func normalizeNativeInputLine(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Handle terminals that may send backspace/delete control chars literally.
+	// We normalize at rune granularity so CJK input behaves correctly.
+	buf := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch r {
+		case '\b', 0x7f:
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+		case '\r':
+			// Ignore CR to keep LF-only normalization.
+		default:
+			buf = append(buf, r)
+		}
+	}
+	return string(buf)
 }
 
 func nativeStatusLine(runtime *chatRuntime, state string) string {
