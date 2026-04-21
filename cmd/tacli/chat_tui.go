@@ -213,6 +213,10 @@ type chatKeyMap struct {
 	Newline   key.Binding
 	Interrupt key.Binding
 	Quit      key.Binding
+	HistoryUp key.Binding
+	HistoryDn key.Binding
+	HistoryTop key.Binding
+	HistoryBottom key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
@@ -392,6 +396,10 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
 			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
 			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			HistoryUp: key.NewBinding(key.WithKeys("pgup")),
+			HistoryDn: key.NewBinding(key.WithKeys("pgdown")),
+			HistoryTop: key.NewBinding(key.WithKeys("home")),
+			HistoryBottom: key.NewBinding(key.WithKeys("end")),
 		},
 		entriesDirty:  true,
 		stickToBottom: true,
@@ -515,6 +523,26 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyMsg:
 		switch {
+		case key.Matches(msg, m.keys.HistoryUp):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.HalfViewUp()
+			immediateRefresh = true
+		case key.Matches(msg, m.keys.HistoryDn):
+			keyHandled = true
+			m.chatViewport.HalfViewDown()
+			m.stickToBottom = m.chatViewport.AtBottom()
+			immediateRefresh = true
+		case key.Matches(msg, m.keys.HistoryTop):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.GotoTop()
+			immediateRefresh = true
+		case key.Matches(msg, m.keys.HistoryBottom):
+			keyHandled = true
+			m.chatViewport.GotoBottom()
+			m.stickToBottom = true
+			immediateRefresh = true
 		case key.Matches(msg, m.keys.Quit):
 			keyHandled = true
 			m.runtime.beforeExit(false)

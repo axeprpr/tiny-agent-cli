@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -195,6 +196,33 @@ func TestArrowKeyEditingDoesNotScrollChatViewport(t *testing.T) {
 
 	if m.chatViewport.YOffset != 2 {
 		t.Fatalf("expected up-arrow editing to leave chat viewport offset unchanged, got %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestPageUpAndPageDownScrollChatViewport(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 3),
+		input:        textarea.New(),
+		keys: chatKeyMap{
+			HistoryUp: key.NewBinding(key.WithKeys("pgup")),
+			HistoryDn: key.NewBinding(key.WithKeys("pgdown")),
+		},
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6", "7", "8",
+	}, "\n"))
+	m.chatViewport.SetYOffset(4)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(chatTUIModel)
+	if m.chatViewport.YOffset >= 4 {
+		t.Fatalf("expected pgup to move viewport up, got %d", m.chatViewport.YOffset)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(chatTUIModel)
+	if m.chatViewport.YOffset < 4 {
+		t.Fatalf("expected pgdown to move viewport down, got %d", m.chatViewport.YOffset)
 	}
 }
 
