@@ -429,12 +429,14 @@ func TestMouseClickCopiesEntry(t *testing.T) {
 	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
 	r.session = r.loop.NewSession()
 	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.chatViewport.Width = 80
 	m.chatViewport.Height = 4
 	m.entries = []tuiEntry{
 		{role: "assistant", text: "first"},
 		{role: "assistant", text: "second"},
 	}
-	m.entryLines = []int{0, 1}
+	m.entriesDirty = true
+	m.refreshViewports(true)
 
 	press := tea.MouseMsg{
 		Action: tea.MouseActionPress,

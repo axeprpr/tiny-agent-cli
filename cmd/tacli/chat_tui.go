@@ -19,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/mattn/go-runewidth"
 
 	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/model"
@@ -246,6 +248,11 @@ type chatTUIModel struct {
 	mouseDragFrom int
 	mouseDragTo   int
 	chatTop       int
+	selActive     bool
+	selStartLine  int
+	selStartCol   int
+	selEndLine    int
+	selEndCol     int
 	mdWidth       int
 	mdRenderer    *glamour.TermRenderer
 	stickToBottom bool
@@ -593,16 +600,17 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if isLeftMousePress(msg) {
-			if idx, ok := m.entryIndexAtMouse(msg); ok {
-				m.mouseDragOn = true
-				m.mouseDragFrom = idx
-				m.mouseDragTo = idx
-				m.entriesDirty = true
+			if line, col, ok := m.contentPosAtMouse(msg); ok {
+				m.selActive = true
+				m.selStartLine = line
+				m.selStartCol = col
+				m.selEndLine = line
+				m.selEndCol = col
 				immediateRefresh = true
 			}
 			break
 		}
-		if m.mouseDragOn && msg.Action == tea.MouseActionMotion {
+		if m.selActive && msg.Action == tea.MouseActionMotion {
 			// Dragging near viewport boundaries auto-scrolls, matching crush behavior.
 			if m.chatViewport.Height > 0 {
 				if msg.Y <= m.chatTop {
@@ -613,25 +621,26 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.stickToBottom = m.chatViewport.AtBottom()
 				}
 			}
-			if idx, ok := m.entryIndexAtMouse(msg); ok {
-				if idx != m.mouseDragTo {
-					m.mouseDragTo = idx
-					m.entriesDirty = true
+			if line, col, ok := m.contentPosAtMouse(msg); ok {
+				if line != m.selEndLine || col != m.selEndCol {
+					m.selEndLine = line
+					m.selEndCol = col
 					immediateRefresh = true
 				}
 			}
 			break
 		}
-		if m.mouseDragOn && isLeftMouseRelease(msg) {
-			if idx, ok := m.entryIndexAtMouse(msg); ok {
-				m.mouseDragTo = idx
+		if m.selActive && isLeftMouseRelease(msg) {
+			if line, col, ok := m.contentPosAtMouse(msg); ok {
+				m.selEndLine = line
+				m.selEndCol = col
 			}
-			text := selectedEntryText(m.entries, m.mouseDragFrom, m.mouseDragTo)
+			text := m.selectedContentText()
 			if cmd := copyTextCmd(text); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
-			m.mouseDragOn = false
-			m.entriesDirty = true
+			m.selActive = false
+			immediateRefresh = true
 		}
 	case tuiCopyResultMsg:
 		if msg.ok {
@@ -1195,6 +1204,100 @@ func (m chatTUIModel) isEntrySelected(idx int) bool {
 	return idx >= start && idx <= end
 }
 
+func (m chatTUIModel) contentPosAtMouse(msg tea.MouseMsg) (int, int, bool) {
+	if m.chatViewport.Height <= 0 {
+		return 0, 0, false
+	}
+	relY := msg.Y - m.chatViewportTop()
+	if relY < 0 || relY >= m.chatViewport.Height {
+		return 0, 0, false
+	}
+	line := m.chatViewport.YOffset + relY
+	col := max(0, msg.X-1)
+	return line, col, true
+}
+
+func normalizeSelection(startLine, startCol, endLine, endCol int) (int, int, int, int) {
+	if startLine > endLine || (startLine == endLine && startCol > endCol) {
+		return endLine, endCol, startLine, startCol
+	}
+	return startLine, startCol, endLine, endCol
+}
+
+func sliceByDisplayCols(s string, fromCol, toCol int) string {
+	if toCol <= fromCol {
+		return ""
+	}
+	var b strings.Builder
+	col := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if w <= 0 {
+			w = 1
+		}
+		next := col + w
+		if next > fromCol && col < toCol {
+			b.WriteRune(r)
+		}
+		col = next
+		if col >= toCol {
+			break
+		}
+	}
+	return b.String()
+}
+
+func (m chatTUIModel) selectedContentText() string {
+	content := m.renderEntries()
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	startLine, startCol, endLine, endCol := normalizeSelection(m.selStartLine, m.selStartCol, m.selEndLine, m.selEndCol)
+	if startLine < 0 {
+		startLine = 0
+	}
+	if endLine >= len(lines) {
+		endLine = len(lines) - 1
+	}
+	if startLine > endLine {
+		return ""
+	}
+	out := make([]string, 0, endLine-startLine+1)
+	for i := startLine; i <= endLine; i++ {
+		plain := ansi.Strip(lines[i])
+		width := runewidth.StringWidth(plain)
+		from := 0
+		to := width
+		if i == startLine {
+			from = min(max(0, startCol), width)
+		}
+		if i == endLine {
+			to = min(max(0, endCol), width)
+		}
+		if i == startLine && i == endLine && to <= from {
+			from = 0
+			to = width
+		}
+		out = append(out, sliceByDisplayCols(plain, from, to))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func (m chatTUIModel) highlightViewportSelection(view string) string {
+	lines := strings.Split(view, "\n")
+	startLine, _, endLine, _ := normalizeSelection(m.selStartLine, m.selStartCol, m.selEndLine, m.selEndCol)
+	for i := range lines {
+		globalLine := m.chatViewport.YOffset + i
+		if globalLine < startLine || globalLine > endLine {
+			continue
+		}
+		plain := ansi.Strip(lines[i])
+		lines[i] = selectBodyStyle.Render(plain)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m chatTUIModel) chatViewportTop() int {
 	top := m.chatTop
 	if top > 0 {
@@ -1372,7 +1475,11 @@ func (m chatTUIModel) renderConversation() string {
 	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
 		fmt.Sprintf(i18n.T("tui.label.messages"), len(visibleEntries)),
 	)
-	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View()))
+	view := m.chatViewport.View()
+	if m.selActive {
+		view = m.highlightViewportSelection(view)
+	}
+	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, view))
 }
 
 func (m chatTUIModel) renderTodoSummary() string {
