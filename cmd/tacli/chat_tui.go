@@ -329,7 +329,7 @@ var (
 
 	statusVersionStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "252"})
+				Foreground(lipgloss.Color("252"))
 
 	paneTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("242")).
