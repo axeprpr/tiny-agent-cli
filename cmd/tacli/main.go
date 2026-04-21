@@ -356,7 +356,6 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	fmt.Fprintf(os.Stdout, "tacli %s  model=%s  (native input)\n", strings.TrimSpace(version), strings.TrimSpace(runtime.cfg.Model))
 	fmt.Fprintln(os.Stdout, "输入问题开始对话，/help 查看命令，/exit 退出")
 	for {
-		fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
 		fmt.Fprint(os.Stdout, "> ")
 		line, err := reader.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -368,6 +367,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 		task := strings.TrimSpace(normalizeNativeInputLine(line))
 		if task != "" {
 			if strings.HasPrefix(task, "/") {
+				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
 				result := runtime.executeCommand(task)
 				if result.handled {
 					if strings.TrimSpace(result.output) != "" {
@@ -388,6 +388,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 				} else {
 					fmt.Fprintln(os.Stdout)
 				}
+				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
 			}
 		}
 
