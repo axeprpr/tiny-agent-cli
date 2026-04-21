@@ -145,3 +145,15 @@ func TestBuildBackgroundTaskContract(t *testing.T) {
 		t.Fatalf("expected bootstrap acceptance checks, got %#v", contract)
 	}
 }
+
+func TestNormalizeBackgroundIsolation(t *testing.T) {
+	if got := normalizeBackgroundIsolation(backgroundRoleExplore, ""); got != "read_only" {
+		t.Fatalf("expected explore default isolation read_only, got %q", got)
+	}
+	if got := normalizeBackgroundIsolation(backgroundRoleImplement, ""); got != "shared" {
+		t.Fatalf("expected implement default isolation shared, got %q", got)
+	}
+	if got := normalizeBackgroundIsolation(backgroundRoleGeneral, "read-only"); got != "read_only" {
+		t.Fatalf("expected explicit read-only normalization, got %q", got)
+	}
+}

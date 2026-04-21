@@ -217,7 +217,11 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if len(results) == 0 && lastErr != nil {
 		return "", lastErr
 	}
-	results = rerankSearchResults(query, results)
+	ranked := rankSearchResults(query, results)
+	results = make([]ddgResult, 0, len(ranked))
+	for _, item := range ranked {
+		results = append(results, item.result)
+	}
 	results = dedupeSearchResults(results)
 
 	var lines []string
@@ -225,6 +229,7 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	if strings.TrimSpace(source) != "" {
 		lines = append(lines, "source: "+source)
 	}
+	lines = append(lines, "fetched_at: "+time.Now().UTC().Format(time.RFC3339))
 
 	if len(results) == 0 {
 		lines = append(lines, "(no search results returned)")
@@ -235,10 +240,12 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		results = results[:args.Limit]
 	}
 	for i, r := range results {
+		confidence := confidenceForSearchScore(scoreSearchResult(hints, r))
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, r.title))
 		if r.url != "" {
 			lines = append(lines, "   "+r.url)
 		}
+		lines = append(lines, "   confidence="+confidence)
 		if r.snippet != "" {
 			lines = append(lines, "   "+r.snippet)
 		}
@@ -457,14 +464,15 @@ func defaultSearchEndpoints(query string) []string {
 	return endpoints
 }
 
-func rerankSearchResults(query string, results []ddgResult) []ddgResult {
-	if len(results) < 2 {
-		return results
-	}
-	type scoredResult struct {
-		result ddgResult
-		score  int
-		index  int
+type scoredResult struct {
+	result ddgResult
+	score  int
+	index  int
+}
+
+func rankSearchResults(query string, results []ddgResult) []scoredResult {
+	if len(results) == 0 {
+		return nil
 	}
 	hints := buildSearchQueryHints(query)
 	scored := make([]scoredResult, 0, len(results))
@@ -478,6 +486,14 @@ func rerankSearchResults(query string, results []ddgResult) []ddgResult {
 		}
 		return scored[i].score > scored[j].score
 	})
+	return scored
+}
+
+func rerankSearchResults(query string, results []ddgResult) []ddgResult {
+	if len(results) < 2 {
+		return results
+	}
+	scored := rankSearchResults(query, results)
 	out := make([]ddgResult, 0, len(scored))
 	for _, item := range scored {
 		out = append(out, item.result)
@@ -614,6 +630,17 @@ func scoreSearchResult(hints searchQueryHints, item ddgResult) int {
 		score += 8
 	}
 	return score
+}
+
+func confidenceForSearchScore(score int) string {
+	switch {
+	case score >= 95:
+		return "high"
+	case score >= 55:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 func repoNameFromCandidate(value string) string {

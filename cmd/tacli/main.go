@@ -579,6 +579,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: r.debugToolCallCommand(fields), exitCode: -1}
 	case "/debug-turn":
 		return runtimeCommandResult{handled: true, output: r.debugTurnCommand(fields), exitCode: -1}
+	case "/debug-runtime":
+		return runtimeCommandResult{handled: true, output: r.debugRuntimeCommand(), exitCode: -1}
 	case "/trace":
 		return runtimeCommandResult{handled: true, output: r.traceCommand(fields), exitCode: -1}
 	case "/scope":
@@ -627,10 +629,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		role := backgroundRoleGeneral
+		isolation := "shared"
 		if snap, ok := r.jobs.Snapshot(id); ok {
 			role = normalizeBackgroundRole(snap.Role)
+			isolation = normalizeBackgroundIsolation(snap.Role, snap.Isolation)
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), role), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s isolation=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), role, isolation), exitCode: -1}
 	case "/bg-role":
 		if len(fields) < 3 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.bgrole.usage"), exitCode: -1}
@@ -642,10 +646,12 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		normalized := normalizeBackgroundRole(role)
+		isolation := "shared"
 		if snap, ok := r.jobs.Snapshot(id); ok {
 			normalized = normalizeBackgroundRole(snap.Role)
+			isolation = normalizeBackgroundIsolation(snap.Role, snap.Isolation)
 		}
-		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), normalized), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s isolation=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), normalized, isolation), exitCode: -1}
 	case "/jobs":
 		return runtimeCommandResult{handled: true, output: formatJobList(r.jobs.List()), exitCode: -1}
 	case "/job":
@@ -3806,6 +3812,33 @@ func (r *chatRuntime) debugTurnCommand(fields []string) string {
 		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+func (r *chatRuntime) debugRuntimeCommand() string {
+	if r == nil || r.session == nil {
+		return "runtime stats unavailable"
+	}
+	stats := r.session.RuntimeStats()
+	lines := []string{
+		fmt.Sprintf("turns=%d", stats.Turns),
+		fmt.Sprintf("assistant_calls=%d", stats.AssistantCalls),
+		fmt.Sprintf("tool_calls=%d", stats.ToolCalls),
+		fmt.Sprintf("tool_errors=%d", stats.ToolErrors),
+		fmt.Sprintf("compactions=%d", stats.Compactions),
+		fmt.Sprintf("retry_compactions=%d", stats.RetryCompactions),
+		fmt.Sprintf("context_retries=%d", stats.ContextRetries),
+		fmt.Sprintf("token_scale=%.3f", stats.TokenScale),
+	}
+	if stats.LastPromptTokens > 0 {
+		lines = append(lines, fmt.Sprintf("last_prompt_tokens=%d", stats.LastPromptTokens))
+	}
+	if stats.LastPromptApprox > 0 {
+		lines = append(lines, fmt.Sprintf("last_prompt_approx=%d", stats.LastPromptApprox))
+	}
+	if stats.LastUsageAtTurn > 0 {
+		lines = append(lines, fmt.Sprintf("last_usage_turn=%d", stats.LastUsageAtTurn))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func turnToolNames(calls []model.ToolCall) []string {

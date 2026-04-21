@@ -18,10 +18,19 @@ type JobControl interface {
 	Snapshot(id string) (BackgroundJobSnapshot, bool)
 }
 
+type BackgroundStartOptions struct {
+	Isolation string
+}
+
+type JobControlWithOptions interface {
+	StartWithRoleAndOptions(role, task string, opts BackgroundStartOptions) (string, error)
+}
+
 type BackgroundJobSnapshot struct {
 	ID         string
 	Status     string
 	Role       string
+	Isolation  string
 	Model      string
 	TaskCount  int
 	Queued     int
@@ -85,6 +94,11 @@ func (t *startBackgroundJobTool) Definition() model.Tool {
 						"type":        "string",
 						"description": "Optional role: general|explore|plan|implement|verify",
 					},
+					"isolation": map[string]any{
+						"type":        "string",
+						"description": "Optional execution isolation: shared|read_only. Defaults to read_only for explore/verify and shared otherwise.",
+						"enum":        []string{"shared", "read_only"},
+					},
 					"task": map[string]any{
 						"type":        "string",
 						"description": "Subtask instructions for the background agent",
@@ -97,13 +111,14 @@ func (t *startBackgroundJobTool) Definition() model.Tool {
 
 func (t *startBackgroundJobTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
-		Role string `json:"role"`
-		Task string `json:"task"`
+		Role      string `json:"role"`
+		Isolation string `json:"isolation"`
+		Task      string `json:"task"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
 	}
-	id, err := t.jobs.StartWithRole(args.Role, args.Task)
+	id, err := startBackgroundWithOptions(t.jobs, args.Role, args.Task, BackgroundStartOptions{Isolation: args.Isolation})
 	if err != nil {
 		return "", err
 	}
@@ -134,6 +149,9 @@ func (t *listBackgroundJobsTool) Call(_ context.Context, _ json.RawMessage) (str
 		line := fmt.Sprintf("%s status=%s tasks=%d", snap.ID, snap.Status, snap.TaskCount)
 		if strings.TrimSpace(snap.Role) != "" {
 			line += " role=" + snap.Role
+		}
+		if strings.TrimSpace(snap.Isolation) != "" {
+			line += " isolation=" + snap.Isolation
 		}
 		if snap.Queued > 0 {
 			line += fmt.Sprintf(" queued=%d", snap.Queued)
@@ -183,6 +201,7 @@ func (t *inspectBackgroundJobTool) Call(_ context.Context, raw json.RawMessage) 
 		"id=" + snap.ID,
 		"status=" + snap.Status,
 		"role=" + snap.Role,
+		"isolation=" + backgroundIsolationLabel(snap.Isolation),
 		fmt.Sprintf("tasks=%d", snap.TaskCount),
 		fmt.Sprintf("queued=%d", snap.Queued),
 	}
@@ -253,6 +272,11 @@ func (t *delegateSubagentTool) Definition() model.Tool {
 						"type":        "string",
 						"description": "Optional role: general|explore|plan|implement|verify",
 					},
+					"isolation": map[string]any{
+						"type":        "string",
+						"description": "Optional execution isolation: shared|read_only.",
+						"enum":        []string{"shared", "read_only"},
+					},
 					"task": map[string]any{
 						"type":        "string",
 						"description": "Concrete subtask instructions for the delegated subagent",
@@ -265,13 +289,14 @@ func (t *delegateSubagentTool) Definition() model.Tool {
 
 func (t *delegateSubagentTool) Call(_ context.Context, raw json.RawMessage) (string, error) {
 	var args struct {
-		Role string `json:"role"`
-		Task string `json:"task"`
+		Role      string `json:"role"`
+		Isolation string `json:"isolation"`
+		Task      string `json:"task"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return "", fmt.Errorf("decode args: %w", err)
 	}
-	id, err := t.jobs.StartWithRole(args.Role, args.Task)
+	id, err := startBackgroundWithOptions(t.jobs, args.Role, args.Task, BackgroundStartOptions{Isolation: args.Isolation})
 	if err != nil {
 		return "", err
 	}
@@ -279,6 +304,21 @@ func (t *delegateSubagentTool) Call(_ context.Context, raw json.RawMessage) (str
 		return fmt.Sprintf("delegated subagent job %s", id), nil
 	}
 	return fmt.Sprintf("delegated subagent job %s role=%s", id, strings.TrimSpace(args.Role)), nil
+}
+
+func startBackgroundWithOptions(jobs JobControl, role, task string, opts BackgroundStartOptions) (string, error) {
+	if withOpts, ok := jobs.(JobControlWithOptions); ok {
+		return withOpts.StartWithRoleAndOptions(role, task, opts)
+	}
+	return jobs.StartWithRole(role, task)
+}
+
+func backgroundIsolationLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "shared"
+	}
+	return value
 }
 
 func SingleLineText(text string) string {

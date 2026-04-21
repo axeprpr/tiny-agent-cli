@@ -11,6 +11,7 @@ import (
 type fakeJobControl struct {
 	startedRole string
 	startedTask string
+	isolation   string
 	startedID   string
 }
 
@@ -23,6 +24,14 @@ func (f *fakeJobControl) Start(task string) (string, error) {
 func (f *fakeJobControl) StartWithRole(role, task string) (string, error) {
 	f.startedRole = role
 	f.startedTask = task
+	f.startedID = "job-role"
+	return f.startedID, nil
+}
+
+func (f *fakeJobControl) StartWithRoleAndOptions(role, task string, opts BackgroundStartOptions) (string, error) {
+	f.startedRole = role
+	f.startedTask = task
+	f.isolation = opts.Isolation
 	f.startedID = "job-role"
 	return f.startedID, nil
 }
@@ -40,7 +49,7 @@ func (f *fakeJobControl) Snapshot(_ string) (BackgroundJobSnapshot, bool) {
 func TestDelegateSubagentToolStartsRoleTask(t *testing.T) {
 	jobs := &fakeJobControl{}
 	tool := newDelegateSubagentTool(jobs)
-	raw := json.RawMessage(`{"role":"verify","task":"Run tests and summarize failures"}`)
+	raw := json.RawMessage(`{"role":"verify","isolation":"read_only","task":"Run tests and summarize failures"}`)
 	got, err := tool.Call(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("delegate_subagent call failed: %v", err)
@@ -50,6 +59,9 @@ func TestDelegateSubagentToolStartsRoleTask(t *testing.T) {
 	}
 	if jobs.startedTask != "Run tests and summarize failures" {
 		t.Fatalf("unexpected task: %q", jobs.startedTask)
+	}
+	if jobs.isolation != "read_only" {
+		t.Fatalf("unexpected isolation: %q", jobs.isolation)
 	}
 	if !strings.Contains(got, "job-role") {
 		t.Fatalf("unexpected output: %q", got)
@@ -73,4 +85,3 @@ func TestRegistryIncludesDelegateSubagentWhenJobsEnabled(t *testing.T) {
 		t.Fatalf("unexpected preview: %q", preview)
 	}
 }
-

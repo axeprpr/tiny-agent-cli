@@ -60,8 +60,14 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 	})
 
 	turn := 0
+	turnBudget := deliberationTurnBudget(task, s.mode)
 	for {
 		turn++
+		if turnBudget > 0 && turn > turnBudget {
+			final := fmt.Sprintf("Stopped after reaching the deliberation budget (%d turns). If you want deeper work, ask me to continue with a narrower scope or explicitly raise the budget.", turnBudget)
+			s.agent.logf("stopping after deliberation budget: turns=%d budget=%d\n", turn-1, turnBudget)
+			return Result{Final: final, Steps: len(s.turns)}, nil
+		}
 		s.injectQueuedSteeringMessages()
 		s.maybeInjectTodoReminder()
 		s.compactForContext()
@@ -73,10 +79,12 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 		req := s.buildRequest()
 		s.agent.logModelRequest(turn, req)
 		s.agent.emitEvent(ctx, "model_request", map[string]any{
-			"turn":          turn,
-			"messages":      len(req.Messages),
-			"tools":         len(req.Tools),
-			"approx_tokens": conversationSize(req.Messages),
+			"turn":             turn,
+			"turn_budget":      turnBudget,
+			"messages":         len(req.Messages),
+			"tools":            len(req.Tools),
+			"approx_tokens":    conversationSize(req.Messages),
+			"estimated_tokens": s.conversationTokens(),
 		})
 		const maxContextRetries = 2
 		var (
@@ -94,6 +102,7 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 			if !s.compactForRetry() {
 				break
 			}
+			s.contextRetries++
 			s.agent.logf("context too long, retrying with shorter history\n")
 			req = s.buildRequest()
 			s.agent.logModelRequest(turn, req)
@@ -104,6 +113,7 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 		if len(resp.Choices) == 0 {
 			return Result{}, fmt.Errorf("model returned no choices")
 		}
+		s.updatePromptTokenCalibration(req.Messages, resp.Usage, turn)
 
 		msg := resp.Choices[0].Message
 		s.agent.logModelResponse(turn, msg)
@@ -135,6 +145,7 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 	})
 
 	turn := 0
+	turnBudget := deliberationTurnBudget(task, s.mode)
 	var streamFilter model.ThinkingTagFilter
 	emitToken := onToken
 	if onToken != nil {
@@ -148,6 +159,11 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 
 	for {
 		turn++
+		if turnBudget > 0 && turn > turnBudget {
+			final := fmt.Sprintf("Stopped after reaching the deliberation budget (%d turns). If you want deeper work, ask me to continue with a narrower scope or explicitly raise the budget.", turnBudget)
+			s.agent.logf("stopping after deliberation budget: turns=%d budget=%d\n", turn-1, turnBudget)
+			return Result{Final: final, Steps: len(s.turns)}, nil
+		}
 		s.injectQueuedSteeringMessages()
 		s.maybeInjectTodoReminder()
 		s.compactForContext()
@@ -159,10 +175,12 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 		req := s.buildRequest()
 		s.agent.logModelRequest(turn, req)
 		s.agent.emitEvent(ctx, "model_request", map[string]any{
-			"turn":          turn,
-			"messages":      len(req.Messages),
-			"tools":         len(req.Tools),
-			"approx_tokens": conversationSize(req.Messages),
+			"turn":             turn,
+			"turn_budget":      turnBudget,
+			"messages":         len(req.Messages),
+			"tools":            len(req.Tools),
+			"approx_tokens":    conversationSize(req.Messages),
+			"estimated_tokens": s.conversationTokens(),
 		})
 
 		chunks, errc := s.agent.streamClient.CompleteStream(ctx, req)
@@ -218,6 +236,7 @@ func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string,
 		if err := <-errc; err != nil {
 			if isContextLengthError(err) {
 				if s.compactForRetry() {
+					s.contextRetries++
 					s.agent.logf("context too long, retrying\n")
 					continue
 				}
@@ -367,6 +386,48 @@ func (r *ConversationRuntime) handleTurnResult(ctx context.Context, turn int, ms
 		result := Result{Final: decision.final}
 		return &result, false
 	}
+}
+
+func deliberationTurnBudget(task, mode string) int {
+	lower := strings.ToLower(strings.TrimSpace(task))
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mode)), "background:") {
+		return 22
+	}
+	budget := 10
+	if len(task) > 320 {
+		budget += 3
+	}
+	if len(task) > 900 {
+		budget += 3
+	}
+	complexityHints := []string{
+		"deep", "thorough", "architecture", "refactor", "migration", "benchmark", "review",
+		"end-to-end", "e2e", "integration", "parallel", "subagent", "background",
+		"深入", "全面", "架构", "重构", "迁移", "压测", "评审", "并行",
+	}
+	for _, hint := range complexityHints {
+		if strings.Contains(lower, hint) {
+			budget += 2
+			break
+		}
+	}
+	mutationHints := []string{
+		"implement", "fix", "patch", "write", "edit", "create", "modify", "test",
+		"实现", "修复", "补丁", "写入", "修改", "测试",
+	}
+	for _, hint := range mutationHints {
+		if strings.Contains(lower, hint) {
+			budget += 2
+			break
+		}
+	}
+	if budget < 6 {
+		return 6
+	}
+	if budget > 24 {
+		return 24
+	}
+	return budget
 }
 
 func (r *ConversationRuntime) executeToolCalls(ctx context.Context, turn int, calls []model.ToolCall) []model.Message {

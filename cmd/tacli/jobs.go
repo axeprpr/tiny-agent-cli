@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +39,7 @@ type jobSnapshot struct {
 	ID         string
 	Status     jobStatus
 	Role       string
+	Isolation  string
 	Model      string
 	TaskCount  int
 	Queued     int
@@ -58,6 +61,7 @@ func (s jobSnapshot) toToolSnapshot() tools.BackgroundJobSnapshot {
 		ID:         s.ID,
 		Status:     string(s.Status),
 		Role:       s.Role,
+		Isolation:  s.Isolation,
 		Model:      s.Model,
 		TaskCount:  s.TaskCount,
 		Queued:     s.Queued,
@@ -71,6 +75,7 @@ func (s jobSnapshot) toToolSnapshot() tools.BackgroundJobSnapshot {
 type backgroundJob struct {
 	id      string
 	role    string
+	isol    string
 	model   string
 	session *agent.Session
 	cancel  context.CancelFunc
@@ -106,6 +111,7 @@ func (j *backgroundJob) snapshot() jobSnapshot {
 		ID:         j.id,
 		Status:     j.status,
 		Role:       j.role,
+		Isolation:  j.isol,
 		Model:      j.model,
 		TaskCount:  j.taskCount,
 		Queued:     j.queued,
@@ -193,19 +199,24 @@ func (m *jobManager) Start(task string) (string, error) {
 		}
 	}
 
-	return m.startWithResolvedRole(role, task, false)
+	return m.startWithResolvedRole(role, task, false, "")
 }
 
 func (m *jobManager) StartWithRole(role, task string) (string, error) {
+	return m.StartWithRoleAndOptions(role, task, tools.BackgroundStartOptions{})
+}
+
+func (m *jobManager) StartWithRoleAndOptions(role, task string, opts tools.BackgroundStartOptions) (string, error) {
 	explicitRole := strings.TrimSpace(role) != ""
 	if !explicitRole {
 		role = routeBackgroundRole(task)
 	}
-	return m.startWithResolvedRole(role, task, explicitRole)
+	return m.startWithResolvedRole(role, task, explicitRole, opts.Isolation)
 }
 
-func (m *jobManager) startWithResolvedRole(role, task string, explicitRole bool) (string, error) {
+func (m *jobManager) startWithResolvedRole(role, task string, explicitRole bool, isolation string) (string, error) {
 	role = normalizeBackgroundRole(role)
+	isolation = normalizeBackgroundIsolation(role, isolation)
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return "", fmt.Errorf("usage: /bg <task>")
@@ -222,13 +233,13 @@ func (m *jobManager) startWithResolvedRole(role, task string, explicitRole bool)
 	if err := ensureBackgroundTaskContract(m.cfg.WorkDir, role, task); err != nil {
 		return "", err
 	}
-	id, err := m.startSingleJob(role, task)
+	id, err := m.startSingleJob(role, task, isolation)
 	if err != nil {
 		return "", err
 	}
 	if shouldPairBackgroundVerify(role, explicitRole) {
 		verifyTask := buildVerifyFollowupTask(task)
-		verifyID, verifyErr := m.startSingleJob(backgroundRoleVerify, verifyTask)
+		verifyID, verifyErr := m.startSingleJob(backgroundRoleVerify, verifyTask, "read_only")
 		if verifyErr != nil {
 			m.notify(fmt.Sprintf("%s verify pairing skipped: %s", id, compactJobText(verifyErr.Error(), 120)))
 		} else {
@@ -238,7 +249,7 @@ func (m *jobManager) startWithResolvedRole(role, task string, explicitRole bool)
 	return id, nil
 }
 
-func (m *jobManager) startSingleJob(role, task string) (string, error) {
+func (m *jobManager) startSingleJob(role, task, isolation string) (string, error) {
 	m.mu.Lock()
 	if m.activeJobsLocked() >= maxActiveBackgroundJobs {
 		m.mu.Unlock()
@@ -248,13 +259,20 @@ func (m *jobManager) startSingleJob(role, task string) (string, error) {
 	id := fmt.Sprintf("job-%03d", m.nextID)
 	bgCfg := m.cfg
 	memoryText := m.memory
-	bgCfg.ApprovalMode = tools.ApprovalDangerously
+	bgCfg.StateDir = filepath.Join(bgCfg.StateDir, "jobs", id)
+	_ = os.MkdirAll(bgCfg.StateDir, 0o755)
+	if isolation == "read_only" {
+		bgCfg.ApprovalMode = tools.PermissionModeReadOnly
+	} else {
+		bgCfg.ApprovalMode = tools.ApprovalDangerously
+	}
 	bgApprover := tools.NewTerminalApprover(nil, io.Discard, bgCfg.ApprovalMode, false)
 	logWriter := &backgroundLogWriter{manager: m, jobID: id}
 	loop := buildAgentWith(bgCfg, bgApprover, logWriter, nil, loadRuntimePolicy(bgCfg))
 	job := &backgroundJob{
 		id:        id,
 		role:      role,
+		isol:      isolation,
 		model:     bgCfg.Model,
 		session:   loop.NewSessionWithPrompt(promptContextFor(bgCfg, loop, "background:"+role, memoryText)),
 		status:    jobQueued,
@@ -493,6 +511,7 @@ func (m *jobManager) Restore(raw json.RawMessage) error {
 		job := &backgroundJob{
 			id:         snap.ID,
 			role:       normalizeBackgroundRole(snap.Role),
+			isol:       normalizeBackgroundIsolation(snap.Role, snap.Isolation),
 			model:      snap.Model,
 			status:     snap.Status,
 			taskCount:  snap.TaskCount,
@@ -742,6 +761,7 @@ func formatJobList(snaps []jobSnapshot) string {
 	for _, snap := range snaps {
 		line := fmt.Sprintf("%s  %s  tasks=%d", snap.ID, snap.Status, snap.TaskCount)
 		line += "  role=" + normalizeBackgroundRole(snap.Role)
+		line += "  isolation=" + normalizeBackgroundIsolation(snap.Role, snap.Isolation)
 		if snap.Queued > 0 {
 			line += fmt.Sprintf("  queued=%d", snap.Queued)
 		}
@@ -769,6 +789,7 @@ func formatJobSnapshot(snap jobSnapshot) string {
 		"id=" + snap.ID,
 		"status=" + string(snap.Status),
 		"role=" + normalizeBackgroundRole(snap.Role),
+		"isolation=" + normalizeBackgroundIsolation(snap.Role, snap.Isolation),
 		"model=" + snap.Model,
 		fmt.Sprintf("tasks=%d", snap.TaskCount),
 		fmt.Sprintf("queued=%d", snap.Queued),
@@ -807,6 +828,7 @@ func summarizeJobForSession(snap jobSnapshot) string {
 		fmt.Sprintf("[background job %s]", snap.ID),
 		"status: " + string(snap.Status),
 		"role: " + normalizeBackgroundRole(snap.Role),
+		"isolation: " + normalizeBackgroundIsolation(snap.Role, snap.Isolation),
 	}
 	if strings.TrimSpace(snap.LastPrompt) != "" {
 		lines = append(lines, "last prompt: "+compactJobText(snap.LastPrompt, 240))
@@ -837,6 +859,10 @@ func (a jobToolAdapter) Start(task string) (string, error) {
 
 func (a jobToolAdapter) StartWithRole(role, task string) (string, error) {
 	return a.manager.StartWithRole(role, task)
+}
+
+func (a jobToolAdapter) StartWithRoleAndOptions(role, task string, opts tools.BackgroundStartOptions) (string, error) {
+	return a.manager.StartWithRoleAndOptions(role, task, opts)
 }
 
 func (a jobToolAdapter) Send(id, task string) error {
@@ -1007,6 +1033,21 @@ func normalizeBackgroundRole(role string) string {
 		return backgroundRoleGeneral
 	}
 	return role
+}
+
+func normalizeBackgroundIsolation(role, isolation string) string {
+	switch strings.ToLower(strings.TrimSpace(isolation)) {
+	case "shared":
+		return "shared"
+	case "read_only", "read-only":
+		return "read_only"
+	}
+	switch normalizeBackgroundRole(role) {
+	case backgroundRoleExplore, backgroundRoleVerify:
+		return "read_only"
+	default:
+		return "shared"
+	}
 }
 
 func validateBackgroundRole(role string) error {

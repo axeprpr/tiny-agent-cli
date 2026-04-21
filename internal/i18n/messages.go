@@ -117,6 +117,7 @@ var messagesEN = map[string]string{
                         Replay the latest audited tool call
   /debug-turn           Show the latest conversation turn summary
   /debug-turn tail [n]
+  /debug-runtime        Show runtime stats (turn/tool/compaction/token calibration)
                         Show recent conversation turn summaries
 
 Or just type naturally -- no command needed for most tasks.`,

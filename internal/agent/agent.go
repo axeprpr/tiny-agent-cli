@@ -87,6 +87,20 @@ type TurnSummary struct {
 	Final       string          `json:"final,omitempty"`
 }
 
+type RuntimeStats struct {
+	Turns            int
+	AssistantCalls   int
+	ToolCalls        int
+	ToolErrors       int
+	Compactions      int
+	RetryCompactions int
+	ContextRetries   int
+	TokenScale       float64
+	LastPromptTokens int
+	LastPromptApprox int
+	LastUsageAtTurn  int
+}
+
 type StreamClient interface {
 	CompleteStream(ctx context.Context, req model.Request) (<-chan model.StreamChunk, <-chan error)
 }
@@ -130,6 +144,13 @@ type Session struct {
 	roundsSinceTodoPatch int
 	roundsSinceContract  int
 	finishGateBlocks     int
+	tokenScale           float64
+	lastPromptTokens     int
+	lastPromptApprox     int
+	lastUsageAtTurn      int
+	compactions          int
+	retryCompactions     int
+	contextRetries       int
 }
 
 func New(client chatClient, registry *tools.Registry, contextWindow int, log io.Writer) *Agent {
@@ -223,6 +244,7 @@ func (a *Agent) NewSessionWithPrompt(prompt PromptContext) *Session {
 		agent: a,
 		role:  role,
 		mode:  mode,
+		tokenScale: 1.0,
 		messages: []model.Message{
 			{Role: "system", Content: BuildSystemPrompt(prompt)},
 		},
@@ -265,6 +287,36 @@ func (s *Session) TurnSummaries() []TurnSummary {
 		out[i].ToolResults = copyMessages(turn.ToolResults)
 	}
 	return out
+}
+
+func (s *Session) RuntimeStats() RuntimeStats {
+	if s == nil {
+		return RuntimeStats{}
+	}
+	stats := RuntimeStats{
+		Turns:            len(s.turns),
+		Compactions:      s.compactions,
+		RetryCompactions: s.retryCompactions,
+		ContextRetries:   s.contextRetries,
+		TokenScale:       s.tokenScale,
+		LastPromptTokens: s.lastPromptTokens,
+		LastPromptApprox: s.lastPromptApprox,
+		LastUsageAtTurn:  s.lastUsageAtTurn,
+	}
+	for _, turn := range s.turns {
+		stats.AssistantCalls++
+		stats.ToolCalls += len(turn.Assistant.ToolCalls)
+		for _, msg := range turn.ToolResults {
+			text := strings.ToLower(strings.TrimSpace(cleanToolOutput(msg.Content)))
+			if strings.HasPrefix(text, "tool error:") {
+				stats.ToolErrors++
+			}
+		}
+	}
+	if stats.TokenScale <= 0 {
+		stats.TokenScale = 1.0
+	}
+	return stats
 }
 
 func (s *Session) ReplaceMessages(messages []model.Message) {
@@ -2044,7 +2096,7 @@ func copyMessages(messages []model.Message) []model.Message {
 
 func (s *Session) compactForContext() bool {
 	limit := contextSoftLimitChars(s.agent.contextWindow)
-	if conversationSize(s.messages) <= limit {
+	if s.conversationTokens() <= limit {
 		return false
 	}
 	trimmed := compactConversation(s.messages, contextTargetChars(s.agent.contextWindow))
@@ -2052,6 +2104,7 @@ func (s *Session) compactForContext() bool {
 		return false
 	}
 	s.messages = trimmed
+	s.compactions++
 	s.agent.logf("compacted conversation to stay within context budget\n")
 	return true
 }
@@ -2062,7 +2115,56 @@ func (s *Session) compactForRetry() bool {
 		return false
 	}
 	s.messages = trimmed
+	s.retryCompactions++
 	return true
+}
+
+func (s *Session) conversationTokens() int {
+	if s == nil {
+		return 0
+	}
+	approx := conversationSize(s.messages)
+	scale := s.tokenScale
+	if scale <= 0 {
+		scale = 1.0
+	}
+	return int(float64(approx)*scale + 0.5)
+}
+
+func (s *Session) updatePromptTokenCalibration(reqMessages []model.Message, usage model.Usage, turn int) {
+	if s == nil {
+		return
+	}
+	prompt := usage.PromptTokens
+	if prompt <= 0 {
+		prompt = usage.InputTokens
+	}
+	if prompt <= 0 && usage.TotalTokens > 0 {
+		prompt = usage.TotalTokens - usage.CompletionTokens
+	}
+	if prompt <= 0 {
+		return
+	}
+	approx := conversationSize(reqMessages)
+	if approx <= 0 {
+		return
+	}
+	scale := float64(prompt) / float64(approx)
+	if scale < 0.4 {
+		scale = 0.4
+	}
+	if scale > 2.5 {
+		scale = 2.5
+	}
+	if s.tokenScale <= 0 {
+		s.tokenScale = scale
+	} else {
+		// Smooth spikes from provider-side accounting noise.
+		s.tokenScale = s.tokenScale*0.7 + scale*0.3
+	}
+	s.lastPromptTokens = prompt
+	s.lastPromptApprox = approx
+	s.lastUsageAtTurn = turn
 }
 
 func contextSoftLimitChars(window int) int {
@@ -2095,13 +2197,38 @@ func truncateToolMessage(text string, limit int) string {
 	if text == "" || limit <= 0 || len(text) <= limit {
 		return text
 	}
+	facts := extractStructuredToolFacts(text, 4)
 
 	head := limit * 3 / 4
 	tail := limit / 4
 	if head <= 0 || tail <= 0 {
-		return text[:limit] + "\n...[truncated]"
+		out := text[:limit] + "\n...[truncated]"
+		return appendFidelityFacts(out, facts)
 	}
-	return text[:head] + "\n...[truncated]...\n" + text[len(text)-tail:]
+	out := text[:head] + "\n...[truncated]...\n" + text[len(text)-tail:]
+	return appendFidelityFacts(out, facts)
+}
+
+func appendFidelityFacts(text string, facts []string) string {
+	if len(facts) == 0 {
+		return text
+	}
+	lines := []string{text}
+	added := 0
+	for _, fact := range facts {
+		if strings.TrimSpace(fact) == "" || strings.Contains(text, fact) {
+			continue
+		}
+		if added == 0 {
+			lines = append(lines, "[fidelity]")
+		}
+		lines = append(lines, fact)
+		added++
+		if added >= 3 {
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func compactConversation(messages []model.Message, limit int) []model.Message {

@@ -396,10 +396,15 @@ func (r *Registry) Preview(name string, raw json.RawMessage) string {
 			compactKeyValue("path", args["path"], 40),
 		)
 	case "start_background_job":
-		return compactPreviewString(args["task"], 80)
+		return joinPreviewParts(
+			compactKeyValue("role", args["role"], 20),
+			compactKeyValue("isolation", args["isolation"], 16),
+			compactKeyValue("task", args["task"], 80),
+		)
 	case "delegate_subagent":
 		return joinPreviewParts(
 			compactKeyValue("role", args["role"], 24),
+			compactKeyValue("isolation", args["isolation"], 16),
 			compactKeyValue("task", args["task"], 80),
 		)
 	case "send_background_job":

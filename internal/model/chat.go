@@ -18,10 +18,19 @@ type Request struct {
 
 type Response struct {
 	Choices []Choice `json:"choices"`
+	Usage   Usage    `json:"usage,omitempty"`
 }
 
 type Choice struct {
 	Message Message `json:"message"`
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+	InputTokens      int `json:"input_tokens,omitempty"`
+	OutputTokens     int `json:"output_tokens,omitempty"`
 }
 
 type Message struct {

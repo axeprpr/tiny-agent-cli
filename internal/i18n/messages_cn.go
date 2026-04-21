@@ -111,6 +111,7 @@ var messagesCN = map[string]string{
                         重放最近一次已审计的工具调用
   /debug-turn           显示最近一次对话回合摘要
   /debug-turn tail [n]
+  /debug-runtime        显示运行时统计（回合/工具/压缩/Token 校准）
                         显示最近几次对话回合摘要
 
 直接输入自然语言即可，大多数情况不需要命令。`,

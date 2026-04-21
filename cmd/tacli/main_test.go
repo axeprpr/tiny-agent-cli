@@ -153,14 +153,15 @@ func TestWithDangerouslyFlag(t *testing.T) {
 
 func TestResolveChatSessionName(t *testing.T) {
 	now := time.Date(2026, time.March, 20, 14, 5, 6, 0, time.FixedZone("CST", 8*3600))
+	defaultName := defaultChatSessionName(now)
 
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
-		{name: "blank creates new session", input: "", want: "chat-20260320-060506"},
-		{name: "new creates new session", input: "new", want: "chat-20260320-060506"},
+		{name: "blank creates new session", input: "", want: defaultName},
+		{name: "new creates new session", input: "new", want: defaultName},
 		{name: "explicit session kept", input: "bugfix", want: "bugfix"},
 	}
 
