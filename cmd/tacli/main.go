@@ -305,10 +305,6 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		if useNativeChatInputMode() {
-			runtime.rebuildLoopWithLog(io.Discard)
-			return runChatNative(runtime, reader)
-		}
 		return runChatTUI(runtime)
 	}
 
@@ -342,96 +338,6 @@ func runChat(args []string) int {
 	}
 	runtime.beforeExit(true)
 	return 0
-}
-
-func useNativeChatInputMode() bool {
-	// Native mode is the default whenever fullscreen TUI is not enabled.
-	return !useAltScreenMode()
-}
-
-func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
-	if reader == nil {
-		reader = bufio.NewReader(os.Stdin)
-	}
-	fmt.Fprintf(os.Stdout, "tacli %s  model=%s  (native input)\n", strings.TrimSpace(version), strings.TrimSpace(runtime.cfg.Model))
-	fmt.Fprintln(os.Stdout, "输入问题开始对话，/help 查看命令，/exit 退出")
-	for {
-		fmt.Fprint(os.Stdout, "> ")
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
-			runtime.beforeExit(true)
-			return 1
-		}
-
-		task := strings.TrimSpace(normalizeNativeInputLine(line))
-		if task != "" {
-			if strings.HasPrefix(task, "/") {
-				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
-				result := runtime.executeCommand(task)
-				if result.handled {
-					if strings.TrimSpace(result.output) != "" {
-						fmt.Fprintln(os.Stdout, result.output)
-					}
-					if result.exitCode >= 0 {
-						runtime.beforeExit(true)
-						return result.exitCode
-					}
-				}
-			} else {
-				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "running"))
-				output, runErr := runtime.executeTask(context.Background(), task)
-				if runErr != nil {
-					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
-				} else if strings.TrimSpace(output) != "" {
-					fmt.Fprintln(os.Stdout, output)
-				} else {
-					fmt.Fprintln(os.Stdout)
-				}
-				fmt.Fprintln(os.Stdout, nativeStatusLine(runtime, "ready"))
-			}
-		}
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-	runtime.beforeExit(true)
-	return 0
-}
-
-func normalizeNativeInputLine(s string) string {
-	if s == "" {
-		return ""
-	}
-	// Handle terminals that may send backspace/delete control chars literally.
-	// We normalize at rune granularity so CJK input behaves correctly.
-	buf := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch r {
-		case '\b', 0x7f:
-			if len(buf) > 0 {
-				buf = buf[:len(buf)-1]
-			}
-		case '\r':
-			// Ignore CR to keep LF-only normalization.
-		default:
-			buf = append(buf, r)
-		}
-	}
-	return string(buf)
-}
-
-func nativeStatusLine(runtime *chatRuntime, state string) string {
-	modelName := ""
-	if runtime != nil {
-		modelName = strings.TrimSpace(runtime.cfg.Model)
-	}
-	state = strings.TrimSpace(strings.ToLower(state))
-	if state == "" {
-		state = "ready"
-	}
-	return fmt.Sprintf("[tacli %s] model=%s status=%s", strings.TrimSpace(version), modelName, state)
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {

@@ -481,38 +481,6 @@ func TestDefaultStartupLanguage(t *testing.T) {
 	}
 }
 
-func TestUseNativeChatInputModeTracksFullscreenFlag(t *testing.T) {
-	t.Setenv("TACLI_FULLSCREEN", "1")
-	if useNativeChatInputMode() {
-		t.Fatalf("expected native mode off when fullscreen is enabled")
-	}
-	t.Setenv("TACLI_FULLSCREEN", "0")
-	if !useNativeChatInputMode() {
-		t.Fatalf("expected native mode on when fullscreen is disabled")
-	}
-}
-
-func TestNativeStatusLineIncludesVersionModelAndState(t *testing.T) {
-	r := &chatRuntime{cfg: config.Config{Model: "test-model"}}
-	line := nativeStatusLine(r, "running")
-	if !strings.Contains(line, "tacli "+strings.TrimSpace(version)) {
-		t.Fatalf("missing version in status line: %q", line)
-	}
-	if !strings.Contains(line, "model=test-model") {
-		t.Fatalf("missing model in status line: %q", line)
-	}
-	if !strings.Contains(line, "status=running") {
-		t.Fatalf("missing state in status line: %q", line)
-	}
-}
-
-func TestNormalizeNativeInputLineHandlesCJKBackspace(t *testing.T) {
-	got := normalizeNativeInputLine("你好吗\x7f\n")
-	if got != "你好\n" {
-		t.Fatalf("unexpected normalized line: got %q want %q", got, "你好\n")
-	}
-}
-
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",
