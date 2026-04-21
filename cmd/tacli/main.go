@@ -376,20 +376,12 @@ func runChatPlain(runtime *chatRuntime, reader *bufio.Reader, interactive bool) 
 					}
 				}
 			} else {
-				hadToken := false
-				output, runErr := runtime.executeTaskStreaming(context.Background(), task, func(token string) {
-					clean := sanitizeDisplayText(token)
-					if clean == "" {
-						return
-					}
-					hadToken = true
-					fmt.Fprint(os.Stdout, clean)
-				})
+				output, runErr := runtime.executeTask(context.Background(), task)
 				if runErr != nil {
 					fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
-				} else if !hadToken {
+				} else if strings.TrimSpace(output) != "" {
 					fmt.Fprintln(os.Stdout, output)
-				} else if !strings.HasSuffix(output, "\n") {
+				} else {
 					fmt.Fprintln(os.Stdout)
 				}
 			}
