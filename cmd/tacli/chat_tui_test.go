@@ -737,6 +737,17 @@ func TestSanitizeUserVisibleLogLineStripsAnsiAndCR(t *testing.T) {
 	}
 }
 
+func TestUseAltScreenModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_FULLSCREEN", "1")
+	if !useAltScreenMode() {
+		t.Fatalf("expected alt-screen mode enabled")
+	}
+	t.Setenv("TACLI_FULLSCREEN", "0")
+	if useAltScreenMode() {
+		t.Fatalf("expected alt-screen mode disabled")
+	}
+}
+
 func TestMouseDragCopyMatchesWrappedLineCoordinates(t *testing.T) {
 	r := &chatRuntime{
 		cfg:         config.Config{Model: "test-model"},

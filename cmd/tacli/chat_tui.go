@@ -451,18 +451,25 @@ func runChatTUI(runtime *chatRuntime) int {
 		})
 	}
 
-	p := tea.NewProgram(
-		newChatTUIModel(runtime, events),
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+	opts := []tea.ProgramOption{
 		tea.WithFilter(chatMouseEventFilter),
-	)
+	}
+	if useAltScreenMode() {
+		opts = append(opts, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	}
+
+	p := tea.NewProgram(newChatTUIModel(runtime, events), opts...)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
 		runtime.beforeExit(false)
 		return 1
 	}
 	return 0
+}
+
+func useAltScreenMode() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_FULLSCREEN")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
