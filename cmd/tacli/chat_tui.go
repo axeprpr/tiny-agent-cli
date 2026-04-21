@@ -10,12 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"tiny-agent-cli/internal/i18n"
@@ -205,13 +206,6 @@ type chatKeyMap struct {
 	Newline   key.Binding
 	Interrupt key.Binding
 	Quit      key.Binding
-	Help      key.Binding
-	LineUp    key.Binding
-	LineDown  key.Binding
-	PageDown  key.Binding
-	PageUp    key.Binding
-	Home      key.Binding
-	End       key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
@@ -220,8 +214,7 @@ func (k chatKeyMap) ShortHelp() []key.Binding {
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Interrupt, k.Help, k.Quit},
-		{k.LineUp, k.LineDown, k.PageUp, k.PageDown, k.Home, k.End},
+		{k.Send, k.Newline, k.Interrupt, k.Quit},
 	}
 }
 
@@ -231,7 +224,6 @@ type chatTUIModel struct {
 	chatViewport  viewport.Model
 	input         textarea.Model
 	spinner       spinner.Model
-	help          help.Model
 	keys          chatKeyMap
 	entries       []tuiEntry
 	approval      *tuiApprovalMsg
@@ -240,15 +232,21 @@ type chatTUIModel struct {
 	busy          bool
 	stepText      string
 	statusText    string
-	showFullHelp  bool
 	entriesDirty  bool
 	entriesWidth  int
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
+	entryLines    []int
+	mouseDragOn   bool
+	mouseDragFrom int
+	mouseDragTo   int
+	mdWidth       int
+	mdRenderer    *glamour.TermRenderer
 	pendingScroll int
 	scrollQueued  bool
 	stickToBottom bool
+	lastMouseTime time.Time
 	queuedTasks   []string
 	runningTask   string
 	runningCancel context.CancelFunc
@@ -308,6 +306,7 @@ var (
 	logBodyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	errorBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	codeBodyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	selectBodyStyle  = lipgloss.NewStyle().Background(lipgloss.Color("238")).Foreground(lipgloss.Color("230"))
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -373,19 +372,11 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		input:        ta,
 		spinner:      sp,
 		chatViewport: chatVP,
-		help:         help.New(),
 		keys: chatKeyMap{
 			Send:      key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
 			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
-			Help:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-			LineUp:    key.NewBinding(key.WithKeys("alt+up"), key.WithHelp("alt+up", "scroll up")),
-			LineDown:  key.NewBinding(key.WithKeys("alt+down"), key.WithHelp("alt+down", "scroll down")),
-			PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
-			PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
-			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
-			End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
 		entriesDirty:  true,
 		stickToBottom: true,
@@ -495,6 +486,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	keyHandled := false
 	mouseHandled := false
 	immediateRefresh := false
+	forwardInput := shouldForwardToInput(msg)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -510,9 +502,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			keyHandled = true
 			m.runtime.beforeExit(false)
 			return m, tea.Quit
-		case key.Matches(msg, m.keys.Help):
-			keyHandled = true
-			m.showFullHelp = !m.showFullHelp
 		case key.Matches(msg, m.keys.Interrupt):
 			keyHandled = true
 			if m.interruptForeground() {
@@ -520,30 +509,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entriesDirty = true
 				immediateRefresh = true
 			}
-		case key.Matches(msg, m.keys.LineUp):
-			keyHandled = true
-			m.stickToBottom = false
-			m.chatViewport.ScrollUp(1)
-		case key.Matches(msg, m.keys.LineDown):
-			keyHandled = true
-			m.chatViewport.ScrollDown(1)
-			m.stickToBottom = m.chatViewport.AtBottom()
-		case key.Matches(msg, m.keys.PageUp):
-			keyHandled = true
-			m.stickToBottom = false
-			m.chatViewport.HalfViewUp()
-		case key.Matches(msg, m.keys.PageDown):
-			keyHandled = true
-			m.chatViewport.HalfViewDown()
-			m.stickToBottom = m.chatViewport.AtBottom()
-		case key.Matches(msg, m.keys.Home):
-			keyHandled = true
-			m.stickToBottom = false
-			m.chatViewport.GotoTop()
-		case key.Matches(msg, m.keys.End):
-			keyHandled = true
-			m.chatViewport.GotoBottom()
-			m.stickToBottom = true
 		case key.Matches(msg, m.keys.Newline):
 			keyHandled = true
 			m.input.InsertString("\n")
@@ -613,6 +578,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		mouseHandled = true
+		if shouldThrottleMouse(msg, m.lastMouseTime) {
+			break
+		}
+		if isBurstMouseMsg(msg) {
+			m.lastMouseTime = time.Now()
+		}
 		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
 			m.pendingScroll += delta
 			if !m.scrollQueued {
@@ -620,6 +591,37 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, scheduleMouseScroll())
 			}
 			break
+		}
+		if isLeftMousePress(msg) {
+			if idx, ok := m.entryIndexAtMouse(msg); ok {
+				m.mouseDragOn = true
+				m.mouseDragFrom = idx
+				m.mouseDragTo = idx
+				m.entriesDirty = true
+				immediateRefresh = true
+			}
+			break
+		}
+		if m.mouseDragOn && msg.Action == tea.MouseActionMotion {
+			if idx, ok := m.entryIndexAtMouse(msg); ok {
+				m.mouseDragTo = idx
+				m.entriesDirty = true
+				immediateRefresh = true
+			}
+			break
+		}
+		if m.mouseDragOn && isLeftMouseRelease(msg) {
+			if idx, ok := m.entryIndexAtMouse(msg); ok {
+				m.mouseDragTo = idx
+			}
+			text := selectedEntryText(m.entries, m.mouseDragFrom, m.mouseDragTo)
+			if cmd := copyTextCmd(text); cmd != nil {
+				cmds = append(cmds, cmd)
+				m.statusText = "copied"
+				immediateRefresh = true
+			}
+			m.mouseDragOn = false
+			m.entriesDirty = true
 		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
@@ -732,7 +734,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if !keyHandled && !mouseHandled {
+	if forwardInput && !keyHandled && !mouseHandled {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Dynamic input height
@@ -756,9 +758,6 @@ func (m chatTUIModel) View() string {
 		content,
 		m.renderComposer(),
 		m.renderStatusLine(),
-	}
-	if m.showFullHelp {
-		parts = append(parts, m.help.FullHelpView(m.keys.FullHelp()))
 	}
 	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
@@ -784,9 +783,6 @@ func (m *chatTUIModel) resize(forceRefresh bool) {
 		return
 	}
 	footerHeight := 1
-	if m.showFullHelp {
-		footerHeight = 4
-	}
 	extra := 7 + footerHeight + m.input.Height()
 	contentWidth := max(20, m.width-4)
 	availableHeight := m.height - extra
@@ -832,7 +828,8 @@ func (m *chatTUIModel) renderEntries() string {
 		m.entryBlocks = make([]string, len(visibleEntries))
 	}
 	for i, entry := range visibleEntries {
-		key := fmt.Sprintf("%d|%s|%s", bodyWidth, entry.role, entry.text)
+		selected := m.isEntrySelected(i)
+		key := fmt.Sprintf("%d|%s|%t|%s", bodyWidth, entry.role, selected, entry.text)
 		if m.entryKeys[i] == key && m.entryBlocks[i] != "" {
 			continue
 		}
@@ -881,20 +878,84 @@ func (m *chatTUIModel) renderEntries() string {
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
 			label.Render(entry.role),
-			renderStyledBody(body, bodyWidth, text),
+			m.renderEntryBody(entry, body, bodyWidth, selected),
 		)
 		m.entryKeys[i] = key
 		m.entryBlocks[i] = block
 	}
 
 	rendered := make([]string, 0, len(m.entryBlocks))
-	for _, block := range m.entryBlocks {
+	lines := make([]int, 0, len(m.entryBlocks)*4)
+	for idx, block := range m.entryBlocks {
 		if strings.TrimSpace(block) == "" {
 			continue
 		}
 		rendered = append(rendered, block)
+		height := max(1, lipgloss.Height(block))
+		for i := 0; i < height; i++ {
+			lines = append(lines, idx)
+		}
+		lines = append(lines, -1, -1)
 	}
+	if len(lines) >= 2 {
+		lines = lines[:len(lines)-2]
+	}
+	m.entryLines = lines
 	return strings.Join(rendered, "\n\n")
+}
+
+func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, width int, selected bool) string {
+	text := strings.TrimSpace(entry.text)
+	if text == "" {
+		return ""
+	}
+	var body string
+	if entry.role == "assistant" {
+		body = m.renderMarkdownBody(text, width)
+	} else {
+		body = renderStyledBody(style, width, text)
+	}
+	if selected {
+		body = highlightRenderedBody(width, body)
+	}
+	return body
+}
+
+func (m *chatTUIModel) renderMarkdownBody(text string, width int) string {
+	renderer, err := m.markdownRenderer(width)
+	if err != nil {
+		return renderStyledBody(codeBodyStyle, width, text)
+	}
+	out, err := renderer.Render(text)
+	if err != nil {
+		return renderStyledBody(codeBodyStyle, width, text)
+	}
+	return strings.TrimRight(out, "\n")
+}
+
+func (m *chatTUIModel) markdownRenderer(width int) (*glamour.TermRenderer, error) {
+	if m.mdRenderer != nil && m.mdWidth == width {
+		return m.mdRenderer, nil
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil, err
+	}
+	m.mdRenderer = r
+	m.mdWidth = width
+	return r, nil
+}
+
+func highlightRenderedBody(width int, text string) string {
+	lines := strings.Split(text, "\n")
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, selectBodyStyle.Width(width).Render(line))
+	}
+	return strings.Join(rendered, "\n")
 }
 
 func renderStyledBody(style lipgloss.Style, width int, text string) string {
@@ -991,6 +1052,136 @@ func applyMouseScroll(vp *viewport.Model, delta int) {
 		vp.ScrollUp(-delta)
 	case delta > 0:
 		vp.ScrollDown(delta)
+	}
+}
+
+func isBurstMouseMsg(msg tea.MouseMsg) bool {
+	if msg.Action == tea.MouseActionMotion {
+		return true
+	}
+	_, ok := mouseScrollDelta(msg, 1)
+	return ok
+}
+
+func shouldThrottleMouse(msg tea.MouseMsg, last time.Time) bool {
+	if !isBurstMouseMsg(msg) {
+		return false
+	}
+	if last.IsZero() {
+		return false
+	}
+	return time.Since(last) < 15*time.Millisecond
+}
+
+func isLeftMousePress(msg tea.MouseMsg) bool {
+	return msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
+}
+
+func isLeftMouseRelease(msg tea.MouseMsg) bool {
+	return msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft
+}
+
+func copyTextCmd(text string) tea.Cmd {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		_ = clipboard.WriteAll(text)
+		return nil
+	}
+}
+
+func selectedEntryText(entries []tuiEntry, from, to int) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	if from > to {
+		from, to = to, from
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to >= len(entries) {
+		to = len(entries) - 1
+	}
+	if from > to {
+		return ""
+	}
+	parts := make([]string, 0, to-from+1)
+	for i := from; i <= to; i++ {
+		text := strings.TrimSpace(entries[i].text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func selectedEntryRange(from, to, total int) (int, int, bool) {
+	if total <= 0 {
+		return 0, 0, false
+	}
+	if from > to {
+		from, to = to, from
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to >= total {
+		to = total - 1
+	}
+	if from > to {
+		return 0, 0, false
+	}
+	return from, to, true
+}
+
+func (m chatTUIModel) isEntrySelected(idx int) bool {
+	if !m.mouseDragOn {
+		return false
+	}
+	start, end, ok := selectedEntryRange(m.mouseDragFrom, m.mouseDragTo, len(m.entries))
+	if !ok {
+		return false
+	}
+	return idx >= start && idx <= end
+}
+
+func (m chatTUIModel) chatViewportTop() int {
+	top := lipgloss.Height(m.renderHeader())
+	if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
+		top += lipgloss.Height(todo)
+	}
+	return top
+}
+
+func (m chatTUIModel) entryIndexAtMouse(msg tea.MouseMsg) (int, bool) {
+	if m.chatViewport.Height <= 0 {
+		return -1, false
+	}
+	relY := msg.Y - m.chatViewportTop()
+	if relY < 0 || relY >= m.chatViewport.Height {
+		return -1, false
+	}
+	line := m.chatViewport.YOffset + relY
+	if line < 0 || line >= len(m.entryLines) {
+		return -1, false
+	}
+	idx := m.entryLines[line]
+	if idx < 0 || idx >= len(m.entries) {
+		return -1, false
+	}
+	return idx, true
+}
+
+func shouldForwardToInput(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg, tea.WindowSizeMsg:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1172,9 +1363,6 @@ func (m chatTUIModel) desiredInputHeight() int {
 		return lines
 	}
 	footerHeight := 1
-	if m.showFullHelp {
-		footerHeight = 4
-	}
 	maxVisible := m.height - (7 + footerHeight + 6)
 	if maxVisible < 1 {
 		maxVisible = 1

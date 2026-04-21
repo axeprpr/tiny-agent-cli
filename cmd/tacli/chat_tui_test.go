@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -134,7 +133,7 @@ func TestResizeKeepsViewportPinnedToBottomWhenComposerHeightChanges(t *testing.T
 		height:        18,
 		chatViewport:  viewport.New(76, 8),
 		input:         textarea.New(),
-		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
+		entries:       []tuiEntry{{role: "system", text: strings.Repeat("line\n", 24)}},
 		entriesDirty:  true,
 		stickToBottom: true,
 	}
@@ -158,14 +157,14 @@ func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
 		height:        18,
 		chatViewport:  viewport.New(76, 6),
 		input:         textarea.New(),
-		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
+		entries:       []tuiEntry{{role: "system", text: strings.Repeat("line\n", 300)}},
 		entriesDirty:  true,
 		stickToBottom: false,
 	}
 
 	m.resize(true)
 	m.chatViewport.SetYOffset(2)
-	m.entries = append(m.entries, tuiEntry{role: "assistant", text: "new line"})
+	m.entries = append(m.entries, tuiEntry{role: "system", text: "new line"})
 	m.entriesDirty = true
 	m.refreshViewports(false)
 
@@ -239,29 +238,6 @@ func TestDesiredInputHeightGrowsBeyondFiveLinesWhenSpaceAllows(t *testing.T) {
 	}
 }
 
-func TestAltUpScrollsChatViewportWithoutEditingInput(t *testing.T) {
-	m := chatTUIModel{
-		chatViewport:  viewport.New(80, 3),
-		input:         textarea.New(),
-		stickToBottom: false,
-		keys: chatKeyMap{
-			LineUp: key.NewBinding(key.WithKeys("alt+up")),
-		},
-	}
-	m.chatViewport.SetContent(strings.Join([]string{
-		"1", "2", "3", "4", "5", "6",
-	}, "\n"))
-	m.chatViewport.SetYOffset(2)
-	m.input.SetValue("first line\nsecond line")
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
-	m = updated.(chatTUIModel)
-
-	if m.chatViewport.YOffset != 1 {
-		t.Fatalf("expected alt+up to scroll chat viewport up by one line, got %d", m.chatViewport.YOffset)
-	}
-}
-
 func TestRenderEntriesPreservesStyleOnClippedMultilineBody(t *testing.T) {
 	oldProfile := lipgloss.ColorProfile()
 	oldDark := lipgloss.HasDarkBackground()
@@ -326,15 +302,18 @@ func TestRenderEntriesKeepsStreamingTextPlain(t *testing.T) {
 	}
 }
 
-func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
+func TestRenderEntriesRendersAssistantMarkdown(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 20),
 		entries:      []tuiEntry{{role: "assistant", text: "# heading\n\n- item"}},
 	}
 
 	got := m.renderEntries()
-	if !strings.Contains(got, "# heading") || !strings.Contains(got, "- item") {
-		t.Fatalf("expected assistant text to remain plain, got %q", got)
+	if !strings.Contains(got, "heading") || !strings.Contains(got, "item") {
+		t.Fatalf("expected assistant markdown to render content, got %q", got)
+	}
+	if strings.Contains(got, "- item") {
+		t.Fatalf("expected assistant markdown list marker to be rendered, got %q", got)
 	}
 }
 
@@ -393,6 +372,7 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 		t.Fatalf("expected wheel event to defer viewport movement, got offset %d", m.chatViewport.YOffset)
 	}
 
+	m.lastMouseTime = time.Time{}
 	updated, _ = m.Update(msg)
 	m = updated.(chatTUIModel)
 	if m.pendingScroll != 6 {
@@ -406,6 +386,140 @@ func TestMouseWheelScrollIsBatched(t *testing.T) {
 	}
 	if m.chatViewport.YOffset != 5 {
 		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestMouseScrollFlushKeepsComposerStable(t *testing.T) {
+	m := chatTUIModel{
+		width:        80,
+		height:       24,
+		chatViewport: viewport.New(80, 3),
+		input:        textarea.New(),
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6", "7", "8",
+	}, "\n"))
+	m.input.SetWidth(20)
+	m.input.SetHeight(2)
+	m.input.SetValue("first line\nsecond line")
+
+	before := m.renderComposer()
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m = updated.(chatTUIModel)
+	updated, _ = m.Update(tuiMouseScrollMsg{})
+	m = updated.(chatTUIModel)
+	after := m.renderComposer()
+
+	if strings.Count(after, "first line") != 1 || strings.Count(after, "second line") != 1 {
+		t.Fatalf("expected composer lines to remain unique after mouse scroll flush, got %q", after)
+	}
+	if !strings.Contains(after, "─") {
+		t.Fatalf("expected composer separator line to remain visible, got %q", after)
+	}
+	if strings.TrimSpace(before) == "" || strings.TrimSpace(after) == "" {
+		t.Fatalf("unexpected empty composer output: before=%q after=%q", before, after)
+	}
+}
+
+func TestMouseWheelEventsAreThrottled(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport:  viewport.New(80, 3),
+		input:         textarea.New(),
+		lastMouseTime: time.Now(),
+	}
+
+	updated, cmd := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m = updated.(chatTUIModel)
+	if cmd != nil {
+		t.Fatalf("expected throttled wheel to skip scheduling")
+	}
+	if m.pendingScroll != 0 || m.scrollQueued {
+		t.Fatalf("expected no queued scroll when throttled, pending=%d queued=%v", m.pendingScroll, m.scrollQueued)
+	}
+}
+
+func TestMouseClickCopiesEntry(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.chatViewport.Height = 4
+	m.entries = []tuiEntry{
+		{role: "assistant", text: "first"},
+		{role: "assistant", text: "second"},
+	}
+	m.entryLines = []int{0, 1}
+
+	press := tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+		X:      1,
+		Y:      m.chatViewportTop() + 1,
+	}
+	updated, cmd := m.Update(press)
+	m = updated.(chatTUIModel)
+	if cmd != nil {
+		t.Fatalf("expected no copy command on mouse press")
+	}
+
+	release := tea.MouseMsg{
+		Action: tea.MouseActionRelease,
+		Button: tea.MouseButtonLeft,
+		X:      1,
+		Y:      m.chatViewportTop() + 1,
+	}
+	updated, cmd = m.Update(release)
+	m = updated.(chatTUIModel)
+	if cmd == nil {
+		t.Fatalf("expected copy command from mouse release")
+	}
+	if m.statusText != "copied" {
+		t.Fatalf("expected copied status, got %q", m.statusText)
+	}
+}
+
+func TestSelectedEntryTextRange(t *testing.T) {
+	entries := []tuiEntry{
+		{role: "assistant", text: "one"},
+		{role: "assistant", text: "two"},
+		{role: "assistant", text: "three"},
+	}
+	got := selectedEntryText(entries, 2, 0)
+	want := "one\n\ntwo\n\nthree"
+	if got != want {
+		t.Fatalf("unexpected selected text: got %q want %q", got, want)
+	}
+}
+
+func TestSelectedEntryRange(t *testing.T) {
+	start, end, ok := selectedEntryRange(3, 1, 5)
+	if !ok || start != 1 || end != 3 {
+		t.Fatalf("unexpected selected range: ok=%v start=%d end=%d", ok, start, end)
+	}
+}
+
+func TestRenderEntriesHighlightsSelectionDuringDrag(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport:  viewport.New(80, 20),
+		entries:       []tuiEntry{{role: "assistant", text: "one"}, {role: "assistant", text: "two"}},
+		mouseDragOn:   true,
+		mouseDragFrom: 0,
+		mouseDragTo:   0,
+	}
+
+	selected := m.renderEntries()
+	m.mouseDragOn = false
+	m.entriesDirty = true
+	m.entryKeys = nil
+	m.entryBlocks = nil
+	plain := m.renderEntries()
+
+	if selected == plain {
+		t.Fatalf("expected selected rendering to differ from plain rendering")
 	}
 }
 
