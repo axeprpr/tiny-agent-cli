@@ -469,26 +469,6 @@ func TestMouseClickCopiesEntry(t *testing.T) {
 	}
 }
 
-func TestSelectedEntryTextRange(t *testing.T) {
-	entries := []tuiEntry{
-		{role: "assistant", text: "one"},
-		{role: "assistant", text: "two"},
-		{role: "assistant", text: "three"},
-	}
-	got := selectedEntryText(entries, 2, 0)
-	want := "one\n\ntwo\n\nthree"
-	if got != want {
-		t.Fatalf("unexpected selected text: got %q want %q", got, want)
-	}
-}
-
-func TestSelectedEntryRange(t *testing.T) {
-	start, end, ok := selectedEntryRange(3, 1, 5)
-	if !ok || start != 1 || end != 3 {
-		t.Fatalf("unexpected selected range: ok=%v start=%d end=%d", ok, start, end)
-	}
-}
-
 func TestBuildOSC52SequenceProducesControlSequence(t *testing.T) {
 	seq := buildOSC52Sequence("copy me")
 	if !strings.Contains(seq, "]52;") {
@@ -496,24 +476,71 @@ func TestBuildOSC52SequenceProducesControlSequence(t *testing.T) {
 	}
 }
 
-func TestRenderEntriesHighlightsSelectionDuringDrag(t *testing.T) {
+func TestSelectedContentTextUsesDisplayCoordinates(t *testing.T) {
 	m := chatTUIModel{
-		chatViewport:  viewport.New(80, 20),
-		entries:       []tuiEntry{{role: "assistant", text: "one"}, {role: "assistant", text: "two"}},
-		mouseDragOn:   true,
-		mouseDragFrom: 0,
-		mouseDragTo:   0,
+		chatViewport: viewport.New(80, 20),
+		entries:      []tuiEntry{{role: "assistant", text: "abcdef"}},
 	}
-
-	selected := m.renderEntries()
-	m.mouseDragOn = false
 	m.entriesDirty = true
-	m.entryKeys = nil
-	m.entryBlocks = nil
-	plain := m.renderEntries()
+	m.refreshViewports(true)
+	all := strings.Split(m.renderEntries(), "\n")
+	if len(all) == 0 {
+		t.Fatalf("expected rendered content")
+	}
+	targetLine := -1
+	for i, line := range all {
+		if strings.Contains(line, "abcdef") {
+			targetLine = i
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("expected body line in rendered entries")
+	}
+	plain := strings.Split(m.renderEntries(), "\n")[targetLine]
+	start := strings.Index(plain, "abcdef")
+	if start < 0 {
+		t.Fatalf("expected abcdef in target line")
+	}
+	m.selStartLine = targetLine
+	m.selEndLine = targetLine
+	m.selStartCol = start + 1
+	m.selEndCol = start + 4
 
+	got := m.selectedContentText()
+	if got != "bcd" {
+		t.Fatalf("unexpected selected substring: got %q want %q", got, "bcd")
+	}
+}
+
+func TestRenderConversationHighlightsSelectionDuringDrag(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	oldDark := lipgloss.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+		lipgloss.SetHasDarkBackground(oldDark)
+	})
+
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 4),
+		entries:      []tuiEntry{{role: "assistant", text: "one\ntwo\nthree"}},
+		selActive:    true,
+	}
+	m.entriesDirty = true
+	m.refreshViewports(true)
+
+	m.selStartLine = 1
+	m.selEndLine = 2
+	m.selStartCol = 0
+	m.selEndCol = 10
+
+	selected := m.renderConversation()
+	m.selActive = false
+	plain := m.renderConversation()
 	if selected == plain {
-		t.Fatalf("expected selected rendering to differ from plain rendering")
+		t.Fatalf("expected selected conversation rendering to differ from plain rendering")
 	}
 }
 

@@ -243,10 +243,6 @@ type chatTUIModel struct {
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
-	entryLines    []int
-	mouseDragOn   bool
-	mouseDragFrom int
-	mouseDragTo   int
 	chatTop       int
 	selActive     bool
 	selStartLine  int
@@ -859,8 +855,7 @@ func (m *chatTUIModel) renderEntries() string {
 		m.entryBlocks = make([]string, len(visibleEntries))
 	}
 	for i, entry := range visibleEntries {
-		selected := m.isEntrySelected(i)
-		key := fmt.Sprintf("%d|%s|%t|%s", bodyWidth, entry.role, selected, entry.text)
+		key := fmt.Sprintf("%d|%s|%s", bodyWidth, entry.role, entry.text)
 		if m.entryKeys[i] == key && m.entryBlocks[i] != "" {
 			continue
 		}
@@ -909,33 +904,23 @@ func (m *chatTUIModel) renderEntries() string {
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
 			label.Render(entry.role),
-			m.renderEntryBody(entry, body, bodyWidth, selected),
+			m.renderEntryBody(entry, body, bodyWidth),
 		)
 		m.entryKeys[i] = key
 		m.entryBlocks[i] = block
 	}
 
 	rendered := make([]string, 0, len(m.entryBlocks))
-	lines := make([]int, 0, len(m.entryBlocks)*4)
-	for idx, block := range m.entryBlocks {
+	for _, block := range m.entryBlocks {
 		if strings.TrimSpace(block) == "" {
 			continue
 		}
 		rendered = append(rendered, block)
-		height := max(1, lipgloss.Height(block))
-		for i := 0; i < height; i++ {
-			lines = append(lines, idx)
-		}
-		lines = append(lines, -1, -1)
 	}
-	if len(lines) >= 2 {
-		lines = lines[:len(lines)-2]
-	}
-	m.entryLines = lines
 	return strings.Join(rendered, "\n\n")
 }
 
-func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, width int, selected bool) string {
+func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, width int) string {
 	text := strings.TrimSpace(entry.text)
 	if text == "" {
 		return ""
@@ -945,11 +930,6 @@ func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, wid
 		body = m.renderMarkdownBody(text, width)
 	} else {
 		body = renderStyledBody(style, width, text)
-	}
-	if selected {
-		// Keep selected content plain to avoid markdown ANSI resetting selection
-		// background, which can make highlighting invisible.
-		body = renderStyledBody(selectBodyStyle, width, text)
 	}
 	return body
 }
@@ -980,15 +960,6 @@ func (m *chatTUIModel) markdownRenderer(width int) (*glamour.TermRenderer, error
 	m.mdRenderer = r
 	m.mdWidth = width
 	return r, nil
-}
-
-func highlightRenderedBody(width int, text string) string {
-	lines := strings.Split(text, "\n")
-	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		rendered = append(rendered, selectBodyStyle.Width(width).Render(line))
-	}
-	return strings.Join(rendered, "\n")
 }
 
 func renderStyledBody(style lipgloss.Style, width int, text string) string {
@@ -1147,63 +1118,6 @@ func writeOSC52(text string) error {
 	return err
 }
 
-func selectedEntryText(entries []tuiEntry, from, to int) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	if from > to {
-		from, to = to, from
-	}
-	if from < 0 {
-		from = 0
-	}
-	if to >= len(entries) {
-		to = len(entries) - 1
-	}
-	if from > to {
-		return ""
-	}
-	parts := make([]string, 0, to-from+1)
-	for i := from; i <= to; i++ {
-		text := strings.TrimSpace(entries[i].text)
-		if text == "" {
-			continue
-		}
-		parts = append(parts, text)
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-func selectedEntryRange(from, to, total int) (int, int, bool) {
-	if total <= 0 {
-		return 0, 0, false
-	}
-	if from > to {
-		from, to = to, from
-	}
-	if from < 0 {
-		from = 0
-	}
-	if to >= total {
-		to = total - 1
-	}
-	if from > to {
-		return 0, 0, false
-	}
-	return from, to, true
-}
-
-func (m chatTUIModel) isEntrySelected(idx int) bool {
-	if !m.mouseDragOn {
-		return false
-	}
-	start, end, ok := selectedEntryRange(m.mouseDragFrom, m.mouseDragTo, len(m.entries))
-	if !ok {
-		return false
-	}
-	return idx >= start && idx <= end
-}
-
 func (m chatTUIModel) contentPosAtMouse(msg tea.MouseMsg) (int, int, bool) {
 	if m.chatViewport.Height <= 0 {
 		return 0, 0, false
@@ -1308,25 +1222,6 @@ func (m chatTUIModel) chatViewportTop() int {
 		top += lipgloss.Height(todo)
 	}
 	return top
-}
-
-func (m chatTUIModel) entryIndexAtMouse(msg tea.MouseMsg) (int, bool) {
-	if m.chatViewport.Height <= 0 {
-		return -1, false
-	}
-	relY := msg.Y - m.chatViewportTop()
-	if relY < 0 || relY >= m.chatViewport.Height {
-		return -1, false
-	}
-	line := m.chatViewport.YOffset + relY
-	if line < 0 || line >= len(m.entryLines) {
-		return -1, false
-	}
-	idx := m.entryLines[line]
-	if idx < 0 || idx >= len(m.entries) {
-		return -1, false
-	}
-	return idx, true
 }
 
 func shouldForwardToInput(msg tea.Msg) bool {
