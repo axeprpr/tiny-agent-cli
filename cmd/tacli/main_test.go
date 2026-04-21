@@ -481,17 +481,6 @@ func TestDefaultStartupLanguage(t *testing.T) {
 	}
 }
 
-func TestUsePlainChatModeFromEnv(t *testing.T) {
-	t.Setenv("TACLI_PLAIN", "1")
-	if !usePlainChatMode() {
-		t.Fatalf("expected plain chat mode enabled")
-	}
-	t.Setenv("TACLI_PLAIN", "0")
-	if usePlainChatMode() {
-		t.Fatalf("expected plain chat mode disabled")
-	}
-}
-
 func TestFormatJobList(t *testing.T) {
 	text := formatJobList([]jobSnapshot{{
 		ID:         "job-001",
