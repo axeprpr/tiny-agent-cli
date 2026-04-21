@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -686,6 +687,99 @@ func TestRenderConversationHighlightsSelectionDuringDrag(t *testing.T) {
 	plain := m.renderConversation()
 	if selected == plain {
 		t.Fatalf("expected selected conversation rendering to differ from plain rendering")
+	}
+}
+
+func TestStartTaskRestartsSpinnerTicks(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.spinner = spinner.New()
+	cmd := m.startTask("hello")
+	if cmd == nil {
+		t.Fatalf("expected startTask to schedule commands")
+	}
+	if !m.busy {
+		t.Fatalf("expected busy state after startTask")
+	}
+	updated, next := m.Update(m.spinner.Tick())
+	_ = updated.(chatTUIModel)
+	if next == nil {
+		t.Fatalf("expected spinner tick to continue while busy")
+	}
+}
+
+func TestSanitizeDisplayTextDropsControlSequences(t *testing.T) {
+	got := sanitizeDisplayText("ab\r\ncd\x1b[31mred\x1b[0m")
+	if strings.Contains(got, "\r") || strings.Contains(got, "\x1b") {
+		t.Fatalf("expected control chars removed, got %q", got)
+	}
+	if !strings.Contains(got, "ab\ncd[31mred[0m") {
+		t.Fatalf("unexpected sanitized output: %q", got)
+	}
+}
+
+func TestMouseDragCopyMatchesWrappedLineCoordinates(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.width = 70
+	m.height = 24
+	m.entries = []tuiEntry{{role: "assistant", text: "prefix alpha beta gamma delta epsilon zeta eta theta"}}
+	m.entriesDirty = true
+	m.resize(true)
+	m.refreshViewports(true)
+
+	lines := m.wrappedContentLines()
+	targetLine := -1
+	startCol := -1
+	for i, line := range lines {
+		plain := ansi.Strip(line)
+		if idx := strings.Index(plain, "gamma"); idx >= 0 {
+			targetLine = i
+			startCol = idx
+			break
+		}
+	}
+	if targetLine < 0 {
+		t.Fatalf("expected wrapped line containing gamma")
+	}
+
+	y := m.chatViewportTop() + (targetLine - m.chatViewport.YOffset)
+	x1 := appStyle.GetPaddingLeft() + startCol
+	x2 := appStyle.GetPaddingLeft() + startCol + 5
+	press := tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x1, Y: y}
+	drag := tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: x2, Y: y}
+	release := tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, X: x2, Y: y}
+
+	updated, _ := m.Update(press)
+	m = updated.(chatTUIModel)
+	updated, _ = m.Update(drag)
+	m = updated.(chatTUIModel)
+	updated, cmd := m.Update(release)
+	m = updated.(chatTUIModel)
+	if cmd == nil {
+		t.Fatalf("expected copy command on drag release")
+	}
+	copyMsg := cmd()
+	updated, _ = m.Update(copyMsg)
+	m = updated.(chatTUIModel)
+	if m.statusText != "copied" {
+		t.Fatalf("expected copied status, got %q", m.statusText)
+	}
+	if got := m.selectedContentText(); got != "gamma" {
+		t.Fatalf("unexpected copied text: got %q want %q", got, "gamma")
 	}
 }
 

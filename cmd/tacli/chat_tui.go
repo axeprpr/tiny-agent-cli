@@ -244,6 +244,7 @@ type chatTUIModel struct {
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
+	renderedBody  string
 	chatTop       int
 	selActive     bool
 	selStartLine  int
@@ -720,16 +721,17 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusText = i18n.T("tui.status.error")
 			}
 		} else {
+			finalText := sanitizeDisplayText(msg.output)
 			// Only add if no streaming entry captured the output
 			hasStreamed := false
 			for _, e := range m.entries {
-				if e.role == "assistant" && strings.TrimSpace(e.text) == strings.TrimSpace(msg.output) {
+				if e.role == "assistant" && strings.TrimSpace(e.text) == strings.TrimSpace(finalText) {
 					hasStreamed = true
 					break
 				}
 			}
 			if !hasStreamed {
-				m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
+				m.entries = append(m.entries, tuiEntry{role: "assistant", text: finalText})
 			}
 			m.statusText = i18n.T("tui.status.ready")
 		}
@@ -752,10 +754,15 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiStreamMsg:
+		token := sanitizeDisplayText(msg.token)
+		if token == "" {
+			cmds = append(cmds, waitForTUIEvent(m.events))
+			break
+		}
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "streaming" {
-			m.entries = append(m.entries, tuiEntry{role: "streaming", text: msg.token})
+			m.entries = append(m.entries, tuiEntry{role: "streaming", text: token})
 		} else {
-			m.entries[len(m.entries)-1].text += msg.token
+			m.entries[len(m.entries)-1].text += token
 		}
 		m.entriesDirty = true
 		if !m.refreshQueued {
@@ -862,7 +869,8 @@ func (m *chatTUIModel) refreshViewports(forceReanchor bool) {
 	if m.chatViewport.Width > 0 {
 		if m.entriesDirty || m.entriesWidth != m.chatViewport.Width {
 			offset := m.chatViewport.YOffset
-			m.chatViewport.SetContent(m.renderEntries())
+			m.renderedBody = m.renderEntries()
+			m.chatViewport.SetContent(m.renderedBody)
 			if m.stickToBottom {
 				m.chatViewport.GotoBottom()
 			} else {
@@ -1229,10 +1237,6 @@ func (m chatTUIModel) selectedContentText() string {
 		if i == endLine {
 			to = min(max(0, endCol), width)
 		}
-		if i == startLine && i == endLine && to <= from {
-			from = 0
-			to = width
-		}
 		out = append(out, sliceByDisplayCols(plain, from, to))
 	}
 	return strings.Trim(strings.Join(out, "\n"), "\n")
@@ -1292,7 +1296,10 @@ func (m chatTUIModel) lineTextAt(globalLine int) (string, bool) {
 }
 
 func (m chatTUIModel) wrappedContentLines() []string {
-	content := m.renderEntries()
+	content := m.renderedBody
+	if strings.TrimSpace(content) == "" {
+		content = m.renderEntries()
+	}
 	if content == "" {
 		return nil
 	}
@@ -1306,6 +1313,27 @@ func (m chatTUIModel) wrappedContentLines() []string {
 		return nil
 	}
 	return strings.Split(view, "\n")
+}
+
+func sanitizeDisplayText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n', '\t':
+			b.WriteRune(r)
+		case '\r':
+			// Drop carriage returns to avoid cursor rewind artifacts in TUI.
+		default:
+			if unicode.IsPrint(r) {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 func (m chatTUIModel) wordBoundsAt(line, col int) (int, int, bool) {
@@ -1600,7 +1628,7 @@ func (m *chatTUIModel) startTask(task string) tea.Cmd {
 	m.runtime.setForegroundCancel(cancel)
 	m.statusText = i18n.T("tui.status.running")
 	m.refreshInputState()
-	return runTaskCmd(m.runtime, m.events, ctx, task)
+	return tea.Batch(runTaskCmd(m.runtime, m.events, ctx, task), m.spinner.Tick)
 }
 
 func (m *chatTUIModel) enqueueTask(task string) {
