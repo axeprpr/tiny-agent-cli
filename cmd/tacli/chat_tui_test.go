@@ -724,6 +724,19 @@ func TestSanitizeDisplayTextDropsControlSequences(t *testing.T) {
 	}
 }
 
+func TestSanitizeUserVisibleLogLineStripsAnsiAndCR(t *testing.T) {
+	got := sanitizeUserVisibleLogLine("  \x1b[31mrequesting\x1b[0m \r id=call-1 model response  ")
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\r") {
+		t.Fatalf("expected cleaned log line, got %q", got)
+	}
+	if strings.Contains(got, "id=") {
+		t.Fatalf("expected id field removed, got %q", got)
+	}
+	if got != "requesting model response" {
+		t.Fatalf("unexpected sanitized log line: %q", got)
+	}
+}
+
 func TestMouseDragCopyMatchesWrappedLineCoordinates(t *testing.T) {
 	r := &chatRuntime{
 		cfg:         config.Config{Model: "test-model"},

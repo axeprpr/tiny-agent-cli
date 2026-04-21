@@ -1803,7 +1803,7 @@ func (m chatTUIModel) visibleConversationEntries() []tuiEntry {
 }
 
 func sanitizeUserVisibleLogLine(text string) string {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(sanitizeDisplayText(ansi.Strip(text)))
 	if text == "" {
 		return ""
 	}
