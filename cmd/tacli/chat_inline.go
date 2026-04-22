@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -13,15 +14,22 @@ import (
 	"golang.org/x/term"
 )
 
-type inlineInputSubmitMsg struct{}
+type inlineShellTaskStartedMsg struct{}
 
-type inlineInputModel struct {
-	input     textarea.Model
-	width     int
-	height    int
-	submitted bool
-	canceled  bool
-	value     string
+type inlineShellTaskFinishedMsg struct{}
+
+type inlineShellModel struct {
+	input    textarea.Model
+	submitCh chan string
+	width    int
+	height   int
+	busy     bool
+	status   string
+}
+
+type inlineShellRunResult struct {
+	model inlineShellModel
+	err   error
 }
 
 var (
@@ -34,6 +42,8 @@ var (
 			Bold(true)
 	inlineHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243"))
+	inlineStatusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244"))
 	inlineUserStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
 			Bold(true)
@@ -42,7 +52,7 @@ var (
 				Bold(true)
 )
 
-func newInlineInputModel() inlineInputModel {
+func newInlineShellModel(submitCh chan string) inlineShellModel {
 	ta := textarea.New()
 	ta.Focus()
 	ta.Prompt = ""
@@ -51,36 +61,54 @@ func newInlineInputModel() inlineInputModel {
 	ta.CharLimit = 0
 	ta.SetHeight(3)
 	ta.SetWidth(72)
-	return inlineInputModel{
-		input: ta,
-		width: 80,
+	return inlineShellModel{
+		input:    ta,
+		submitCh: submitCh,
+		width:    80,
+		status:   "ready",
 	}
 }
 
-func (m inlineInputModel) Init() tea.Cmd {
+func (m inlineShellModel) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-func (m inlineInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m inlineShellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.input.SetWidth(max(24, msg.Width-6))
 		return m, nil
+	case inlineShellTaskStartedMsg:
+		m.busy = true
+		m.status = "running"
+		m.input.Blur()
+		m.input.Placeholder = "生成中..."
+		return m, nil
+	case inlineShellTaskFinishedMsg:
+		m.busy = false
+		m.status = "ready"
+		m.input.Placeholder = "输入消息，Enter 发送，Ctrl+J 换行，Ctrl+C 退出"
+		return m, m.input.Focus()
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
-			m.canceled = true
 			return m, tea.Quit
 		case tea.KeyEnter:
+			if m.busy {
+				return m, nil
+			}
 			task := sanitizeSubmittedInput(m.input.Value())
 			if task == "" {
 				return m, nil
 			}
-			m.value = task
-			m.submitted = true
-			return m, tea.Quit
+			m.input.Reset()
+			m.reconcileHeight()
+			return m, submitInlineTaskCmd(m.submitCh, task)
+		}
+		if m.busy {
+			return m, nil
 		}
 		if msg.Type == tea.KeyCtrlJ {
 			m.input.InsertString("\n")
@@ -89,23 +117,34 @@ func (m inlineInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.busy {
+		return m, nil
+	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.reconcileHeight()
 	return m, cmd
 }
 
-func (m inlineInputModel) View() string {
+func (m inlineShellModel) View() string {
 	width := max(24, m.width-2)
 	title := inlineTitleStyle.Render("Message")
 	hint := inlineHintStyle.Render("Enter 发送  Ctrl+J 换行  Ctrl+C 退出")
-	body := lipgloss.JoinVertical(lipgloss.Left, title, hint, m.input.View())
+	status := inlineStatusStyle.Render("status: " + m.status)
+	body := lipgloss.JoinVertical(lipgloss.Left, title, hint, status, m.input.View())
 	return inlineInputFrameStyle.Width(width).Render(body)
 }
 
-func (m *inlineInputModel) reconcileHeight() {
+func (m *inlineShellModel) reconcileHeight() {
 	lines := max(1, strings.Count(m.input.Value(), "\n")+1)
 	m.input.SetHeight(min(max(3, lines), 12))
+}
+
+func submitInlineTaskCmd(ch chan string, task string) tea.Cmd {
+	return func() tea.Msg {
+		ch <- task
+		return inlineShellTaskStartedMsg{}
+	}
 }
 
 func runChatInline(runtime *chatRuntime) int {
@@ -114,76 +153,94 @@ func runChatInline(runtime *chatRuntime) int {
 	}
 
 	printNativeChatBanner(runtime)
-	for {
-		task, interrupted, err := promptInlineInput()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
-			runtime.beforeExit(true)
-			return 1
-		}
-		if interrupted {
-			runtime.beforeExit(true)
-			return 0
-		}
-		if task == "" {
-			continue
-		}
 
-		printInlineUserTurn(task)
-
-		if strings.HasPrefix(task, "/") {
-			result := runtime.executeCommand(task)
-			if result.handled {
-				if strings.TrimSpace(result.output) != "" {
-					printInlineSystemTurn(result.output)
-				}
-				if result.exitCode >= 0 {
-					runtime.beforeExit(true)
-					return result.exitCode
-				}
-				continue
-			}
-		}
-
-		output, runErr := runtime.executeTask(context.Background(), task)
-		if runErr != nil {
-			fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
-			continue
-		}
-		printInlineAssistantTurn(output)
-	}
-}
-
-func promptInlineInput() (task string, interrupted bool, err error) {
-	model := newInlineInputModel()
-	p := tea.NewProgram(
+	submitCh := make(chan string, 1)
+	model := newInlineShellModel(submitCh)
+	program := tea.NewProgram(
 		model,
 		tea.WithEnvironment(os.Environ()),
 		tea.WithInput(os.Stdin),
 		tea.WithOutput(os.Stdout),
 	)
 
-	finalModel, runErr := p.Run()
-	if runErr != nil {
-		return "", false, runErr
-	}
-	result := finalModel.(inlineInputModel)
-	clearInlineInputView(result.View())
-	if result.canceled {
-		return "", true, nil
-	}
-	return strings.TrimSpace(result.value), false, nil
-}
+	resultCh := make(chan inlineShellRunResult, 1)
+	go func() {
+		finalModel, err := program.Run()
+		if finalModel == nil {
+			resultCh <- inlineShellRunResult{err: err}
+			return
+		}
+		resultCh <- inlineShellRunResult{model: finalModel.(inlineShellModel), err: err}
+	}()
 
-func clearInlineInputView(view string) {
-	lineCount := strings.Count(strings.ReplaceAll(view, "\r\n", "\n"), "\n") + 1
-	for i := 0; i < lineCount; i++ {
-		fmt.Fprint(os.Stdout, "\r\033[2K")
-		if i < lineCount-1 {
-			fmt.Fprint(os.Stdout, "\033[1A")
+	for {
+		select {
+		case res := <-resultCh:
+			if res.err != nil {
+				fmt.Fprintf(os.Stderr, "chat input error: %v\n", res.err)
+				runtime.beforeExit(true)
+				return 1
+			}
+			runtime.beforeExit(true)
+			return 0
+		case task := <-submitCh:
+			exitCode, quit := handleInlineTask(program, runtime, task)
+			if quit {
+				program.Send(tea.Quit())
+				<-resultCh
+				runtime.beforeExit(true)
+				return exitCode
+			}
+			program.Send(inlineShellTaskFinishedMsg{})
 		}
 	}
-	fmt.Fprint(os.Stdout, "\r")
+}
+
+func handleInlineTask(program *tea.Program, runtime *chatRuntime, task string) (exitCode int, quit bool) {
+	if err := program.ReleaseTerminal(); err != nil {
+		fmt.Fprintf(os.Stderr, "terminal error: %v\n", err)
+	}
+	defer func() {
+		if err := program.RestoreTerminal(); err != nil {
+			fmt.Fprintf(os.Stderr, "terminal restore error: %v\n", err)
+		}
+	}()
+
+	printInlineUserTurn(task)
+
+	if strings.HasPrefix(task, "/") {
+		result := runtime.executeCommand(task)
+		if strings.TrimSpace(result.output) != "" {
+			printInlineSystemTurn(result.output)
+		}
+		if result.exitCode >= 0 {
+			return result.exitCode, true
+		}
+		return 0, false
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-done:
+		}
+	}()
+
+	output, err := runtime.executeTask(ctx, task)
+	close(done)
+	signal.Stop(sigCh)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
+		return 0, false
+	}
+	printInlineAssistantTurn(output)
+	return 0, false
 }
 
 func printInlineUserTurn(text string) {
@@ -244,4 +301,3 @@ func inlineMarkdownWidth() int {
 	}
 	return 100
 }
-
