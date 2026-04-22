@@ -50,8 +50,6 @@ type tuiStreamMsg struct {
 
 type tuiRefreshMsg struct{}
 
-type tuiMouseScrollMsg struct{}
-
 type tuiEntry struct {
 	role string
 	text string
@@ -258,8 +256,6 @@ type chatTUIModel struct {
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
-	pendingScroll int
-	scrollQueued  bool
 	stickToBottom bool
 	queuedTasks   []string
 	runningTask   string
@@ -394,7 +390,6 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 
 	chatVP := viewport.New(0, 0)
-	chatVP.MouseWheelEnabled = true
 
 	m := chatTUIModel{
 		runtime:      runtime,
@@ -482,7 +477,6 @@ func runChatTUI(runtime *chatRuntime) int {
 	p := tea.NewProgram(
 		newChatTUIModel(runtime, events),
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
@@ -504,12 +498,6 @@ func scheduleViewportRefresh() tea.Cmd {
 	})
 }
 
-func scheduleMouseScroll() tea.Cmd {
-	return tea.Tick(time.Second/60, func(time.Time) tea.Msg {
-		return tuiMouseScrollMsg{}
-	})
-}
-
 func runTaskCmd(runtime *chatRuntime, events chan tea.Msg, ctx context.Context, task string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := runtime.executeTaskStreaming(ctx, task, func(token string) {
@@ -527,7 +515,6 @@ func (m chatTUIModel) Init() tea.Cmd {
 func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	keyHandled := false
-	mouseHandled := false
 	immediateRefresh := false
 
 	switch msg := msg.(type) {
@@ -663,16 +650,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			immediateRefresh = true
 			cmds = append(cmds, m.startTask(task))
 		}
-	case tea.MouseMsg:
-		mouseHandled = true
-		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
-			m.pendingScroll += delta
-			if !m.scrollQueued {
-				m.scrollQueued = true
-				cmds = append(cmds, scheduleMouseScroll())
-			}
-			break
-		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.appendActivityEntry(msg.kind, msg.text)
@@ -763,18 +740,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
 		}
-	case tuiMouseScrollMsg:
-		m.scrollQueued = false
-		if m.pendingScroll != 0 {
-			if m.pendingScroll < 0 {
-				m.stickToBottom = false
-			}
-			applyMouseScroll(&m.chatViewport, m.pendingScroll)
-			if m.pendingScroll > 0 {
-				m.stickToBottom = m.chatViewport.AtBottom()
-			}
-			m.pendingScroll = 0
-		}
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -784,7 +749,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if !keyHandled && !mouseHandled && m.focusMode == chatFocusInput {
+	if !keyHandled && m.focusMode == chatFocusInput {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Dynamic input height
@@ -1021,30 +986,6 @@ func isCJK(r rune) bool {
 		(r >= 0xF900 && r <= 0xFAFF) ||
 		(r >= 0xFE30 && r <= 0xFE4F) ||
 		(r >= 0x20000 && r <= 0x2FA1F)
-}
-
-func mouseScrollDelta(msg tea.MouseMsg, step int) (int, bool) {
-	if msg.Action != tea.MouseActionPress {
-		return 0, false
-	}
-	step = max(1, step)
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		return -step, true
-	case tea.MouseButtonWheelDown:
-		return step, true
-	default:
-		return 0, false
-	}
-}
-
-func applyMouseScroll(vp *viewport.Model, delta int) {
-	switch {
-	case delta < 0:
-		vp.ScrollUp(-delta)
-	case delta > 0:
-		vp.ScrollDown(delta)
-	}
 }
 
 func classifyLogKind(line string) string {
