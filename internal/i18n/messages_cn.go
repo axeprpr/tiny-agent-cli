@@ -13,7 +13,7 @@ var messagesCN = map[string]string{
 	"tui.placeholder.approval": "审批：y 同意 / n 拒绝 / a 始终允许",
 	"tui.placeholder.busy":     "正在执行，你可以继续输入...",
 	"tui.hint.approval":        "",
-	"tui.hint.busy":            "当前任务运行中",
+	"tui.hint.busy":            "",
 	"tui.hint.send":            "",
 
 	// TUI status

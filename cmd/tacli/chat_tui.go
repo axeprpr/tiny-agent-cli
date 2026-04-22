@@ -1203,8 +1203,6 @@ func (m chatTUIModel) composerHint() string {
 	switch {
 	case m.approval != nil:
 		return i18n.T("tui.hint.approval")
-	case m.busy:
-		return busyHint(len(m.queuedTasks))
 	default:
 		return i18n.T("tui.hint.send")
 	}
@@ -1263,14 +1261,6 @@ func (m *chatTUIModel) interruptForeground() bool {
 
 func busyPlaceholder(queued int) string {
 	base := strings.TrimSpace(i18n.T("tui.placeholder.busy"))
-	if queued <= 0 {
-		return base
-	}
-	return fmt.Sprintf("%s queued=%d", base, queued)
-}
-
-func busyHint(queued int) string {
-	base := strings.TrimSpace(i18n.T("tui.hint.busy"))
 	if queued <= 0 {
 		return base
 	}
