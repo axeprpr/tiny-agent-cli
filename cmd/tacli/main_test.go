@@ -94,6 +94,17 @@ func TestDebugLogsDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestUseTUIChatModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_TUI", "1")
+	if !useTUIChatMode() {
+		t.Fatalf("expected TUI mode enabled")
+	}
+	t.Setenv("TACLI_TUI", "0")
+	if useTUIChatMode() {
+		t.Fatalf("expected TUI mode disabled")
+	}
+}
+
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {

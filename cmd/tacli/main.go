@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -305,7 +306,11 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		return runChatTUI(runtime)
+		if useTUIChatMode() {
+			return runChatTUI(runtime)
+		}
+		runtime.rebuildLoopWithLog(io.Discard)
+		return runChatNative(runtime, reader)
 	}
 
 	tasks, err := readNonInteractiveTasks(reader)
@@ -338,6 +343,134 @@ func runChat(args []string) int {
 	}
 	runtime.beforeExit(true)
 	return 0
+}
+
+func useTUIChatMode() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
+	if runtime == nil {
+		return 1
+	}
+	if reader == nil {
+		reader = bufio.NewReader(os.Stdin)
+	}
+
+	printNativeChatBanner(runtime)
+	printNativeChatStatus(runtime, "ready")
+
+	for {
+		fmt.Fprint(os.Stdout, "\n> ")
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+			runtime.beforeExit(true)
+			return 1
+		}
+
+		task := sanitizeSubmittedInput(line)
+		if task != "" {
+			if strings.HasPrefix(task, "/") {
+				result := runtime.executeCommand(task)
+				if result.handled {
+					if strings.TrimSpace(result.output) != "" {
+						fmt.Fprintln(os.Stdout, result.output)
+					}
+					if result.exitCode >= 0 {
+						runtime.beforeExit(true)
+						return result.exitCode
+					}
+					printNativeChatStatus(runtime, "ready")
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					continue
+				}
+			}
+
+			fmt.Fprintln(os.Stdout, "")
+			ctx, cancel := context.WithCancel(context.Background())
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt)
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-sigCh:
+					cancel()
+				case <-done:
+				}
+			}()
+			printNativeChatStatus(runtime, "running")
+			output, runErr := runtime.executeTaskStreaming(ctx, task, func(token string) {
+				fmt.Fprint(os.Stdout, token)
+			})
+			close(done)
+			signal.Stop(sigCh)
+			cancel()
+			fmt.Fprintln(os.Stdout, "")
+			if runErr != nil {
+				fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
+				printNativeChatStatus(runtime, "error")
+			} else {
+				if strings.TrimSpace(output) == "" {
+					fmt.Fprintln(os.Stdout)
+				}
+				printNativeChatStatus(runtime, "ready")
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	runtime.beforeExit(true)
+	return 0
+}
+
+func printNativeChatBanner(runtime *chatRuntime) {
+	modelName := strings.TrimSpace(runtime.cfg.Model)
+	if modelName == "" {
+		modelName = "unknown"
+	}
+	lines := []string{
+		"  _________    _________ __    ___ ",
+		" /_  __/   |  / ____/   / /   /  _|",
+		"  / / / /| | / /   / /| / /    / /  ",
+		" / / / ___ |/ /___/ ___ / /____/ /   ",
+		"/_/ /_/  |_|\\____/_/  |_/_____/___/  ",
+		"",
+		fmt.Sprintf("tacli %s  model=%s", strings.TrimSpace(version), modelName),
+		"输入问题开始对话，/help 查看命令，/exit 退出",
+	}
+	fmt.Fprintln(os.Stdout, strings.Join(lines, "\n"))
+}
+
+func printNativeChatStatus(runtime *chatRuntime, state string) {
+	if runtime == nil {
+		return
+	}
+	label := strings.TrimSpace(strings.ToLower(state))
+	if label == "" {
+		label = "ready"
+	}
+	window := runtime.modelContextWindow
+	if window <= 0 {
+		window = runtime.cfg.ContextWindow
+	}
+	if window <= 0 {
+		window = 32768
+	}
+	fmt.Fprintf(
+		os.Stdout,
+		"[status] v%s  model=%s  ctx=%s/%s  state=%s\n",
+		strings.TrimSpace(version),
+		strings.TrimSpace(runtime.cfg.Model),
+		compactTokenCount(estimateTokenUsage(runtime.session.Messages(), "")),
+		compactTokenCount(window),
+		label,
+	)
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {
