@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chzyer/readline"
+
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
 	"tiny-agent-cli/internal/harness"
@@ -354,22 +356,38 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	if runtime == nil {
 		return 1
 	}
-	if reader == nil {
-		reader = bufio.NewReader(os.Stdin)
-	}
+	_ = reader
 
 	printNativeChatBanner(runtime)
 	state := "ready"
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		DisableAutoSaveHistory: true,
+		HistoryLimit:    -1,
+		Stdin:           os.Stdin,
+		Stdout:          os.Stdout,
+		Stderr:          os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
+		runtime.beforeExit(true)
+		return 1
+	}
+	defer rl.Close()
 
 	for {
-		renderNativeInputFrame(runtime, state)
-		line, err := reader.ReadString('\n')
+		fmt.Fprintln(rl.Stdout(), "")
+		fmt.Fprintln(rl.Stdout(), buildNativeStatusLine(runtime, state))
+		line, err := rl.Readline()
 		if err != nil && !errors.Is(err, io.EOF) {
+			if errors.Is(err, readline.ErrInterrupt) {
+				state = "ready"
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
 			runtime.beforeExit(true)
 			return 1
 		}
-		collapseNativeInputFrame()
 
 		task := sanitizeSubmittedInput(normalizeNativeInputLine(line))
 		task = stripNativePromptArtifacts(task)
@@ -378,7 +396,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 				result := runtime.executeCommand(task)
 				if result.handled {
 					if strings.TrimSpace(result.output) != "" {
-						fmt.Fprintln(os.Stdout, result.output)
+						fmt.Fprintln(rl.Stdout(), result.output)
 					}
 					if result.exitCode >= 0 {
 						runtime.beforeExit(true)
@@ -404,21 +422,22 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 				}
 			}()
 			state = "running"
-			fmt.Fprintln(os.Stdout, buildNativeStatusLine(runtime, state))
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(rl.Stdout(), "")
+			fmt.Fprintln(rl.Stdout(), buildNativeStatusLine(runtime, state))
+			fmt.Fprintln(rl.Stdout(), "")
 			output, runErr := runtime.executeTaskStreaming(ctx, task, func(token string) {
-				fmt.Fprint(os.Stdout, token)
+				fmt.Fprint(rl.Stdout(), token)
 			})
 			close(done)
 			signal.Stop(sigCh)
 			cancel()
-			fmt.Fprintln(os.Stdout, "")
+			fmt.Fprintln(rl.Stdout(), "")
 			if runErr != nil {
 				fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
 				state = "error"
 			} else {
 				if strings.TrimSpace(output) == "" {
-					fmt.Fprintln(os.Stdout)
+					fmt.Fprintln(rl.Stdout())
 				}
 				state = "ready"
 			}
@@ -473,18 +492,6 @@ func buildNativeStatusLine(runtime *chatRuntime, state string) string {
 		compactTokenCount(window),
 		label,
 	)
-}
-
-func renderNativeInputFrame(runtime *chatRuntime, state string) {
-	status := buildNativeStatusLine(runtime, state)
-	// Keep one visual gap line between input prompt and status line.
-	fmt.Fprintf(os.Stdout, "\n> \n\n\033[2K%s\033[2A\r> ", status)
-}
-
-func collapseNativeInputFrame() {
-	// After Enter, cursor lands on the spacer line; clear spacer + status lines
-	// and continue below them so conversation output remains readable.
-	fmt.Fprint(os.Stdout, "\r\033[2K\033[1B\r\033[2K\r\n")
 }
 
 func normalizeNativeInputLine(s string) string {
