@@ -794,6 +794,9 @@ func (m chatTUIModel) renderStatusLine() string {
 	if strings.TrimSpace(m.stepText) != "" {
 		statusParts = append(statusParts, chipAccentStyle.Render(m.stepText))
 	}
+	if note := strings.TrimSpace(m.bottomNote()); note != "" {
+		statusParts = append(statusParts, chipMutedStyle.Render(note))
+	}
 	return statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  "))
 }
 
@@ -1202,11 +1205,16 @@ func (m chatTUIModel) composerHint() string {
 		return i18n.T("tui.hint.approval")
 	case m.busy:
 		return busyHint(len(m.queuedTasks))
-	case m.focusMode == chatFocusView:
-		return "view mode: j/k or arrows scroll, i returns to input"
 	default:
 		return i18n.T("tui.hint.send")
 	}
+}
+
+func (m chatTUIModel) bottomNote() string {
+	if m.focusMode == chatFocusView {
+		return "浏览模式 View mode: j/k 或方向键滚动, i 返回输入"
+	}
+	return ""
 }
 
 func (m *chatTUIModel) setFocusMode(mode chatFocusMode) {

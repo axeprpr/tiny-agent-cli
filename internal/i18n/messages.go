@@ -17,7 +17,7 @@ var messagesEN = map[string]string{
 	"tui.placeholder.default":  "Type a message or /command...",
 	"tui.placeholder.approval": "Approval: y approve / n reject / a always allow",
 	"tui.placeholder.busy":     "Running, you can keep typing...",
-	"tui.hint.approval":        "Waiting for your choice",
+	"tui.hint.approval":        "",
 	"tui.hint.busy":            "Task running",
 	"tui.hint.send":            "",
 
