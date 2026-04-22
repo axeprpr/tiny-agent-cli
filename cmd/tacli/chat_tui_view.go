@@ -63,9 +63,6 @@ func (m chatTUIModel) renderConversation() string {
 		fmt.Sprintf(i18n.T("tui.label.messages"), len(visibleEntries)),
 	)
 	view := m.chatViewport.View()
-	if m.selActive {
-		view = m.highlightViewportSelection(view)
-	}
 	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, view))
 }
 

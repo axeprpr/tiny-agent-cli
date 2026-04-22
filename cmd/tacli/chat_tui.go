@@ -20,7 +20,6 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mattn/go-runewidth"
 
 	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/model"
@@ -203,13 +202,13 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 }
 
 type chatKeyMap struct {
-	Send      key.Binding
-	Newline   key.Binding
-	Interrupt key.Binding
-	Quit      key.Binding
-	HistoryUp key.Binding
-	HistoryDn key.Binding
-	HistoryTop key.Binding
+	Send          key.Binding
+	Newline       key.Binding
+	Interrupt     key.Binding
+	Quit          key.Binding
+	HistoryUp     key.Binding
+	HistoryDn     key.Binding
+	HistoryTop    key.Binding
 	HistoryBottom key.Binding
 }
 
@@ -244,22 +243,9 @@ type chatTUIModel struct {
 	entryBlocks   []string
 	renderedBody  string
 	chatTop       int
-	selActive     bool
-	selStartLine  int
-	selStartCol   int
-	selEndLine    int
-	selEndCol     int
 	mdWidth       int
 	mdRenderer    *glamour.TermRenderer
 	stickToBottom bool
-	lastMouseTime time.Time
-	mousePressed  bool
-	mouseDragged  bool
-	pressLine     int
-	pressCol      int
-	lastClickTime time.Time
-	lastClickLine int
-	lastClickCol  int
 	queuedTasks   []string
 	runningTask   string
 	runningCancel context.CancelFunc
@@ -321,7 +307,6 @@ var (
 	logBodyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	errorBodyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	codeBodyStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	selectBodyStyle  = lipgloss.NewStyle().Background(lipgloss.Color("238")).Foreground(lipgloss.Color("230"))
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
@@ -393,7 +378,6 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 
 	chatVP := viewport.New(0, 0)
-	chatVP.MouseWheelEnabled = true
 
 	m := chatTUIModel{
 		runtime:      runtime,
@@ -402,13 +386,13 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		spinner:      sp,
 		chatViewport: chatVP,
 		keys: chatKeyMap{
-			Send:      key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
-			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
-			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-			HistoryUp: key.NewBinding(key.WithKeys("pgup")),
-			HistoryDn: key.NewBinding(key.WithKeys("pgdown")),
-			HistoryTop: key.NewBinding(key.WithKeys("home")),
+			Send:          key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
+			Newline:       key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
+			Interrupt:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
+			Quit:          key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			HistoryUp:     key.NewBinding(key.WithKeys("pgup")),
+			HistoryDn:     key.NewBinding(key.WithKeys("pgdown")),
+			HistoryTop:    key.NewBinding(key.WithKeys("home")),
 			HistoryBottom: key.NewBinding(key.WithKeys("end")),
 		},
 		entriesDirty:  true,
@@ -473,10 +457,9 @@ func runChatTUI(runtime *chatRuntime) int {
 		tea.WithEnvironment(os.Environ()),
 		tea.WithInput(os.Stdin),
 		tea.WithOutput(os.Stdout),
-		tea.WithFilter(chatMouseEventFilter),
 	}
 	if useAltScreenMode() {
-		opts = append(opts, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		opts = append(opts, tea.WithAltScreen())
 	}
 
 	p := tea.NewProgram(newChatTUIModel(runtime, events), opts...)
@@ -529,7 +512,6 @@ func (m chatTUIModel) Init() tea.Cmd {
 func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	keyHandled := false
-	mouseHandled := false
 	immediateRefresh := false
 	forwardInput := shouldForwardToInput(msg)
 
@@ -641,84 +623,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			immediateRefresh = true
 			cmds = append(cmds, m.startTask(task))
 		}
-	case tea.MouseMsg:
-		mouseHandled = true
-		if shouldThrottleMouse(msg, m.lastMouseTime) {
-			break
-		}
-		if isBurstMouseMsg(msg) {
-			m.lastMouseTime = time.Now()
-		}
-		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
-			if delta < 0 {
-				m.stickToBottom = false
-			}
-			applyMouseScroll(&m.chatViewport, delta)
-			if delta > 0 {
-				m.stickToBottom = m.chatViewport.AtBottom()
-			}
-			break
-		}
-		if isLeftMousePress(msg) {
-			if line, col, ok := m.contentPosAtMouse(msg); ok {
-				m.mousePressed = true
-				m.mouseDragged = false
-				m.pressLine = line
-				m.pressCol = col
-				m.selActive = true
-				m.selStartLine = line
-				m.selStartCol = col
-				m.selEndLine = line
-				m.selEndCol = col
-				immediateRefresh = true
-			}
-			break
-		}
-		if m.selActive && msg.Action == tea.MouseActionMotion {
-			// Dragging near viewport boundaries auto-scrolls, matching crush behavior.
-			if m.chatViewport.Height > 0 {
-				if msg.Y <= m.chatTop {
-					m.stickToBottom = false
-					m.chatViewport.ScrollUp(1)
-				} else if msg.Y >= m.chatTop+m.chatViewport.Height-1 {
-					m.chatViewport.ScrollDown(1)
-					m.stickToBottom = m.chatViewport.AtBottom()
-				}
-			}
-			if line, col, ok := m.contentPosAtMouse(msg); ok {
-				if line != m.selEndLine || col != m.selEndCol {
-					m.selEndLine = line
-					m.selEndCol = col
-					m.mouseDragged = true
-					immediateRefresh = true
-				}
-			}
-			break
-		}
-		if m.selActive && isLeftMouseRelease(msg) {
-			releaseLine, releaseCol := m.selEndLine, m.selEndCol
-			if line, col, ok := m.contentPosAtMouse(msg); ok {
-				m.selEndLine = line
-				m.selEndCol = col
-				releaseLine, releaseCol = line, col
-			}
-			if m.mouseDragged || m.selStartLine != m.selEndLine || m.selStartCol != m.selEndCol {
-			} else if m.isDoubleClick(releaseLine, releaseCol) {
-				if startCol, endCol, ok := m.wordBoundsAt(releaseLine, releaseCol); ok {
-					m.selStartLine = releaseLine
-					m.selEndLine = releaseLine
-					m.selStartCol = startCol
-					m.selEndCol = endCol
-				}
-			}
-			m.selActive = false
-			m.mousePressed = false
-			m.mouseDragged = false
-			m.lastClickTime = time.Now()
-			m.lastClickLine = releaseLine
-			m.lastClickCol = releaseCol
-			immediateRefresh = true
-		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.appendActivityEntry(msg.kind, msg.text)
@@ -824,7 +728,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if forwardInput && !keyHandled && !mouseHandled {
+	if forwardInput && !keyHandled {
 		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
@@ -1038,147 +942,6 @@ func isCJK(r rune) bool {
 		(r >= 0x20000 && r <= 0x2FA1F)
 }
 
-func mouseScrollDelta(msg tea.MouseMsg, step int) (int, bool) {
-	if msg.Action != tea.MouseActionPress {
-		return 0, false
-	}
-	step = max(1, step)
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		return -step, true
-	case tea.MouseButtonWheelDown:
-		return step, true
-	default:
-		return 0, false
-	}
-}
-
-func applyMouseScroll(vp *viewport.Model, delta int) {
-	switch {
-	case delta < 0:
-		vp.ScrollUp(-delta)
-	case delta > 0:
-		vp.ScrollDown(delta)
-	}
-}
-
-func isBurstMouseMsg(msg tea.MouseMsg) bool {
-	if msg.Action == tea.MouseActionMotion {
-		return true
-	}
-	_, ok := mouseScrollDelta(msg, 1)
-	return ok
-}
-
-func shouldThrottleMouse(msg tea.MouseMsg, last time.Time) bool {
-	if !isBurstMouseMsg(msg) {
-		return false
-	}
-	if last.IsZero() {
-		return false
-	}
-	return time.Since(last) < 15*time.Millisecond
-}
-
-func isLeftMousePress(msg tea.MouseMsg) bool {
-	return msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft
-}
-
-func isLeftMouseRelease(msg tea.MouseMsg) bool {
-	return msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft
-}
-
-func (m chatTUIModel) contentPosAtMouse(msg tea.MouseMsg) (int, int, bool) {
-	if m.chatViewport.Height <= 0 {
-		return 0, 0, false
-	}
-	relY := msg.Y - m.chatViewportTop()
-	if relY < 0 || relY >= m.chatViewport.Height {
-		return 0, 0, false
-	}
-	line := m.chatViewport.YOffset + relY
-	col := max(0, msg.X-appStyle.GetPaddingLeft())
-	return line, col, true
-}
-
-func normalizeSelection(startLine, startCol, endLine, endCol int) (int, int, int, int) {
-	if startLine > endLine || (startLine == endLine && startCol > endCol) {
-		return endLine, endCol, startLine, startCol
-	}
-	return startLine, startCol, endLine, endCol
-}
-
-func sliceByDisplayCols(s string, fromCol, toCol int) string {
-	if toCol <= fromCol {
-		return ""
-	}
-	var b strings.Builder
-	col := 0
-	for _, r := range s {
-		w := runewidth.RuneWidth(r)
-		if w <= 0 {
-			w = 1
-		}
-		next := col + w
-		if next > fromCol && col < toCol {
-			b.WriteRune(r)
-		}
-		col = next
-		if col >= toCol {
-			break
-		}
-	}
-	return b.String()
-}
-
-func (m chatTUIModel) selectedContentText() string {
-	lines := m.wrappedContentLines()
-	if len(lines) == 0 {
-		return ""
-	}
-	startLine, startCol, endLine, endCol := normalizeSelection(m.selStartLine, m.selStartCol, m.selEndLine, m.selEndCol)
-	if startLine < 0 {
-		startLine = 0
-	}
-	if endLine >= len(lines) {
-		endLine = len(lines) - 1
-	}
-	if startLine > endLine {
-		return ""
-	}
-	out := make([]string, 0, endLine-startLine+1)
-	for i := startLine; i <= endLine; i++ {
-		// renderStyledBody widens lines to viewport width, so trim only right
-		// padding spaces before returning selected text.
-		plain := strings.TrimRight(ansi.Strip(lines[i]), " \t")
-		width := runewidth.StringWidth(plain)
-		from := 0
-		to := width
-		if i == startLine {
-			from = min(max(0, startCol), width)
-		}
-		if i == endLine {
-			to = min(max(0, endCol), width)
-		}
-		out = append(out, sliceByDisplayCols(plain, from, to))
-	}
-	return strings.Trim(strings.Join(out, "\n"), "\n")
-}
-
-func (m chatTUIModel) highlightViewportSelection(view string) string {
-	lines := strings.Split(view, "\n")
-	startLine, _, endLine, _ := normalizeSelection(m.selStartLine, m.selStartCol, m.selEndLine, m.selEndCol)
-	for i := range lines {
-		globalLine := m.chatViewport.YOffset + i
-		if globalLine < startLine || globalLine > endLine {
-			continue
-		}
-		plain := ansi.Strip(lines[i])
-		lines[i] = selectBodyStyle.Render(plain)
-	}
-	return strings.Join(lines, "\n")
-}
-
 func (m chatTUIModel) chatViewportTop() int {
 	top := m.chatTop
 	if top > 0 {
@@ -1199,27 +962,6 @@ func (m chatTUIModel) conversationTitleHeight() int {
 
 func (m chatTUIModel) conversationTitleHeightForWidth(width int) int {
 	return lipgloss.Height(paneTitleStyle.Width(max(20, width)).Render("messages"))
-}
-
-func (m chatTUIModel) isDoubleClick(line, col int) bool {
-	if m.lastClickTime.IsZero() {
-		return false
-	}
-	if time.Since(m.lastClickTime) > 450*time.Millisecond {
-		return false
-	}
-	if line != m.lastClickLine {
-		return false
-	}
-	return abs(col-m.lastClickCol) <= 2
-}
-
-func (m chatTUIModel) lineTextAt(globalLine int) (string, bool) {
-	lines := m.wrappedContentLines()
-	if globalLine < 0 || globalLine >= len(lines) {
-		return "", false
-	}
-	return strings.TrimRight(ansi.Strip(lines[globalLine]), " \t"), true
 }
 
 func (m chatTUIModel) wrappedContentLines() []string {
@@ -1281,88 +1023,13 @@ func sanitizeSubmittedInput(text string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-func (m chatTUIModel) wordBoundsAt(line, col int) (int, int, bool) {
-	text, ok := m.lineTextAt(line)
-	if !ok {
-		return 0, 0, false
-	}
-	type cell struct {
-		start int
-		end   int
-		r     rune
-	}
-	var cells []cell
-	displayCol := 0
-	for _, r := range text {
-		w := runewidth.RuneWidth(r)
-		if w <= 0 {
-			w = 1
-		}
-		cells = append(cells, cell{start: displayCol, end: displayCol + w, r: r})
-		displayCol += w
-	}
-	if len(cells) == 0 {
-		return 0, 0, false
-	}
-	if col < 0 {
-		col = 0
-	}
-	if col >= displayCol {
-		col = displayCol - 1
-	}
-	idx := -1
-	for i, c := range cells {
-		if col >= c.start && col < c.end {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return 0, 0, false
-	}
-	if !isWordRune(cells[idx].r) {
-		return cells[idx].start, cells[idx].end, true
-	}
-	left := idx
-	for left > 0 && isWordRune(cells[left-1].r) {
-		left--
-	}
-	right := idx
-	for right+1 < len(cells) && isWordRune(cells[right+1].r) {
-		right++
-	}
-	return cells[left].start, cells[right].end, true
-}
-
-func isWordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-}
-
 func shouldForwardToInput(msg tea.Msg) bool {
 	switch msg.(type) {
-	case tea.KeyMsg, tea.MouseMsg, tea.WindowSizeMsg:
+	case tea.KeyMsg, tea.WindowSizeMsg:
 		return true
 	default:
 		return false
 	}
-}
-
-var lastFilteredMouseEvent time.Time
-
-func chatMouseEventFilter(_ tea.Model, msg tea.Msg) tea.Msg {
-	mouseMsg, ok := msg.(tea.MouseMsg)
-	if !ok {
-		return msg
-	}
-	if !isBurstMouseMsg(mouseMsg) {
-		return msg
-	}
-	now := time.Now()
-	if !lastFilteredMouseEvent.IsZero() && now.Sub(lastFilteredMouseEvent) < 12*time.Millisecond {
-		return nil
-	}
-	lastFilteredMouseEvent = now
-	return msg
 }
 
 func classifyLogKind(line string) string {
