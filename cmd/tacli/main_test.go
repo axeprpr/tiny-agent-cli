@@ -105,6 +105,19 @@ func TestUseTUIChatModeFromEnv(t *testing.T) {
 	}
 }
 
+func TestNormalizeNativeInputLineHandlesBackspace(t *testing.T) {
+	got := normalizeNativeInputLine("你好啊\b\bx\n")
+	if got != "你x\n" {
+		t.Fatalf("unexpected normalized line: %q", got)
+	}
+}
+
+func TestStripNativePromptArtifacts(t *testing.T) {
+	if got := stripNativePromptArtifacts("> 你好"); got != "你好" {
+		t.Fatalf("unexpected stripped prompt text: %q", got)
+	}
+}
+
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {

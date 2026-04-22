@@ -371,7 +371,8 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 		}
 		collapseNativeInputFrame()
 
-		task := sanitizeSubmittedInput(line)
+		task := sanitizeSubmittedInput(normalizeNativeInputLine(line))
+		task = stripNativePromptArtifacts(task)
 		if task != "" {
 			if strings.HasPrefix(task, "/") {
 				result := runtime.executeCommand(task)
@@ -403,6 +404,8 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 				}
 			}()
 			state = "running"
+			fmt.Fprintln(os.Stdout, buildNativeStatusLine(runtime, state))
+			fmt.Fprintln(os.Stdout)
 			output, runErr := runtime.executeTaskStreaming(ctx, task, func(token string) {
 				fmt.Fprint(os.Stdout, token)
 			})
@@ -474,13 +477,43 @@ func buildNativeStatusLine(runtime *chatRuntime, state string) string {
 
 func renderNativeInputFrame(runtime *chatRuntime, state string) {
 	status := buildNativeStatusLine(runtime, state)
-	fmt.Fprintf(os.Stdout, "\n> \n\033[2K%s\033[1A\r> ", status)
+	// Keep one visual gap line between input prompt and status line.
+	fmt.Fprintf(os.Stdout, "\n> \n\n\033[2K%s\033[2A\r> ", status)
 }
 
 func collapseNativeInputFrame() {
-	// After pressing Enter on the prompt line, terminal cursor lands on the
-	// status line; clear it and move below so assistant output stays in history.
-	fmt.Fprint(os.Stdout, "\r\033[2K\n")
+	// After Enter, cursor lands on the spacer line; clear spacer + status lines
+	// and continue below them so conversation output remains readable.
+	fmt.Fprint(os.Stdout, "\r\033[2K\033[1B\r\033[2K\r\n")
+}
+
+func normalizeNativeInputLine(s string) string {
+	if s == "" {
+		return ""
+	}
+	buf := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch r {
+		case '\b', 0x7f:
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+		case '\r':
+		default:
+			buf = append(buf, r)
+		}
+	}
+	return string(buf)
+}
+
+func stripNativePromptArtifacts(text string) string {
+	text = strings.TrimSpace(text)
+	for _, p := range []string{">", "›"} {
+		if strings.HasPrefix(text, p) {
+			text = strings.TrimSpace(strings.TrimPrefix(text, p))
+		}
+	}
+	return text
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {
