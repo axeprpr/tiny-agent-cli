@@ -380,8 +380,8 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 		line, err := rl.Readline()
 		if err != nil && !errors.Is(err, io.EOF) {
 			if errors.Is(err, readline.ErrInterrupt) {
-				state = "ready"
-				continue
+				runtime.beforeExit(true)
+				return 0
 			}
 			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
 			runtime.beforeExit(true)

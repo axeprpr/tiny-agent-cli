@@ -118,6 +118,23 @@ func TestStripNativePromptArtifacts(t *testing.T) {
 	}
 }
 
+func TestNativePromptWithStatusIncludesInputAndStatus(t *testing.T) {
+	runtime := &chatRuntime{
+		cfg: config.Config{
+			Model:         "test-model",
+			ContextWindow: 32768,
+		},
+		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
+	}
+	prompt := nativePromptWithStatus(runtime, "ready")
+	if !strings.Contains(prompt, "> ") {
+		t.Fatalf("expected prompt marker, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "[status]") {
+		t.Fatalf("expected status marker, got %q", prompt)
+	}
+}
+
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {
