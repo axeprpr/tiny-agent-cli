@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/chzyer/readline"
 
 	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/config"
@@ -308,11 +305,7 @@ func runChat(args []string) int {
 
 	interactive := tools.IsInteractiveTerminal(os.Stdin)
 	if interactive {
-		if useTUIChatMode() {
-			return runChatTUI(runtime)
-		}
-		runtime.rebuildLoopWithLog(io.Discard)
-		return runChatInline(runtime)
+		return runChatTUI(runtime)
 	}
 
 	tasks, err := readNonInteractiveTasks(reader)
@@ -345,185 +338,6 @@ func runChat(args []string) int {
 	}
 	runtime.beforeExit(true)
 	return 0
-}
-
-func useTUIChatMode() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
-	switch v {
-	case "", "0", "false", "no", "off":
-		return false
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
-	if runtime == nil {
-		return 1
-	}
-	_ = reader
-
-	printNativeChatBanner(runtime)
-	state := "ready"
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          "> ",
-		DisableAutoSaveHistory: true,
-		HistoryLimit:    -1,
-		Stdin:           os.Stdin,
-		Stdout:          os.Stdout,
-		Stderr:          os.Stderr,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
-		runtime.beforeExit(true)
-		return 1
-	}
-	defer rl.Close()
-
-	for {
-		rl.SetPrompt(nativePromptWithStatus(runtime, state))
-		line, err := rl.Readline()
-		if err != nil && !errors.Is(err, io.EOF) {
-			if errors.Is(err, readline.ErrInterrupt) {
-				runtime.beforeExit(true)
-				return 0
-			}
-			fmt.Fprintf(os.Stderr, "chat input error: %v\n", err)
-			runtime.beforeExit(true)
-			return 1
-		}
-
-		task := sanitizeSubmittedInput(normalizeNativeInputLine(line))
-		task = stripNativePromptArtifacts(task)
-		if task != "" {
-			if strings.HasPrefix(task, "/") {
-				result := runtime.executeCommand(task)
-				if result.handled {
-					if strings.TrimSpace(result.output) != "" {
-						fmt.Fprintln(rl.Stdout(), result.output)
-					}
-					if result.exitCode >= 0 {
-						runtime.beforeExit(true)
-						return result.exitCode
-					}
-					state = "ready"
-					if errors.Is(err, io.EOF) {
-						break
-					}
-					continue
-				}
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, os.Interrupt)
-			done := make(chan struct{})
-			go func() {
-				select {
-				case <-sigCh:
-					cancel()
-				case <-done:
-				}
-			}()
-			state = "running"
-			output, runErr := runtime.executeTaskStreaming(ctx, task, func(token string) {
-				fmt.Fprint(rl.Stdout(), token)
-			})
-			close(done)
-			signal.Stop(sigCh)
-			cancel()
-			fmt.Fprintln(rl.Stdout(), "")
-			if runErr != nil {
-				fmt.Fprintf(os.Stderr, "agent error: %v\n", runErr)
-				state = "error"
-			} else {
-				if strings.TrimSpace(output) == "" {
-					fmt.Fprintln(rl.Stdout())
-				}
-				state = "ready"
-			}
-		}
-
-		if errors.Is(err, io.EOF) {
-			break
-		}
-	}
-	runtime.beforeExit(true)
-	return 0
-}
-
-func printNativeChatBanner(runtime *chatRuntime) {
-	modelName := strings.TrimSpace(runtime.cfg.Model)
-	if modelName == "" {
-		modelName = "unknown"
-	}
-	lines := []string{
-		fmt.Sprintf("tacli %s  model=%s", strings.TrimSpace(version), modelName),
-		"/help 查看命令  /exit 退出",
-	}
-	fmt.Fprintln(os.Stdout, strings.Join(lines, "\n"))
-}
-
-func buildNativeStatusLine(runtime *chatRuntime, state string) string {
-	if runtime == nil {
-		return ""
-	}
-	label := strings.TrimSpace(strings.ToLower(state))
-	if label == "" {
-		label = "ready"
-	}
-	window := runtime.modelContextWindow
-	if window <= 0 {
-		window = runtime.cfg.ContextWindow
-	}
-	if window <= 0 {
-		window = 32768
-	}
-	return fmt.Sprintf(
-		"[status] %s  model=%s  ctx=%s/%s  state=%s",
-		strings.TrimSpace(version),
-		strings.TrimSpace(runtime.cfg.Model),
-		compactTokenCount(estimateTokenUsage(runtime.session.Messages(), "")),
-		compactTokenCount(window),
-		label,
-	)
-}
-
-func nativePromptWithStatus(runtime *chatRuntime, state string) string {
-	_ = runtime
-	_ = state
-	return "> "
-}
-
-func normalizeNativeInputLine(s string) string {
-	if s == "" {
-		return ""
-	}
-	buf := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch r {
-		case '\b', 0x7f:
-			if len(buf) > 0 {
-				buf = buf[:len(buf)-1]
-			}
-		case '\r':
-		default:
-			buf = append(buf, r)
-		}
-	}
-	return string(buf)
-}
-
-func stripNativePromptArtifacts(text string) string {
-	text = strings.TrimSpace(text)
-	for _, p := range []string{">", "›"} {
-		if strings.HasPrefix(text, p) {
-			text = strings.TrimSpace(strings.TrimPrefix(text, p))
-		}
-	}
-	return text
 }
 
 func readNonInteractiveTasks(reader *bufio.Reader) ([]string, error) {

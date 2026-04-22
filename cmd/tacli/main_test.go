@@ -94,62 +94,6 @@ func TestDebugLogsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestUseTUIChatModeFromEnv(t *testing.T) {
-	t.Setenv("TACLI_TUI", "")
-	if useTUIChatMode() {
-		t.Fatalf("expected TUI mode disabled by default")
-	}
-	t.Setenv("TACLI_TUI", "1")
-	if !useTUIChatMode() {
-		t.Fatalf("expected TUI mode enabled")
-	}
-	t.Setenv("TACLI_TUI", "0")
-	if useTUIChatMode() {
-		t.Fatalf("expected TUI mode disabled")
-	}
-	t.Setenv("TACLI_TUI", "garbage")
-	if useTUIChatMode() {
-		t.Fatalf("expected TUI mode disabled for unknown values")
-	}
-}
-
-func TestNormalizeNativeInputLineHandlesBackspace(t *testing.T) {
-	got := normalizeNativeInputLine("你好啊\b\bx\n")
-	if got != "你x\n" {
-		t.Fatalf("unexpected normalized line: %q", got)
-	}
-}
-
-func TestStripNativePromptArtifacts(t *testing.T) {
-	if got := stripNativePromptArtifacts("> 你好"); got != "你好" {
-		t.Fatalf("unexpected stripped prompt text: %q", got)
-	}
-}
-
-func TestNativePromptWithStatusIncludesInputAndStatus(t *testing.T) {
-	runtime := &chatRuntime{
-		cfg: config.Config{
-			Model:         "test-model",
-			ContextWindow: 32768,
-		},
-		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
-	}
-	prompt := nativePromptWithStatus(runtime, "ready")
-	if prompt != "> " {
-		t.Fatalf("expected prompt marker, got %q", prompt)
-	}
-}
-
-func TestRenderInlineMarkdownKeepsRenderedContent(t *testing.T) {
-	got := renderInlineMarkdown("# 标题\n\n- alpha\n- beta")
-	if !strings.Contains(got, "标题") {
-		t.Fatalf("expected heading content, got %q", got)
-	}
-	if !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
-		t.Fatalf("expected list content, got %q", got)
-	}
-}
-
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {
