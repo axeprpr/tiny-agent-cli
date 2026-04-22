@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"tiny-agent-cli/internal/agent"
@@ -178,6 +179,7 @@ func TestArrowKeyEditingDoesNotScrollChatViewport(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport:  viewport.New(80, 3),
 		input:         textarea.New(),
+		focusMode:     chatFocusInput,
 		stickToBottom: false,
 	}
 	m.chatViewport.SetContent(strings.Join([]string{
@@ -197,10 +199,75 @@ func TestArrowKeyEditingDoesNotScrollChatViewport(t *testing.T) {
 	}
 }
 
+func TestCtrlOEntersViewModeAndBlurInput(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(chatTUIModel)
+
+	if m.focusMode != chatFocusView {
+		t.Fatalf("expected view mode, got %q", m.focusMode)
+	}
+	if m.input.Focused() {
+		t.Fatalf("expected input to blur in view mode")
+	}
+}
+
+func TestViewModeArrowKeysScrollViewport(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 3),
+		input:        textarea.New(),
+		focusMode:    chatFocusView,
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6",
+	}, "\n"))
+	m.chatViewport.SetYOffset(2)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(chatTUIModel)
+	if m.chatViewport.YOffset != 1 {
+		t.Fatalf("expected up-arrow to scroll viewport in view mode, got %d", m.chatViewport.YOffset)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(chatTUIModel)
+	if m.chatViewport.YOffset != 2 {
+		t.Fatalf("expected down-arrow to scroll viewport in view mode, got %d", m.chatViewport.YOffset)
+	}
+}
+
+func TestInputModeKeyReturnsFromViewMode(t *testing.T) {
+	m := chatTUIModel{
+		input:     textarea.New(),
+		focusMode: chatFocusView,
+		keys: chatKeyMap{
+			InputMode: key.NewBinding(key.WithKeys("i")),
+		},
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = updated.(chatTUIModel)
+	if m.focusMode != chatFocusInput {
+		t.Fatalf("expected input mode, got %q", m.focusMode)
+	}
+	if !m.input.Focused() {
+		t.Fatalf("expected input to focus when returning to input mode")
+	}
+}
+
 func TestRenderComposerKeepsMultilineInputCompact(t *testing.T) {
 	m := chatTUIModel{
-		width: 80,
-		input: textarea.New(),
+		width:     80,
+		input:     textarea.New(),
+		focusMode: chatFocusInput,
 	}
 	m.input.SetWidth(20)
 	m.input.SetHeight(2)
@@ -224,6 +291,26 @@ func TestRenderComposerKeepsMultilineInputCompact(t *testing.T) {
 	}
 	if secondIndex-firstIndex != 1 {
 		t.Fatalf("expected multiline input lines to stay adjacent, got indices %d and %d in %q", firstIndex, secondIndex, m.renderComposer())
+	}
+}
+
+func TestRenderInputAreaPadsToFullWidth(t *testing.T) {
+	m := chatTUIModel{
+		width:     40,
+		input:     textarea.New(),
+		focusMode: chatFocusInput,
+	}
+	m.input.SetWidth(20)
+	m.refreshInputState()
+
+	rendered := m.renderInputArea()
+	lines := strings.Split(rendered, "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected rendered input area")
+	}
+	plain := ansi.Strip(lines[0])
+	if len(plain) != 38 {
+		t.Fatalf("expected padded input line width 38, got %d in %q", len(plain), plain)
 	}
 }
 

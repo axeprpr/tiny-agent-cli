@@ -57,6 +57,13 @@ type tuiEntry struct {
 	text string
 }
 
+type chatFocusMode string
+
+const (
+	chatFocusInput chatFocusMode = "input"
+	chatFocusView  chatFocusMode = "view"
+)
+
 type tuiLogWriter struct {
 	events chan tea.Msg
 }
@@ -204,8 +211,12 @@ type chatKeyMap struct {
 	Send      key.Binding
 	Newline   key.Binding
 	Interrupt key.Binding
+	ViewMode  key.Binding
+	InputMode key.Binding
 	Quit      key.Binding
 	Help      key.Binding
+	VimUp     key.Binding
+	VimDown   key.Binding
 	LineUp    key.Binding
 	LineDown  key.Binding
 	PageDown  key.Binding
@@ -220,8 +231,8 @@ func (k chatKeyMap) ShortHelp() []key.Binding {
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Interrupt, k.Help, k.Quit},
-		{k.LineUp, k.LineDown, k.PageUp, k.PageDown, k.Home, k.End},
+		{k.Send, k.Newline, k.ViewMode, k.InputMode, k.Interrupt, k.Help, k.Quit},
+		{k.VimUp, k.VimDown, k.LineUp, k.LineDown, k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
 
@@ -240,6 +251,7 @@ type chatTUIModel struct {
 	busy          bool
 	stepText      string
 	statusText    string
+	focusMode     chatFocusMode
 	showFullHelp  bool
 	entriesDirty  bool
 	entriesWidth  int
@@ -343,6 +355,14 @@ var (
 	inputHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244"))
 
+	inputLineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("236"))
+
+	inputLineInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("250")).
+				Background(lipgloss.Color("235"))
+
 	codeBlockStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
 			Background(lipgloss.Color("235")).
@@ -359,6 +379,15 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	ta.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -378,8 +407,12 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Send:      key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
 			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
 			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
+			ViewMode:  key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "view")),
+			InputMode: key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "input")),
 			Help:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
 			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			VimUp:     key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "up")),
+			VimDown:   key.NewBinding(key.WithKeys("j"), key.WithHelp("j", "down")),
 			LineUp:    key.NewBinding(key.WithKeys("alt+up"), key.WithHelp("alt+up", "scroll up")),
 			LineDown:  key.NewBinding(key.WithKeys("alt+down"), key.WithHelp("alt+down", "scroll down")),
 			PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
@@ -387,6 +420,7 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
 			End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
+		focusMode:     chatFocusInput,
 		entriesDirty:  true,
 		stickToBottom: true,
 	}
@@ -513,6 +547,12 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			keyHandled = true
 			m.showFullHelp = !m.showFullHelp
+		case key.Matches(msg, m.keys.ViewMode):
+			keyHandled = true
+			m.setFocusMode(chatFocusView)
+		case m.focusMode == chatFocusView && key.Matches(msg, m.keys.InputMode):
+			keyHandled = true
+			m.setFocusMode(chatFocusInput)
 		case key.Matches(msg, m.keys.Interrupt):
 			keyHandled = true
 			if m.interruptForeground() {
@@ -520,6 +560,14 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entriesDirty = true
 				immediateRefresh = true
 			}
+		case m.focusMode == chatFocusView && (key.Matches(msg, m.keys.VimUp) || msg.Type == tea.KeyUp):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.ScrollUp(1)
+		case m.focusMode == chatFocusView && (key.Matches(msg, m.keys.VimDown) || msg.Type == tea.KeyDown):
+			keyHandled = true
+			m.chatViewport.ScrollDown(1)
+			m.stickToBottom = m.chatViewport.AtBottom()
 		case key.Matches(msg, m.keys.LineUp):
 			keyHandled = true
 			m.stickToBottom = false
@@ -732,7 +780,7 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if !keyHandled && !mouseHandled {
+	if !keyHandled && !mouseHandled && m.focusMode == chatFocusInput {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 		// Dynamic input height
@@ -766,6 +814,7 @@ func (m chatTUIModel) View() string {
 func (m chatTUIModel) renderStatusLine() string {
 	statusParts := []string{
 		statusVersionStyle.Render(strings.TrimSpace(version)),
+		chipMutedStyle.Render("mode=" + string(m.focusMode)),
 		contextStatus(m.runtime, m.input.Value()),
 	}
 	if m.busy {
@@ -1098,6 +1147,7 @@ func (m chatTUIModel) renderHeader() string {
 		titleStyle.Render("tacli"),
 		chipAccentStyle.Render("version " + strings.TrimSpace(version)),
 		chipAccentStyle.Render(m.runtime.cfg.Model),
+		chipMutedStyle.Render("mode " + string(m.focusMode)),
 		chipMutedStyle.Render(m.runtime.sessionName),
 	}
 	if m.runtime.approver.Mode() == tools.ApprovalDangerously {
@@ -1136,10 +1186,24 @@ func (m chatTUIModel) renderComposer() string {
 	if hint := strings.TrimSpace(m.composerHint()); hint != "" {
 		lines = append(lines, inputHintStyle.Render(hint))
 	}
-	lines = append(lines, m.input.View())
+	lines = append(lines, m.renderInputArea())
 	return inputPaneStyle.Width(max(20, m.width-2)).Render(
 		lipgloss.JoinVertical(lipgloss.Left, lines...),
 	)
+}
+
+func (m chatTUIModel) renderInputArea() string {
+	width := max(20, m.width-2)
+	style := inputLineStyle
+	if m.focusMode != chatFocusInput {
+		style = inputLineInactiveStyle
+	}
+	lines := strings.Split(m.input.View(), "\n")
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, style.Width(width).Render(line))
+	}
+	return strings.Join(rendered, "\n")
 }
 
 func todoLine(item tools.TodoItem) string {
@@ -1163,6 +1227,11 @@ func (m *chatTUIModel) refreshInputState() {
 		m.input.Placeholder = busyPlaceholder(len(m.queuedTasks))
 	default:
 		m.input.Placeholder = i18n.T("tui.placeholder.default")
+	}
+	if m.focusMode == chatFocusInput {
+		m.input.Focus()
+	} else {
+		m.input.Blur()
 	}
 }
 
@@ -1188,9 +1257,19 @@ func (m chatTUIModel) composerHint() string {
 		return i18n.T("tui.hint.approval")
 	case m.busy:
 		return busyHint(len(m.queuedTasks))
+	case m.focusMode == chatFocusView:
+		return "view mode: j/k or arrows scroll, i returns to input"
 	default:
 		return i18n.T("tui.hint.send")
 	}
+}
+
+func (m *chatTUIModel) setFocusMode(mode chatFocusMode) {
+	if mode == "" {
+		mode = chatFocusInput
+	}
+	m.focusMode = mode
+	m.refreshInputState()
 }
 
 func (m *chatTUIModel) startTask(task string) tea.Cmd {
