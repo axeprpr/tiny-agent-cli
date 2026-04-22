@@ -312,7 +312,7 @@ func runChat(args []string) int {
 			return runChatTUI(runtime)
 		}
 		runtime.rebuildLoopWithLog(io.Discard)
-		return runChatNative(runtime, reader)
+		return runChatInline(runtime)
 	}
 
 	tasks, err := readNonInteractiveTasks(reader)

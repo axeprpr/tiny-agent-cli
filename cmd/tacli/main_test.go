@@ -140,6 +140,16 @@ func TestNativePromptWithStatusIncludesInputAndStatus(t *testing.T) {
 	}
 }
 
+func TestRenderInlineMarkdownKeepsRenderedContent(t *testing.T) {
+	got := renderInlineMarkdown("# 标题\n\n- alpha\n- beta")
+	if !strings.Contains(got, "标题") {
+		t.Fatalf("expected heading content, got %q", got)
+	}
+	if !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
+		t.Fatalf("expected list content, got %q", got)
+	}
+}
+
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {
