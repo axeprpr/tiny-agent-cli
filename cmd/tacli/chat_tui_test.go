@@ -7,12 +7,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"tiny-agent-cli/internal/agent"
@@ -136,7 +134,7 @@ func TestResizeKeepsViewportPinnedToBottomWhenComposerHeightChanges(t *testing.T
 		height:        18,
 		chatViewport:  viewport.New(76, 8),
 		input:         textarea.New(),
-		entries:       []tuiEntry{{role: "system", text: strings.Repeat("line\n", 24)}},
+		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
 		entriesDirty:  true,
 		stickToBottom: true,
 	}
@@ -154,102 +152,20 @@ func TestResizeKeepsViewportPinnedToBottomWhenComposerHeightChanges(t *testing.T
 	}
 }
 
-func TestComputeLayoutShrinksViewportWhenInputGrows(t *testing.T) {
-	r := &chatRuntime{
-		cfg:         config.Config{Model: "test-model"},
-		sessionName: "chat-test",
-		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
-	}
-	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
-
-	m := chatTUIModel{
-		runtime:      r,
-		width:        100,
-		height:       30,
-		chatViewport: viewport.New(80, 10),
-		input:        textarea.New(),
-	}
-	m.input.SetHeight(1)
-	small := m.computeLayout()
-
-	m.input.SetHeight(6)
-	large := m.computeLayout()
-
-	if large.viewportHeight >= small.viewportHeight {
-		t.Fatalf("expected viewport to shrink when input grows: small=%d large=%d", small.viewportHeight, large.viewportHeight)
-	}
-	if large.chatTop != small.chatTop {
-		t.Fatalf("expected header/todo anchor to stay stable: small=%d large=%d", small.chatTop, large.chatTop)
-	}
-}
-
-func TestDesiredInputHeightRespectsAvailableViewportSpace(t *testing.T) {
-	r := &chatRuntime{
-		cfg:         config.Config{Model: "test-model"},
-		sessionName: "chat-test",
-		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
-	}
-	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
-
-	m := chatTUIModel{
-		runtime:      r,
-		width:        80,
-		height:       14,
-		chatViewport: viewport.New(76, 6),
-		input:        textarea.New(),
-	}
-	m.input.SetValue(strings.Repeat("line\n", 20))
-
-	got := m.desiredInputHeight()
-	if got < 1 {
-		t.Fatalf("expected positive desired input height, got %d", got)
-	}
-
-	layout := m.computeLayout()
-	if layout.viewportHeight < 6 {
-		t.Fatalf("expected minimum viewport height to be preserved, got %d", layout.viewportHeight)
-	}
-}
-
-func TestViewLineCountStaysStableWhileTypingSingleLine(t *testing.T) {
-	r := &chatRuntime{
-		cfg:         config.Config{Model: "test-model"},
-		sessionName: "chat-test",
-		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
-	}
-	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
-	r.session = r.loop.NewSession()
-
-	m := newChatTUIModel(r, make(chan tea.Msg, 1))
-	m.width = 100
-	m.height = 28
-	m.resize(true)
-
-	baseLines := strings.Count(m.View(), "\n")
-	for _, ch := range []rune{'a', 'b', 'c', 'd', 'e'} {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
-		m = updated.(chatTUIModel)
-		gotLines := strings.Count(m.View(), "\n")
-		if gotLines != baseLines {
-			t.Fatalf("expected stable line count while typing, base=%d got=%d after %q", baseLines, gotLines, string(ch))
-		}
-	}
-}
-
 func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
 	m := chatTUIModel{
 		width:         80,
 		height:        18,
 		chatViewport:  viewport.New(76, 6),
 		input:         textarea.New(),
-		entries:       []tuiEntry{{role: "system", text: strings.Repeat("line\n", 300)}},
+		entries:       []tuiEntry{{role: "assistant", text: strings.Repeat("line\n", 24)}},
 		entriesDirty:  true,
 		stickToBottom: false,
 	}
 
 	m.resize(true)
 	m.chatViewport.SetYOffset(2)
-	m.entries = append(m.entries, tuiEntry{role: "system", text: "new line"})
+	m.entries = append(m.entries, tuiEntry{role: "assistant", text: "new line"})
 	m.entriesDirty = true
 	m.refreshViewports(false)
 
@@ -278,33 +194,6 @@ func TestArrowKeyEditingDoesNotScrollChatViewport(t *testing.T) {
 
 	if m.chatViewport.YOffset != 2 {
 		t.Fatalf("expected up-arrow editing to leave chat viewport offset unchanged, got %d", m.chatViewport.YOffset)
-	}
-}
-
-func TestPageUpAndPageDownScrollChatViewport(t *testing.T) {
-	m := chatTUIModel{
-		chatViewport: viewport.New(80, 3),
-		input:        textarea.New(),
-		keys: chatKeyMap{
-			HistoryUp: key.NewBinding(key.WithKeys("pgup")),
-			HistoryDn: key.NewBinding(key.WithKeys("pgdown")),
-		},
-	}
-	m.chatViewport.SetContent(strings.Join([]string{
-		"1", "2", "3", "4", "5", "6", "7", "8",
-	}, "\n"))
-	m.chatViewport.SetYOffset(4)
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	m = updated.(chatTUIModel)
-	if m.chatViewport.YOffset >= 4 {
-		t.Fatalf("expected pgup to move viewport up, got %d", m.chatViewport.YOffset)
-	}
-
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	m = updated.(chatTUIModel)
-	if m.chatViewport.YOffset < 4 {
-		t.Fatalf("expected pgdown to move viewport down, got %d", m.chatViewport.YOffset)
 	}
 }
 
@@ -347,6 +236,29 @@ func TestDesiredInputHeightGrowsBeyondFiveLinesWhenSpaceAllows(t *testing.T) {
 
 	if got := m.desiredInputHeight(); got != 8 {
 		t.Fatalf("expected input height to grow with content, got %d", got)
+	}
+}
+
+func TestAltUpScrollsChatViewportWithoutEditingInput(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport:  viewport.New(80, 3),
+		input:         textarea.New(),
+		stickToBottom: false,
+		keys: chatKeyMap{
+			LineUp: key.NewBinding(key.WithKeys("alt+up")),
+		},
+	}
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6",
+	}, "\n"))
+	m.chatViewport.SetYOffset(2)
+	m.input.SetValue("first line\nsecond line")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	m = updated.(chatTUIModel)
+
+	if m.chatViewport.YOffset != 1 {
+		t.Fatalf("expected alt+up to scroll chat viewport up by one line, got %d", m.chatViewport.YOffset)
 	}
 }
 
@@ -414,18 +326,15 @@ func TestRenderEntriesKeepsStreamingTextPlain(t *testing.T) {
 	}
 }
 
-func TestRenderEntriesRendersAssistantMarkdown(t *testing.T) {
+func TestRenderEntriesKeepsAssistantTextPlain(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 20),
 		entries:      []tuiEntry{{role: "assistant", text: "# heading\n\n- item"}},
 	}
 
 	got := m.renderEntries()
-	if !strings.Contains(got, "heading") || !strings.Contains(got, "item") {
-		t.Fatalf("expected assistant markdown to render content, got %q", got)
-	}
-	if strings.Contains(got, "- item") {
-		t.Fatalf("expected assistant markdown list marker to be rendered, got %q", got)
+	if !strings.Contains(got, "# heading") || !strings.Contains(got, "- item") {
+		t.Fatalf("expected assistant text to remain plain, got %q", got)
 	}
 }
 
@@ -464,82 +373,39 @@ func TestContextStatusShowsTokenCounts(t *testing.T) {
 	}
 }
 
-func TestStartTaskRestartsSpinnerTicks(t *testing.T) {
-	r := &chatRuntime{
-		cfg:         config.Config{Model: "test-model"},
-		sessionName: "chat-test",
-		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+func TestMouseWheelScrollIsBatched(t *testing.T) {
+	m := chatTUIModel{
+		chatViewport: viewport.New(80, 3),
+		input:        textarea.New(),
 	}
-	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
-	r.session = r.loop.NewSession()
-	m := newChatTUIModel(r, make(chan tea.Msg, 1))
-	m.spinner = spinner.New()
-	cmd := m.startTask("hello")
+	m.chatViewport.SetContent(strings.Join([]string{
+		"1", "2", "3", "4", "5", "6", "7", "8",
+	}, "\n"))
+
+	msg := tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress}
+
+	updated, cmd := m.Update(msg)
+	m = updated.(chatTUIModel)
 	if cmd == nil {
-		t.Fatalf("expected startTask to schedule commands")
+		t.Fatalf("expected scroll tick to be scheduled")
 	}
-	if !m.busy {
-		t.Fatalf("expected busy state after startTask")
+	if m.chatViewport.YOffset != 0 {
+		t.Fatalf("expected wheel event to defer viewport movement, got offset %d", m.chatViewport.YOffset)
 	}
-	updated, next := m.Update(m.spinner.Tick())
-	_ = updated.(chatTUIModel)
-	if next == nil {
-		t.Fatalf("expected spinner tick to continue while busy")
-	}
-}
 
-func TestSanitizeDisplayTextDropsControlSequences(t *testing.T) {
-	got := sanitizeDisplayText("ab\r\ncd\x1b[31mred\x1b[0m")
-	if strings.Contains(got, "\r") || strings.Contains(got, "\x1b") {
-		t.Fatalf("expected control chars removed, got %q", got)
+	updated, _ = m.Update(msg)
+	m = updated.(chatTUIModel)
+	if m.pendingScroll != 6 {
+		t.Fatalf("expected pending scroll to accumulate, got %d", m.pendingScroll)
 	}
-	if !strings.Contains(got, "ab\ncd[31mred[0m") {
-		t.Fatalf("unexpected sanitized output: %q", got)
-	}
-}
 
-func TestSanitizeUserVisibleLogLineStripsAnsiAndCR(t *testing.T) {
-	got := sanitizeUserVisibleLogLine("  \x1b[31mrequesting\x1b[0m \r id=call-1 model response  ")
-	if strings.Contains(got, "\x1b") || strings.Contains(got, "\r") {
-		t.Fatalf("expected cleaned log line, got %q", got)
+	updated, _ = m.Update(tuiMouseScrollMsg{})
+	m = updated.(chatTUIModel)
+	if m.pendingScroll != 0 {
+		t.Fatalf("expected pending scroll to flush, got %d", m.pendingScroll)
 	}
-	if strings.Contains(got, "id=") {
-		t.Fatalf("expected id field removed, got %q", got)
-	}
-	if got != "requesting model response" {
-		t.Fatalf("unexpected sanitized log line: %q", got)
-	}
-}
-
-func TestSanitizeSubmittedInputDropsTerminalProbeLine(t *testing.T) {
-	got := sanitizeSubmittedInput("\x1b]11;rgb:1414/1717/2929\\\x07\n你好")
-	if got != "你好" {
-		t.Fatalf("unexpected sanitized input: %q", got)
-	}
-}
-
-func TestSanitizeUserVisibleLogLineDropsTerminalProbeLine(t *testing.T) {
-	if got := sanitizeUserVisibleLogLine("11;rgb:1414/1717/2929\\"); got != "" {
-		t.Fatalf("expected probe line dropped, got %q", got)
-	}
-}
-
-func TestUseAltScreenModeFromEnv(t *testing.T) {
-	t.Setenv("TACLI_FULLSCREEN", "")
-	if !useAltScreenMode() {
-		t.Fatalf("expected alt-screen mode enabled by default")
-	}
-	t.Setenv("TACLI_FULLSCREEN", "1")
-	if !useAltScreenMode() {
-		t.Fatalf("expected alt-screen mode enabled")
-	}
-	t.Setenv("TACLI_FULLSCREEN", "0")
-	if useAltScreenMode() {
-		t.Fatalf("expected alt-screen mode disabled")
-	}
-	t.Setenv("TACLI_FULLSCREEN", "garbage")
-	if !useAltScreenMode() {
-		t.Fatalf("expected alt-screen mode enabled for unknown values")
+	if m.chatViewport.YOffset != 5 {
+		t.Fatalf("expected batched scroll to apply once, got offset %d", m.chatViewport.YOffset)
 	}
 }
 
@@ -692,7 +558,7 @@ func TestSessionLoadReloadsVisibleConversation(t *testing.T) {
 	m = updated.(chatTUIModel)
 	m.resize(true)
 
-	content := ansi.Strip(m.renderEntries())
+	content := m.renderEntries()
 	if strings.Contains(content, "current question") {
 		t.Fatalf("expected previous session content to be replaced, got %q", content)
 	}

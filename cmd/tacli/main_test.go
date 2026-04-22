@@ -78,22 +78,6 @@ func TestExtractStableMemoryNotesSkipsTransientRequests(t *testing.T) {
 	}
 }
 
-func TestDebugLogsEnabledFromEnv(t *testing.T) {
-	t.Setenv("TACLI_DEBUG", "1")
-	t.Setenv("TACLI_VERBOSE", "")
-	if !debugLogsEnabled() {
-		t.Fatalf("expected debug logs enabled")
-	}
-}
-
-func TestDebugLogsDisabledByDefault(t *testing.T) {
-	t.Setenv("TACLI_DEBUG", "0")
-	t.Setenv("TACLI_VERBOSE", "")
-	if debugLogsEnabled() {
-		t.Fatalf("expected debug logs disabled")
-	}
-}
-
 func TestBuildConversationSummaryInputKeepsRecentMessages(t *testing.T) {
 	var messages []model.Message
 	for i := 0; i < memorySummaryMaxMessages+6; i++ {

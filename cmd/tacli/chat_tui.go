@@ -6,20 +6,17 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/model"
@@ -52,6 +49,8 @@ type tuiStreamMsg struct {
 }
 
 type tuiRefreshMsg struct{}
+
+type tuiMouseScrollMsg struct{}
 
 type tuiEntry struct {
 	role string
@@ -202,14 +201,17 @@ func (a *tuiApprover) ApproveWrite(_ context.Context, path, content string) (boo
 }
 
 type chatKeyMap struct {
-	Send          key.Binding
-	Newline       key.Binding
-	Interrupt     key.Binding
-	Quit          key.Binding
-	HistoryUp     key.Binding
-	HistoryDn     key.Binding
-	HistoryTop    key.Binding
-	HistoryBottom key.Binding
+	Send      key.Binding
+	Newline   key.Binding
+	Interrupt key.Binding
+	Quit      key.Binding
+	Help      key.Binding
+	LineUp    key.Binding
+	LineDown  key.Binding
+	PageDown  key.Binding
+	PageUp    key.Binding
+	Home      key.Binding
+	End       key.Binding
 }
 
 func (k chatKeyMap) ShortHelp() []key.Binding {
@@ -218,7 +220,8 @@ func (k chatKeyMap) ShortHelp() []key.Binding {
 
 func (k chatKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Send, k.Newline, k.Interrupt, k.Quit},
+		{k.Send, k.Newline, k.Interrupt, k.Help, k.Quit},
+		{k.LineUp, k.LineDown, k.PageUp, k.PageDown, k.Home, k.End},
 	}
 }
 
@@ -228,6 +231,7 @@ type chatTUIModel struct {
 	chatViewport  viewport.Model
 	input         textarea.Model
 	spinner       spinner.Model
+	help          help.Model
 	keys          chatKeyMap
 	entries       []tuiEntry
 	approval      *tuiApprovalMsg
@@ -236,15 +240,14 @@ type chatTUIModel struct {
 	busy          bool
 	stepText      string
 	statusText    string
+	showFullHelp  bool
 	entriesDirty  bool
 	entriesWidth  int
 	refreshQueued bool
 	entryKeys     []string
 	entryBlocks   []string
-	renderedBody  string
-	chatTop       int
-	mdWidth       int
-	mdRenderer    *glamour.TermRenderer
+	pendingScroll int
+	scrollQueued  bool
 	stickToBottom bool
 	queuedTasks   []string
 	runningTask   string
@@ -252,8 +255,6 @@ type chatTUIModel struct {
 }
 
 var (
-	terminalProbeLineRE = regexp.MustCompile(`^\]?11;rgb:[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}\\?$`)
-
 	appStyle    = lipgloss.NewStyle().Padding(0, 1)
 	headerStyle = lipgloss.NewStyle().
 			Padding(0, 0, 1, 0)
@@ -314,7 +315,7 @@ var (
 
 	statusVersionStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("252"))
+				Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "252"})
 
 	paneTitleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("242")).
@@ -355,29 +356,16 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta := textarea.New()
 	ta.Placeholder = i18n.T("tui.placeholder.default")
 	ta.Focus()
-	ta.Prompt = "│ "
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
-	ta.Cursor.BlinkSpeed = 420 * time.Millisecond
-	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	ta.Cursor.Style = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("81")).
-		Background(lipgloss.Color("81"))
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("81")).
-		Bold(true)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	ta.BlurredStyle.Prompt = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
-	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 
 	chatVP := viewport.New(0, 0)
+	chatVP.MouseWheelEnabled = true
 
 	m := chatTUIModel{
 		runtime:      runtime,
@@ -385,15 +373,19 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 		input:        ta,
 		spinner:      sp,
 		chatViewport: chatVP,
+		help:         help.New(),
 		keys: chatKeyMap{
-			Send:          key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
-			Newline:       key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
-			Interrupt:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
-			Quit:          key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-			HistoryUp:     key.NewBinding(key.WithKeys("pgup")),
-			HistoryDn:     key.NewBinding(key.WithKeys("pgdown")),
-			HistoryTop:    key.NewBinding(key.WithKeys("home")),
-			HistoryBottom: key.NewBinding(key.WithKeys("end")),
+			Send:      key.NewBinding(key.WithKeys("enter", "ctrl+m"), key.WithHelp("enter", "send")),
+			Newline:   key.NewBinding(key.WithKeys("ctrl+j"), key.WithHelp("ctrl+j", "newline")),
+			Interrupt: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "interrupt")),
+			Help:      key.NewBinding(key.WithKeys("f1"), key.WithHelp("f1", "help")),
+			Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+			LineUp:    key.NewBinding(key.WithKeys("alt+up"), key.WithHelp("alt+up", "scroll up")),
+			LineDown:  key.NewBinding(key.WithKeys("alt+down"), key.WithHelp("alt+down", "scroll down")),
+			PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
+			PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
+			Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "top")),
+			End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "bottom")),
 		},
 		entriesDirty:  true,
 		stickToBottom: true,
@@ -453,34 +445,17 @@ func runChatTUI(runtime *chatRuntime) int {
 		})
 	}
 
-	opts := []tea.ProgramOption{
-		tea.WithEnvironment(os.Environ()),
-		tea.WithInput(os.Stdin),
-		tea.WithOutput(os.Stdout),
-	}
-	if useAltScreenMode() {
-		opts = append(opts, tea.WithAltScreen())
-	}
-
-	p := tea.NewProgram(newChatTUIModel(runtime, events), opts...)
+	p := tea.NewProgram(
+		newChatTUIModel(runtime, events),
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
 		runtime.beforeExit(false)
 		return 1
 	}
 	return 0
-}
-
-func useAltScreenMode() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_FULLSCREEN")))
-	switch v {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
 }
 
 func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
@@ -492,6 +467,12 @@ func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
 func scheduleViewportRefresh() tea.Cmd {
 	return tea.Tick(time.Second/30, func(time.Time) tea.Msg {
 		return tuiRefreshMsg{}
+	})
+}
+
+func scheduleMouseScroll() tea.Cmd {
+	return tea.Tick(time.Second/60, func(time.Time) tea.Msg {
+		return tuiMouseScrollMsg{}
 	})
 }
 
@@ -512,8 +493,8 @@ func (m chatTUIModel) Init() tea.Cmd {
 func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	keyHandled := false
+	mouseHandled := false
 	immediateRefresh := false
-	forwardInput := shouldForwardToInput(msg)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -525,30 +506,13 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, m.keys.HistoryUp):
-			keyHandled = true
-			m.stickToBottom = false
-			m.chatViewport.HalfViewUp()
-			immediateRefresh = true
-		case key.Matches(msg, m.keys.HistoryDn):
-			keyHandled = true
-			m.chatViewport.HalfViewDown()
-			m.stickToBottom = m.chatViewport.AtBottom()
-			immediateRefresh = true
-		case key.Matches(msg, m.keys.HistoryTop):
-			keyHandled = true
-			m.stickToBottom = false
-			m.chatViewport.GotoTop()
-			immediateRefresh = true
-		case key.Matches(msg, m.keys.HistoryBottom):
-			keyHandled = true
-			m.chatViewport.GotoBottom()
-			m.stickToBottom = true
-			immediateRefresh = true
 		case key.Matches(msg, m.keys.Quit):
 			keyHandled = true
 			m.runtime.beforeExit(false)
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Help):
+			keyHandled = true
+			m.showFullHelp = !m.showFullHelp
 		case key.Matches(msg, m.keys.Interrupt):
 			keyHandled = true
 			if m.interruptForeground() {
@@ -556,12 +520,36 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entriesDirty = true
 				immediateRefresh = true
 			}
+		case key.Matches(msg, m.keys.LineUp):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.ScrollUp(1)
+		case key.Matches(msg, m.keys.LineDown):
+			keyHandled = true
+			m.chatViewport.ScrollDown(1)
+			m.stickToBottom = m.chatViewport.AtBottom()
+		case key.Matches(msg, m.keys.PageUp):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.HalfViewUp()
+		case key.Matches(msg, m.keys.PageDown):
+			keyHandled = true
+			m.chatViewport.HalfViewDown()
+			m.stickToBottom = m.chatViewport.AtBottom()
+		case key.Matches(msg, m.keys.Home):
+			keyHandled = true
+			m.stickToBottom = false
+			m.chatViewport.GotoTop()
+		case key.Matches(msg, m.keys.End):
+			keyHandled = true
+			m.chatViewport.GotoBottom()
+			m.stickToBottom = true
 		case key.Matches(msg, m.keys.Newline):
 			keyHandled = true
 			m.input.InsertString("\n")
 		case key.Matches(msg, m.keys.Send):
 			keyHandled = true
-			task := sanitizeSubmittedInput(m.input.Value())
+			task := strings.TrimSpace(m.input.Value())
 			if task == "" {
 				break
 			}
@@ -623,6 +611,16 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			immediateRefresh = true
 			cmds = append(cmds, m.startTask(task))
 		}
+	case tea.MouseMsg:
+		mouseHandled = true
+		if delta, ok := mouseScrollDelta(msg, m.chatViewport.MouseWheelDelta); ok {
+			m.pendingScroll += delta
+			if !m.scrollQueued {
+				m.scrollQueued = true
+				cmds = append(cmds, scheduleMouseScroll())
+			}
+			break
+		}
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.appendActivityEntry(msg.kind, msg.text)
@@ -663,17 +661,16 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusText = i18n.T("tui.status.error")
 			}
 		} else {
-			finalText := sanitizeDisplayText(msg.output)
 			// Only add if no streaming entry captured the output
 			hasStreamed := false
 			for _, e := range m.entries {
-				if e.role == "assistant" && strings.TrimSpace(e.text) == strings.TrimSpace(finalText) {
+				if e.role == "assistant" && strings.TrimSpace(e.text) == strings.TrimSpace(msg.output) {
 					hasStreamed = true
 					break
 				}
 			}
 			if !hasStreamed {
-				m.entries = append(m.entries, tuiEntry{role: "assistant", text: finalText})
+				m.entries = append(m.entries, tuiEntry{role: "assistant", text: msg.output})
 			}
 			m.statusText = i18n.T("tui.status.ready")
 		}
@@ -696,15 +693,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiStreamMsg:
-		token := sanitizeDisplayText(msg.token)
-		if token == "" {
-			cmds = append(cmds, waitForTUIEvent(m.events))
-			break
-		}
 		if len(m.entries) == 0 || m.entries[len(m.entries)-1].role != "streaming" {
-			m.entries = append(m.entries, tuiEntry{role: "streaming", text: token})
+			m.entries = append(m.entries, tuiEntry{role: "streaming", text: msg.token})
 		} else {
-			m.entries[len(m.entries)-1].text += token
+			m.entries[len(m.entries)-1].text += msg.token
 		}
 		m.entriesDirty = true
 		if !m.refreshQueued {
@@ -719,6 +711,18 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
 		}
+	case tuiMouseScrollMsg:
+		m.scrollQueued = false
+		if m.pendingScroll != 0 {
+			if m.pendingScroll < 0 {
+				m.stickToBottom = false
+			}
+			applyMouseScroll(&m.chatViewport, m.pendingScroll)
+			if m.pendingScroll > 0 {
+				m.stickToBottom = m.chatViewport.AtBottom()
+			}
+			m.pendingScroll = 0
+		}
 	case spinner.TickMsg:
 		if m.busy {
 			var cmd tea.Cmd
@@ -728,16 +732,93 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if forwardInput && !keyHandled {
-		prevHeight := m.input.Height()
+	if !keyHandled && !mouseHandled {
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
-		if m.reconcileInputHeight(prevHeight) {
-			immediateRefresh = true
+		// Dynamic input height
+		newHeight := m.desiredInputHeight()
+		if newHeight != m.input.Height() {
+			m.input.SetHeight(newHeight)
 		}
 	}
 	m.resize(immediateRefresh)
 	return m, tea.Batch(cmds...)
+}
+
+func (m chatTUIModel) View() string {
+	header := m.renderHeader()
+
+	content := m.renderConversation()
+
+	parts := []string{
+		header,
+		m.renderTodoSummary(),
+		content,
+		m.renderComposer(),
+		m.renderStatusLine(),
+	}
+	if m.showFullHelp {
+		parts = append(parts, m.help.FullHelpView(m.keys.FullHelp()))
+	}
+	return appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+func (m chatTUIModel) renderStatusLine() string {
+	statusParts := []string{
+		statusVersionStyle.Render(strings.TrimSpace(version)),
+		contextStatus(m.runtime, m.input.Value()),
+	}
+	if m.busy {
+		statusParts = append(statusParts, m.spinner.View()+" "+m.statusText)
+	} else {
+		statusParts = append(statusParts, m.statusText)
+	}
+	if strings.TrimSpace(m.stepText) != "" {
+		statusParts = append(statusParts, chipAccentStyle.Render(m.stepText))
+	}
+	return statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  "))
+}
+
+func (m *chatTUIModel) resize(forceRefresh bool) {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	footerHeight := 1
+	if m.showFullHelp {
+		footerHeight = 4
+	}
+	extra := 7 + footerHeight + m.input.Height()
+	contentWidth := max(20, m.width-4)
+	availableHeight := m.height - extra
+	m.chatViewport.Height = max(6, availableHeight)
+	newChatWidth := max(18, contentWidth)
+	widthChanged := m.chatViewport.Width != newChatWidth
+	m.chatViewport.Width = newChatWidth
+	m.input.SetWidth(max(20, contentWidth-4))
+	if widthChanged {
+		m.entriesDirty = true
+	}
+	if widthChanged || forceRefresh {
+		m.refreshViewports(forceRefresh)
+	}
+}
+
+func (m *chatTUIModel) refreshViewports(forceReanchor bool) {
+	if m.chatViewport.Width > 0 {
+		if m.entriesDirty || m.entriesWidth != m.chatViewport.Width {
+			offset := m.chatViewport.YOffset
+			m.chatViewport.SetContent(m.renderEntries())
+			if m.stickToBottom {
+				m.chatViewport.GotoBottom()
+			} else {
+				m.chatViewport.SetYOffset(offset)
+			}
+			m.entriesDirty = false
+			m.entriesWidth = m.chatViewport.Width
+		} else if forceReanchor && m.stickToBottom {
+			m.chatViewport.GotoBottom()
+		}
+	}
 }
 
 func (m *chatTUIModel) renderEntries() string {
@@ -800,7 +881,7 @@ func (m *chatTUIModel) renderEntries() string {
 		block := lipgloss.JoinVertical(
 			lipgloss.Left,
 			label.Render(entry.role),
-			m.renderEntryBody(entry, body, bodyWidth),
+			renderStyledBody(body, bodyWidth, text),
 		)
 		m.entryKeys[i] = key
 		m.entryBlocks[i] = block
@@ -814,52 +895,6 @@ func (m *chatTUIModel) renderEntries() string {
 		rendered = append(rendered, block)
 	}
 	return strings.Join(rendered, "\n\n")
-}
-
-func (m *chatTUIModel) renderEntryBody(entry tuiEntry, style lipgloss.Style, width int) string {
-	text := strings.TrimSpace(entry.text)
-	if text == "" {
-		return ""
-	}
-	var body string
-	if entry.role == "assistant" {
-		body = m.renderMarkdownBody(text, width)
-	} else {
-		body = renderStyledBody(style, width, text)
-	}
-	return body
-}
-
-func (m *chatTUIModel) renderMarkdownBody(text string, width int) string {
-	renderer, err := m.markdownRenderer(width)
-	if err != nil {
-		return renderStyledBody(codeBodyStyle, width, text)
-	}
-	out, err := renderer.Render(text)
-	if err != nil {
-		return renderStyledBody(codeBodyStyle, width, text)
-	}
-	return strings.TrimRight(out, "\n")
-}
-
-func (m *chatTUIModel) markdownRenderer(width int) (*glamour.TermRenderer, error) {
-	if m.mdRenderer != nil && m.mdWidth == width {
-		return m.mdRenderer, nil
-	}
-	style := "dark"
-	if !lipgloss.HasDarkBackground() {
-		style = "light"
-	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(style),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return nil, err
-	}
-	m.mdRenderer = r
-	m.mdWidth = width
-	return r, nil
 }
 
 func renderStyledBody(style lipgloss.Style, width int, text string) string {
@@ -903,13 +938,6 @@ func compactTokenCount(n int) string {
 	}
 }
 
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
-
 func estimateTokenUsage(messages []model.Message, draft string) int {
 	count := 0
 	for _, msg := range messages {
@@ -942,93 +970,27 @@ func isCJK(r rune) bool {
 		(r >= 0x20000 && r <= 0x2FA1F)
 }
 
-func (m chatTUIModel) chatViewportTop() int {
-	top := m.chatTop
-	if top > 0 {
-		return top
+func mouseScrollDelta(msg tea.MouseMsg, step int) (int, bool) {
+	if msg.Action != tea.MouseActionPress {
+		return 0, false
 	}
-	top = lipgloss.Height(m.renderHeader())
-	if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
-		top += lipgloss.Height(todo)
-	}
-	top += m.conversationTitleHeight()
-	return top
-}
-
-func (m chatTUIModel) conversationTitleHeight() int {
-	width := max(20, m.chatViewport.Width)
-	return lipgloss.Height(paneTitleStyle.Width(width).Render("messages"))
-}
-
-func (m chatTUIModel) conversationTitleHeightForWidth(width int) int {
-	return lipgloss.Height(paneTitleStyle.Width(max(20, width)).Render("messages"))
-}
-
-func (m chatTUIModel) wrappedContentLines() []string {
-	content := m.renderedBody
-	if strings.TrimSpace(content) == "" {
-		content = m.renderEntries()
-	}
-	if content == "" {
-		return nil
-	}
-	width := max(1, m.chatViewport.Width)
-	vp := viewport.New(width, 1)
-	vp.SetContent(content)
-	total := max(1, vp.TotalLineCount())
-	vp.Height = total
-	view := vp.View()
-	if view == "" {
-		return nil
-	}
-	return strings.Split(view, "\n")
-}
-
-func sanitizeDisplayText(s string) string {
-	if s == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case '\n', '\t':
-			b.WriteRune(r)
-		case '\r':
-			// Drop carriage returns to avoid cursor rewind artifacts in TUI.
-		default:
-			if unicode.IsPrint(r) {
-				b.WriteRune(r)
-			}
-		}
-	}
-	return b.String()
-}
-
-func sanitizeSubmittedInput(text string) string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = sanitizeDisplayText(ansi.Strip(text))
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if terminalProbeLineRE.MatchString(trimmed) {
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
-func shouldForwardToInput(msg tea.Msg) bool {
-	switch msg.(type) {
-	case tea.KeyMsg, tea.WindowSizeMsg:
-		return true
+	step = max(1, step)
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return -step, true
+	case tea.MouseButtonWheelDown:
+		return step, true
 	default:
-		return false
+		return 0, false
+	}
+}
+
+func applyMouseScroll(vp *viewport.Model, delta int) {
+	switch {
+	case delta < 0:
+		vp.ScrollUp(-delta)
+	case delta > 0:
+		vp.ScrollDown(delta)
 	}
 }
 
@@ -1131,6 +1093,106 @@ func parseApprovalFields(body string) map[string]string {
 	return fields
 }
 
+func (m chatTUIModel) renderHeader() string {
+	chips := []string{
+		titleStyle.Render("tacli"),
+		chipAccentStyle.Render("version " + strings.TrimSpace(version)),
+		chipAccentStyle.Render(m.runtime.cfg.Model),
+		chipMutedStyle.Render(m.runtime.sessionName),
+	}
+	if m.runtime.approver.Mode() == tools.ApprovalDangerously {
+		chips = append(chips, chipWarnStyle.Render("dangerously"))
+	} else {
+		chips = append(chips, chipMutedStyle.Render("confirm"))
+	}
+	return headerStyle.Width(max(20, m.width-2)).Render(strings.Join(chips, "  ·  "))
+}
+
+func (m chatTUIModel) renderConversation() string {
+	visibleEntries := m.visibleConversationEntries()
+	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
+		fmt.Sprintf(i18n.T("tui.label.messages"), len(visibleEntries)),
+	)
+	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, m.chatViewport.View()))
+}
+
+func (m chatTUIModel) renderTodoSummary() string {
+	items := m.runtime.loop.TodoItems()
+	if len(items) == 0 {
+		return ""
+	}
+	width := max(20, m.width-2)
+	lines := []string{todoLabelStyle.Render(i18n.T("tui.label.plan"))}
+	for _, item := range items {
+		lines = append(lines, todoBodyStyle.Width(width).Render(todoLine(item)))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m chatTUIModel) renderComposer() string {
+	lines := []string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
+	}
+	if hint := strings.TrimSpace(m.composerHint()); hint != "" {
+		lines = append(lines, inputHintStyle.Render(hint))
+	}
+	lines = append(lines, m.input.View())
+	return inputPaneStyle.Width(max(20, m.width-2)).Render(
+		lipgloss.JoinVertical(lipgloss.Left, lines...),
+	)
+}
+
+func todoLine(item tools.TodoItem) string {
+	switch item.Status {
+	case "completed":
+		return "[done] " + item.Text
+	case "in_progress":
+		return "[doing] " + item.Text
+	default:
+		return "[todo] " + item.Text
+	}
+}
+
+func (m *chatTUIModel) refreshInputState() {
+	m.input.Prompt = ""
+	m.input.SetHeight(m.desiredInputHeight())
+	switch {
+	case m.approval != nil:
+		m.input.Placeholder = i18n.T("tui.placeholder.approval")
+	case m.busy:
+		m.input.Placeholder = busyPlaceholder(len(m.queuedTasks))
+	default:
+		m.input.Placeholder = i18n.T("tui.placeholder.default")
+	}
+}
+
+func (m chatTUIModel) desiredInputHeight() int {
+	lines := max(1, strings.Count(m.input.Value(), "\n")+1)
+	if m.height <= 0 {
+		return lines
+	}
+	footerHeight := 1
+	if m.showFullHelp {
+		footerHeight = 4
+	}
+	maxVisible := m.height - (7 + footerHeight + 6)
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+	return min(lines, maxVisible)
+}
+
+func (m chatTUIModel) composerHint() string {
+	switch {
+	case m.approval != nil:
+		return i18n.T("tui.hint.approval")
+	case m.busy:
+		return busyHint(len(m.queuedTasks))
+	default:
+		return i18n.T("tui.hint.send")
+	}
+}
+
 func (m *chatTUIModel) startTask(task string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.busy = true
@@ -1139,7 +1201,7 @@ func (m *chatTUIModel) startTask(task string) tea.Cmd {
 	m.runtime.setForegroundCancel(cancel)
 	m.statusText = i18n.T("tui.status.running")
 	m.refreshInputState()
-	return tea.Batch(runTaskCmd(m.runtime, m.events, ctx, task), m.spinner.Tick)
+	return runTaskCmd(m.runtime, m.events, ctx, task)
 }
 
 func (m *chatTUIModel) enqueueTask(task string) {
@@ -1177,9 +1239,6 @@ func busyPlaceholder(queued int) string {
 
 func busyHint(queued int) string {
 	base := strings.TrimSpace(i18n.T("tui.hint.busy"))
-	if base == "" {
-		return ""
-	}
 	if queued <= 0 {
 		return base
 	}
@@ -1314,11 +1373,8 @@ func (m chatTUIModel) visibleConversationEntries() []tuiEntry {
 }
 
 func sanitizeUserVisibleLogLine(text string) string {
-	text = strings.TrimSpace(sanitizeDisplayText(ansi.Strip(text)))
+	text = strings.TrimSpace(text)
 	if text == "" {
-		return ""
-	}
-	if terminalProbeLineRE.MatchString(text) {
 		return ""
 	}
 	fields := strings.Fields(text)

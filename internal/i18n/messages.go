@@ -18,7 +18,7 @@ var messagesEN = map[string]string{
 	"tui.placeholder.approval": "Approval: y approve / n reject / a always allow",
 	"tui.placeholder.busy":     "Running, you can keep typing...",
 	"tui.hint.approval":        "Waiting for your choice",
-	"tui.hint.busy":            "",
+	"tui.hint.busy":            "Task running",
 	"tui.hint.send":            "",
 
 	// TUI status

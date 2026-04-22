@@ -846,10 +846,6 @@ func (r *chatRuntime) verifyModelAvailable(name string) (bool, error) {
 }
 
 func (r *chatRuntime) rebuildLoop() {
-	r.rebuildLoopWithLog(chatAgentLogWriter())
-}
-
-func (r *chatRuntime) rebuildLoopWithLog(logWriter io.Writer) {
 	var (
 		todoItems    []tools.TodoItem
 		taskContract tools.TaskContract
@@ -862,10 +858,7 @@ func (r *chatRuntime) rebuildLoopWithLog(logWriter io.Writer) {
 	if r.jobs != nil {
 		jobs = jobToolAdapter{manager: r.jobs}
 	}
-	if logWriter == nil {
-		logWriter = io.Discard
-	}
-	r.loop = buildAgentWith(r.cfg, r.approver, logWriter, jobs, r.permissions)
+	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs, r.permissions)
 	r.attachAgentEventSink()
 	r.applyLoadedPlugins()
 	if r.session != nil {
@@ -3384,28 +3377,11 @@ func defaultChatSessionName(now time.Time) string {
 func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Approver) {
 	factory := harness.NewFactory(cfg)
 	approver := factory.NewApprover(reader, os.Stderr, tools.IsInteractiveTerminal(os.Stdin))
-	return factory.NewAgent(approver, chatAgentLogWriter(), nil, loadRuntimePolicy(cfg)), approver
+	return factory.NewAgent(approver, os.Stderr, nil, loadRuntimePolicy(cfg)), approver
 }
 
 func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, policy *tools.PermissionStore, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
 	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, policy, extraAuditSinks...)
-}
-
-func chatAgentLogWriter() io.Writer {
-	if debugLogsEnabled() {
-		return os.Stderr
-	}
-	return io.Discard
-}
-
-func debugLogsEnabled() bool {
-	for _, key := range []string{"TACLI_DEBUG", "TACLI_VERBOSE"} {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-		case "1", "true", "yes", "on":
-			return true
-		}
-	}
-	return false
 }
 
 func loadRuntimePolicy(cfg config.Config) *tools.PermissionStore {
