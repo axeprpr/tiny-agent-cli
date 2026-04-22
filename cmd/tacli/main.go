@@ -858,7 +858,7 @@ func (r *chatRuntime) rebuildLoop() {
 	if r.jobs != nil {
 		jobs = jobToolAdapter{manager: r.jobs}
 	}
-	r.loop = buildAgentWith(r.cfg, r.approver, os.Stderr, jobs, r.permissions)
+	r.loop = newRuntimeKernel(r.cfg, r.approver, os.Stderr, jobs, r.permissions).buildAgent()
 	r.attachAgentEventSink()
 	r.applyLoadedPlugins()
 	if r.session != nil {
@@ -2684,7 +2684,7 @@ func (r *chatRuntime) refreshModelMetadata() {
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
-	return r.loop.NewSessionWithPrompt(promptContextFor(r.cfg, r.loop, "chat", r.renderSystemMemory()))
+	return newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).newSession(r.loop, "chat", r.renderSystemMemory())
 }
 
 func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
@@ -2701,13 +2701,7 @@ func (r *chatRuntime) refreshMemoryContext() {
 	if r.jobs != nil {
 		r.jobs.UpdateMemory(r.renderSystemMemory())
 	}
-	messages := r.session.Messages()
-	if len(messages) == 0 {
-		r.session = r.newSession()
-		return
-	}
-	messages[0].Content = agent.BuildSystemPrompt(promptContextFor(r.cfg, r.loop, "chat", r.renderSystemMemory()))
-	r.session.ReplaceMessages(messages)
+	r.session = newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).refreshSessionPrompt(r.session, r.loop, "chat", r.renderSystemMemory())
 }
 
 func (r *chatRuntime) reloadMemory() error {
@@ -3381,7 +3375,7 @@ func buildAgent(cfg config.Config, reader *bufio.Reader) (*agent.Agent, tools.Ap
 }
 
 func buildAgentWith(cfg config.Config, approver tools.Approver, log io.Writer, jobs tools.JobControl, policy *tools.PermissionStore, extraAuditSinks ...tools.ToolAuditSink) *agent.Agent {
-	return harness.NewFactory(cfg).NewAgent(approver, log, jobs, policy, extraAuditSinks...)
+	return newRuntimeKernel(cfg, approver, log, jobs, policy, extraAuditSinks...).buildAgent()
 }
 
 func loadRuntimePolicy(cfg config.Config) *tools.PermissionStore {
