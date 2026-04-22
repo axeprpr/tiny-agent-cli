@@ -491,8 +491,9 @@ func buildNativeStatusLine(runtime *chatRuntime, state string) string {
 }
 
 func nativePromptWithStatus(runtime *chatRuntime, state string) string {
-	// Render prompt on top, status below, then move cursor back to input line.
-	return fmt.Sprintf("\n> \n\n%s\033[2A\r> ", buildNativeStatusLine(runtime, state))
+	// Render prompt on top, status below, then move back one line to keep
+	// editing on the prompt while status stays at the bottom.
+	return fmt.Sprintf("\n> \n%s\033[1A\r> ", buildNativeStatusLine(runtime, state))
 }
 
 func normalizeNativeInputLine(s string) string {
