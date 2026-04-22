@@ -2684,7 +2684,7 @@ func (r *chatRuntime) refreshModelMetadata() {
 }
 
 func (r *chatRuntime) newSession() *agent.Session {
-	return newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).newSession(r.loop, "chat", r.renderSystemMemory())
+	return newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).newSession(r.loop, "chat", r.contextProvider())
 }
 
 func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
@@ -2699,9 +2699,9 @@ func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
 
 func (r *chatRuntime) refreshMemoryContext() {
 	if r.jobs != nil {
-		r.jobs.UpdateMemory(r.renderSystemMemory())
+		r.jobs.UpdateMemory(r.contextProvider().SystemMemory())
 	}
-	r.session = newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).refreshSessionPrompt(r.session, r.loop, "chat", r.renderSystemMemory())
+	r.session = newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).refreshSessionPrompt(r.session, r.loop, "chat", r.contextProvider())
 }
 
 func (r *chatRuntime) reloadMemory() error {
@@ -2858,7 +2858,14 @@ func (r *chatRuntime) teamMemoryCommand(fields []string, input string) string {
 }
 
 func (r *chatRuntime) renderSystemMemory() string {
-	return memory.RenderSystemMemory(r.globalMemory, r.teamMemory, r.projectMemory)
+	return r.contextProvider().SystemMemory()
+}
+
+func (r *chatRuntime) contextProvider() runtimeContextProvider {
+	if r == nil {
+		return nil
+	}
+	return newMemoryContextProvider(r.globalMemory, r.teamMemory, r.projectMemory)
 }
 
 func memoryCommandBody(input string, prefix string) string {

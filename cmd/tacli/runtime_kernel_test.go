@@ -13,6 +13,10 @@ import (
 	"tiny-agent-cli/internal/tools"
 )
 
+type staticContextProvider string
+
+func (p staticContextProvider) SystemMemory() string { return string(p) }
+
 func TestRuntimeKernelNewSessionIncludesMemoryAndContract(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Config{
@@ -38,7 +42,7 @@ func TestRuntimeKernelNewSessionIncludesMemoryAndContract(t *testing.T) {
 	}
 
 	kernel := newRuntimeKernel(cfg, tools.NewTerminalApprover(bufio.NewReader(strings.NewReader("")), os.Stderr, tools.ApprovalConfirm, true), os.Stderr, nil, nil)
-	session := kernel.newSession(loop, "chat", "Persistent memory note")
+	session := kernel.newSession(loop, "chat", staticContextProvider("Persistent memory note"))
 	messages := session.Messages()
 	if len(messages) == 0 {
 		t.Fatalf("expected session messages")
@@ -65,13 +69,13 @@ func TestRuntimeKernelRefreshSessionPromptPreservesConversation(t *testing.T) {
 	}
 	loop := agent.New(chatClientStub{}, tools.NewRegistry(dir, "bash", time.Second, nil, nil), 32768, nil)
 	kernel := newRuntimeKernel(cfg, tools.NewTerminalApprover(bufio.NewReader(strings.NewReader("")), os.Stderr, tools.ApprovalConfirm, true), os.Stderr, nil, nil)
-	session := kernel.newSession(loop, "chat", "old memory")
+	session := kernel.newSession(loop, "chat", staticContextProvider("old memory"))
 	session.ReplaceMessages(append(session.Messages(),
 		model.Message{Role: "user", Content: "hello"},
 		model.Message{Role: "assistant", Content: "world"},
 	))
 
-	refreshed := kernel.refreshSessionPrompt(session, loop, "chat", "new memory")
+	refreshed := kernel.refreshSessionPrompt(session, loop, "chat", staticContextProvider("new memory"))
 	messages := refreshed.Messages()
 	if len(messages) != 3 {
 		t.Fatalf("expected refreshed session to preserve messages, got %d", len(messages))
@@ -81,5 +85,17 @@ func TestRuntimeKernelRefreshSessionPromptPreservesConversation(t *testing.T) {
 	}
 	if messages[1].Role != "user" || messages[2].Role != "assistant" {
 		t.Fatalf("expected non-system conversation to be preserved, got %#v", messages)
+	}
+}
+
+func TestMemoryContextProviderRendersSystemMemory(t *testing.T) {
+	provider := newMemoryContextProvider(
+		[]string{"Global note"},
+		[]string{"Team note"},
+		[]string{"Project note"},
+	)
+	got := provider.SystemMemory()
+	if !strings.Contains(got, "Persistent context memory:") || !strings.Contains(got, "Global notes:") || !strings.Contains(got, "Team notes:") || !strings.Contains(got, "Project notes:") {
+		t.Fatalf("expected grouped memory sections, got %q", got)
 	}
 }

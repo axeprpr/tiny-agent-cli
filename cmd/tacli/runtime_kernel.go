@@ -36,25 +36,29 @@ func (k runtimeKernel) buildAgent() *agent.Agent {
 	return harness.NewFactory(k.cfg).NewAgent(k.approver, k.log, k.jobs, k.policy, k.auditSinks...)
 }
 
-func (k runtimeKernel) promptContext(loop *agent.Agent, sessionMode, memoryText string) agent.PromptContext {
+func (k runtimeKernel) promptContext(loop *agent.Agent, sessionMode string, provider runtimeContextProvider) agent.PromptContext {
+	memoryText := ""
+	if provider != nil {
+		memoryText = provider.SystemMemory()
+	}
 	return harness.BuildPromptContext(k.cfg, loop, sessionMode, memoryText)
 }
 
-func (k runtimeKernel) newSession(loop *agent.Agent, sessionMode, memoryText string) *agent.Session {
-	return loop.NewSessionWithPrompt(k.promptContext(loop, sessionMode, memoryText))
+func (k runtimeKernel) newSession(loop *agent.Agent, sessionMode string, provider runtimeContextProvider) *agent.Session {
+	return loop.NewSessionWithPrompt(k.promptContext(loop, sessionMode, provider))
 }
 
-func (k runtimeKernel) refreshSessionPrompt(session *agent.Session, loop *agent.Agent, sessionMode, memoryText string) *agent.Session {
+func (k runtimeKernel) refreshSessionPrompt(session *agent.Session, loop *agent.Agent, sessionMode string, provider runtimeContextProvider) *agent.Session {
 	if session == nil {
-		return k.newSession(loop, sessionMode, memoryText)
+		return k.newSession(loop, sessionMode, provider)
 	}
 	messages := session.Messages()
 	if len(messages) == 0 {
-		return k.newSession(loop, sessionMode, memoryText)
+		return k.newSession(loop, sessionMode, provider)
 	}
 	messages[0] = model.Message{
 		Role:    "system",
-		Content: agent.BuildSystemPrompt(k.promptContext(loop, sessionMode, memoryText)),
+		Content: agent.BuildSystemPrompt(k.promptContext(loop, sessionMode, provider)),
 	}
 	session.ReplaceMessages(messages)
 	return session
