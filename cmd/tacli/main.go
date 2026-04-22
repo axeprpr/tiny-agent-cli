@@ -460,14 +460,8 @@ func printNativeChatBanner(runtime *chatRuntime) {
 		modelName = "unknown"
 	}
 	lines := []string{
-		"  _________    _________ __    ___ ",
-		" /_  __/   |  / ____/   / /   /  _|",
-		"  / / / /| | / /   / /| / /    / /  ",
-		" / / / ___ |/ /___/ ___ / /____/ /   ",
-		"/_/ /_/  |_|\\____/_/  |_/_____/___/  ",
-		"",
 		fmt.Sprintf("tacli %s  model=%s", strings.TrimSpace(version), modelName),
-		"输入问题开始对话，/help 查看命令，/exit 退出",
+		"/help 查看命令  /exit 退出",
 	}
 	fmt.Fprintln(os.Stdout, strings.Join(lines, "\n"))
 }

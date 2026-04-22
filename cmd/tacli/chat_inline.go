@@ -33,30 +33,30 @@ type inlineShellRunResult struct {
 }
 
 var (
-	inlineInputFrameStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("240")).
-				Padding(0, 1)
-	inlineTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Bold(true)
+	inlineComposerStyle = lipgloss.NewStyle().
+			Padding(0, 0, 0, 1)
+	inlineRuleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("238"))
 	inlineHintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243"))
 	inlineStatusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("244"))
+			Foreground(lipgloss.Color("244")).
+			Bold(true)
+	inlinePromptStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("81")).
+			Bold(true)
 	inlineUserStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
+			Foreground(lipgloss.Color("250")).
 			Bold(true)
 	inlineAssistantStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("81")).
-				Bold(true)
+				Foreground(lipgloss.Color("245"))
 )
 
 func newInlineShellModel(submitCh chan string) inlineShellModel {
 	ta := textarea.New()
 	ta.Focus()
-	ta.Prompt = ""
-	ta.Placeholder = "输入消息，Enter 发送，Ctrl+J 换行，Ctrl+C 退出"
+	ta.Prompt = inlinePromptStyle.Render("› ")
+	ta.Placeholder = "输入消息"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetHeight(3)
@@ -89,7 +89,7 @@ func (m inlineShellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inlineShellTaskFinishedMsg:
 		m.busy = false
 		m.status = "ready"
-		m.input.Placeholder = "输入消息，Enter 发送，Ctrl+J 换行，Ctrl+C 退出"
+		m.input.Placeholder = "输入消息"
 		return m, m.input.Focus()
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -127,12 +127,11 @@ func (m inlineShellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m inlineShellModel) View() string {
-	width := max(24, m.width-2)
-	title := inlineTitleStyle.Render("Message")
-	hint := inlineHintStyle.Render("Enter 发送  Ctrl+J 换行  Ctrl+C 退出")
-	status := inlineStatusStyle.Render("status: " + m.status)
-	body := lipgloss.JoinVertical(lipgloss.Left, title, hint, status, m.input.View())
-	return inlineInputFrameStyle.Width(width).Render(body)
+	width := min(96, max(28, m.width-2))
+	rule := inlineRuleStyle.Render(strings.Repeat("─", width))
+	meta := inlineStatusStyle.Render("enter 发送") + "  " + inlineHintStyle.Render("ctrl+j 换行  ctrl+c 退出") + "  " + inlineHintStyle.Render(m.status)
+	body := lipgloss.JoinVertical(lipgloss.Left, rule, inlineComposerStyle.Width(width).Render(m.input.View()), meta)
+	return body
 }
 
 func (m *inlineShellModel) reconcileHeight() {
@@ -248,7 +247,7 @@ func printInlineUserTurn(text string) {
 	if len(lines) == 0 {
 		return
 	}
-	fmt.Fprintln(os.Stdout, inlineUserStyle.Render("> "+lines[0]))
+	fmt.Fprintln(os.Stdout, inlineUserStyle.Render("› "+lines[0]))
 	for _, line := range lines[1:] {
 		fmt.Fprintln(os.Stdout, "  "+line)
 	}
@@ -268,11 +267,11 @@ func printInlineAssistantTurn(text string) {
 		fmt.Fprintln(os.Stdout)
 		return
 	}
-	fmt.Fprintln(os.Stdout, inlineAssistantStyle.Render("Assistant"))
 	rendered := renderInlineMarkdown(text)
 	if strings.TrimSpace(rendered) == "" {
 		rendered = text
 	}
+	fmt.Fprintln(os.Stdout, inlineAssistantStyle.Render("•"))
 	fmt.Fprintln(os.Stdout, rendered)
 }
 
