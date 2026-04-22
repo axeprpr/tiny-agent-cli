@@ -462,14 +462,14 @@ func runChatTUI(runtime *chatRuntime) int {
 	approver := newTUIApprover(runtime.cfg.ApprovalMode, events)
 	runtime.approver = approver
 	var jobs tools.JobControl
-	if runtime.jobs != nil {
-		jobs = jobToolAdapter{manager: runtime.jobs}
+	if runtime.orchestrator != nil {
+		jobs = runtime.orchestrator
 	}
 	runtime.loop = buildAgentWith(runtime.cfg, approver, &tuiLogWriter{events: events}, jobs, runtime.permissions, &tuiAuditSink{events: events})
 	runtime.attachAgentEventSink()
 	runtime.session.SetAgent(runtime.loop)
-	if runtime.jobs != nil {
-		runtime.jobs.SetNotifier(func(text string) {
+	if runtime.orchestrator != nil {
+		runtime.orchestrator.SetNotifier(func(text string) {
 			events <- tuiJobUpdateMsg{text: text}
 		})
 	}

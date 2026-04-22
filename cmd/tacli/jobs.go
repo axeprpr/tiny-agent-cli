@@ -849,38 +849,6 @@ func summarizeJobForSession(snap jobSnapshot) string {
 	return strings.Join(lines, "\n")
 }
 
-type jobToolAdapter struct {
-	manager *jobManager
-}
-
-func (a jobToolAdapter) Start(task string) (string, error) {
-	return a.manager.Start(task)
-}
-
-func (a jobToolAdapter) StartWithRole(role, task string) (string, error) {
-	return a.manager.StartWithRole(role, task)
-}
-
-func (a jobToolAdapter) StartWithRoleAndOptions(role, task string, opts tools.BackgroundStartOptions) (string, error) {
-	return a.manager.StartWithRoleAndOptions(role, task, opts)
-}
-
-func (a jobToolAdapter) Send(id, task string) error {
-	return a.manager.Send(id, task)
-}
-
-func (a jobToolAdapter) Cancel(id string) error {
-	return a.manager.Cancel(id)
-}
-
-func (a jobToolAdapter) List() []tools.BackgroundJobSnapshot {
-	return a.manager.ToolList()
-}
-
-func (a jobToolAdapter) Snapshot(id string) (tools.BackgroundJobSnapshot, bool) {
-	return a.manager.ToolSnapshot(id)
-}
-
 func compactJobText(text string, limit int) string {
 	text = tools.SingleLineText(text)
 	if limit > 0 && len(text) > limit {

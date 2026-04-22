@@ -48,7 +48,7 @@ type chatRuntime struct {
 	approver           tools.Approver
 	loop               *agent.Agent
 	session            *agent.Session
-	jobs               *jobManager
+	orchestrator       *runtimeOrchestrator
 	sessionName        string
 	sessionID          string
 	parentSession      string
@@ -403,8 +403,8 @@ func newChatRuntime(cfg config.Config, opts runtimeOptions, reader *bufio.Reader
 	}
 	r.session = r.newSession()
 	r.setSessionIdentity(session.NewSessionID(), "")
-	r.jobs = newJobManager(cfg, r.renderSystemMemory())
-	r.jobs.SetRoleRouter(llmBackgroundRoleRouter(cfg))
+	r.orchestrator = newRuntimeOrchestrator(cfg, r.renderSystemMemory())
+	r.orchestrator.SetRoleRouter(llmBackgroundRoleRouter(cfg))
 	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
 		r.skills = discovered
 	}
@@ -488,8 +488,8 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		return runtimeCommandResult{handled: true, output: report.render(), exitCode: -1}
 	case "/status":
 		jobSummary := "jobs=0"
-		if r.jobs != nil {
-			jobSummary = r.jobs.Summary()
+		if r.orchestrator != nil {
+			jobSummary = r.orchestrator.Summary()
 		}
 		auditSummary := r.auditStatusLine()
 		traceSummary := r.traceStatusLine()
@@ -624,13 +624,13 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 	case "/policy":
 		return runtimeCommandResult{handled: true, output: r.policyCommand(fields, input), exitCode: -1}
 	case "/bg":
-		id, err := r.jobs.Start(strings.TrimSpace(input[len("/bg"):]))
+		id, err := r.orchestrator.Start(strings.TrimSpace(input[len("/bg"):]))
 		if err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		role := backgroundRoleGeneral
 		isolation := "shared"
-		if snap, ok := r.jobs.Snapshot(id); ok {
+		if snap, ok := r.orchestrator.JobSnapshot(id); ok {
 			role = normalizeBackgroundRole(snap.Role)
 			isolation = normalizeBackgroundIsolation(snap.Role, snap.Isolation)
 		}
@@ -641,24 +641,24 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		}
 		role := strings.TrimSpace(fields[1])
 		task := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
-		id, err := r.jobs.StartWithRole(role, task)
+		id, err := r.orchestrator.StartWithRole(role, task)
 		if err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		normalized := normalizeBackgroundRole(role)
 		isolation := "shared"
-		if snap, ok := r.jobs.Snapshot(id); ok {
+		if snap, ok := r.orchestrator.JobSnapshot(id); ok {
 			normalized = normalizeBackgroundRole(snap.Role)
 			isolation = normalizeBackgroundIsolation(snap.Role, snap.Isolation)
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf("%s (role=%s isolation=%s)", fmt.Sprintf(i18n.T("cmd.bg.started"), id), normalized, isolation), exitCode: -1}
 	case "/jobs":
-		return runtimeCommandResult{handled: true, output: formatJobList(r.jobs.List()), exitCode: -1}
+		return runtimeCommandResult{handled: true, output: formatJobList(r.orchestrator.ListJobs()), exitCode: -1}
 	case "/job":
 		if len(fields) != 2 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.job.usage"), exitCode: -1}
 		}
-		snap, ok := r.jobs.Snapshot(fields[1])
+		snap, ok := r.orchestrator.JobSnapshot(fields[1])
 		if !ok {
 			return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.job.unknown"), fields[1]), exitCode: -1}
 		}
@@ -668,7 +668,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobsend.usage"), exitCode: -1}
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(input), fields[0]+" "+fields[1]))
-		if err := r.jobs.Send(fields[1], body); err != nil {
+		if err := r.orchestrator.Send(fields[1], body); err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobsend.ok"), fields[1]), exitCode: -1}
@@ -676,7 +676,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if len(fields) != 2 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobcancel.usage"), exitCode: -1}
 		}
-		if err := r.jobs.Cancel(fields[1]); err != nil {
+		if err := r.orchestrator.Cancel(fields[1]); err != nil {
 			return runtimeCommandResult{handled: true, output: err.Error(), exitCode: -1}
 		}
 		return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.jobcancel.ok"), fields[1]), exitCode: -1}
@@ -684,7 +684,7 @@ func (r *chatRuntime) executeCommand(input string) runtimeCommandResult {
 		if len(fields) != 2 {
 			return runtimeCommandResult{handled: true, output: i18n.T("cmd.jobapply.usage"), exitCode: -1}
 		}
-		snap, ok := r.jobs.Snapshot(fields[1])
+		snap, ok := r.orchestrator.JobSnapshot(fields[1])
 		if !ok {
 			return runtimeCommandResult{handled: true, output: fmt.Sprintf(i18n.T("cmd.job.unknown"), fields[1]), exitCode: -1}
 		}
@@ -855,8 +855,8 @@ func (r *chatRuntime) rebuildLoop() {
 		taskContract = r.loop.TaskContract()
 	}
 	var jobs tools.JobControl
-	if r.jobs != nil {
-		jobs = jobToolAdapter{manager: r.jobs}
+	if r.orchestrator != nil {
+		jobs = r.orchestrator
 	}
 	r.loop = newRuntimeKernel(r.cfg, r.approver, os.Stderr, jobs, r.permissions).buildAgent()
 	r.attachAgentEventSink()
@@ -866,8 +866,8 @@ func (r *chatRuntime) rebuildLoop() {
 	}
 	r.applyPlanningState(todoItems, taskContract)
 	_ = r.approver.SetMode(r.cfg.ApprovalMode)
-	if r.jobs != nil {
-		r.jobs.UpdateConfig(r.cfg)
+	if r.orchestrator != nil {
+		r.orchestrator.UpdateConfig(r.cfg)
 	}
 }
 
@@ -1355,7 +1355,7 @@ func (r *chatRuntime) hooksCommand(fields []string) string {
 }
 
 func (r *chatRuntime) agentsCommand(fields []string) string {
-	if r.jobs == nil || r.jobs.orchestration == nil {
+	if r.orchestrator == nil {
 		return "no background agents available"
 	}
 	usage := strings.Join([]string{
@@ -1365,13 +1365,13 @@ func (r *chatRuntime) agentsCommand(fields []string) string {
 		"usage: /agents cancel <id>",
 	}, "\n")
 	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
-		return formatSubagentList(r.jobs.orchestration.List())
+		return formatSubagentList(r.orchestrator.ListSubagents())
 	}
 	if strings.EqualFold(fields[1], "cancel") {
 		if len(fields) != 3 {
 			return usage
 		}
-		if err := r.jobs.Cancel(fields[2]); err != nil {
+		if err := r.orchestrator.Cancel(fields[2]); err != nil {
 			return err.Error()
 		}
 		return "canceled " + fields[2]
@@ -1379,7 +1379,7 @@ func (r *chatRuntime) agentsCommand(fields []string) string {
 	if len(fields) != 2 {
 		return usage
 	}
-	snap, ok := r.jobs.orchestration.Snapshot(fields[1])
+	snap, ok := r.orchestrator.SubagentSnapshot(fields[1])
 	if !ok {
 		return fmt.Sprintf("unknown agent %q", fields[1])
 	}
@@ -2208,11 +2208,11 @@ func (r *chatRuntime) executeTaskStreaming(ctx context.Context, task string, onT
 }
 
 func (r *chatRuntime) maybeStartAutoExplore(task string) {
-	if !shouldAutoStartExplore(task, r.cfg, r.jobs) {
+	if !shouldAutoStartExplore(task, r.cfg, r.orchestrator) {
 		return
 	}
 	subtask := buildAutoExploreTask(task)
-	id, err := r.jobs.StartWithRole(backgroundRoleExplore, subtask)
+	id, err := r.orchestrator.StartWithRole(backgroundRoleExplore, subtask)
 	if err != nil {
 		return
 	}
@@ -2252,17 +2252,17 @@ func (r *chatRuntime) tryHandleNaturalLanguageMemory(task string) (bool, string,
 }
 
 func (r *chatRuntime) maybeApplyReadyJobSummaries() {
-	if r.jobs == nil {
+	if r.orchestrator == nil {
 		return
 	}
-	snaps := r.jobs.CollectReadyForApply()
+	snaps := r.orchestrator.CollectReadyForApply()
 	if len(snaps) == 0 {
 		return
 	}
 	for _, snap := range snaps {
 		r.injectJobSummary(snap)
 		r.advanceTodoWithJobSummary(snap)
-		r.jobs.MarkApplied(snap.ID)
+		r.orchestrator.MarkApplied(snap.ID)
 	}
 }
 
@@ -2589,10 +2589,10 @@ func inferMemoryScope(note string) string {
 	return memoryScopeProject
 }
 
-func shouldAutoStartExplore(task string, cfg config.Config, jobs *jobManager) bool {
+func shouldAutoStartExplore(task string, cfg config.Config, orchestrator *runtimeOrchestrator) bool {
 	task = strings.TrimSpace(task)
 	mode := tools.NormalizePermissionMode(cfg.ApprovalMode)
-	if jobs == nil || (mode != tools.PermissionModeDangerFullAccess && mode != tools.PermissionModeAllow) {
+	if orchestrator == nil || (mode != tools.PermissionModeDangerFullAccess && mode != tools.PermissionModeAllow) {
 		return false
 	}
 	if len(task) < autoExploreMinChars {
@@ -2698,8 +2698,8 @@ func (r *chatRuntime) injectJobSummary(snap jobSnapshot) {
 }
 
 func (r *chatRuntime) refreshMemoryContext() {
-	if r.jobs != nil {
-		r.jobs.UpdateMemory(r.contextProvider().SystemMemory())
+	if r.orchestrator != nil {
+		r.orchestrator.UpdateMemory(r.contextProvider().SystemMemory())
 	}
 	r.session = newRuntimeKernel(r.cfg, r.approver, os.Stderr, nil, r.permissions).refreshSessionPrompt(r.session, r.loop, "chat", r.contextProvider())
 }

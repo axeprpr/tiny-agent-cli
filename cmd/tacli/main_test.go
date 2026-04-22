@@ -1215,7 +1215,7 @@ func TestResetClearsPlanningState(t *testing.T) {
 
 func TestBgRoleUsage(t *testing.T) {
 	r := newMemoryTestRuntime(t)
-	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
+	r.orchestrator = newRuntimeOrchestrator(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
 	result := r.executeCommand("/bg-role")
 	if !result.handled {
 		t.Fatalf("expected /bg-role handled")
@@ -1257,8 +1257,8 @@ func TestMCPCommandAddAndRemove(t *testing.T) {
 
 func TestAgentsCommandListsSnapshots(t *testing.T) {
 	r := newMemoryTestRuntime(t)
-	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
-	r.jobs.orchestration.Register(agent.SubagentSnapshot{
+	r.orchestrator = newRuntimeOrchestrator(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
+	r.orchestrator.manager.orchestration.Register(agent.SubagentSnapshot{
 		ID:        "job-001",
 		Status:    "ready",
 		Role:      "explore",
@@ -1398,14 +1398,14 @@ func newMemoryTestRuntime(t *testing.T) *chatRuntime {
 
 func TestShouldAutoStartExplore(t *testing.T) {
 	cfg := config.Config{ApprovalMode: tools.ApprovalDangerously}
-	jobs := newJobManager(cfg, "")
-	if !shouldAutoStartExplore("Analyze this repository and identify the highest-risk code paths and architecture issues.", cfg, jobs) {
+	orchestrator := newRuntimeOrchestrator(cfg, "")
+	if !shouldAutoStartExplore("Analyze this repository and identify the highest-risk code paths and architecture issues.", cfg, orchestrator) {
 		t.Fatalf("expected auto explore to trigger")
 	}
-	if shouldAutoStartExplore("Read one file and fix one line.", cfg, jobs) {
+	if shouldAutoStartExplore("Read one file and fix one line.", cfg, orchestrator) {
 		t.Fatalf("expected small task not to trigger")
 	}
-	if shouldAutoStartExplore("Analyze this repository deeply.", config.Config{ApprovalMode: tools.ApprovalConfirm}, jobs) {
+	if shouldAutoStartExplore("Analyze this repository deeply.", config.Config{ApprovalMode: tools.ApprovalConfirm}, orchestrator) {
 		t.Fatalf("expected confirm mode not to trigger")
 	}
 }
@@ -1438,8 +1438,8 @@ func TestInjectOrchestratorNote(t *testing.T) {
 
 func TestMaybeApplyReadyJobSummaries(t *testing.T) {
 	r := newMemoryTestRuntime(t)
-	r.jobs = newJobManager(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
-	r.jobs.jobs["job-001"] = &backgroundJob{
+	r.orchestrator = newRuntimeOrchestrator(config.Config{ApprovalMode: tools.ApprovalDangerously}, "")
+	r.orchestrator.manager.jobs["job-001"] = &backgroundJob{
 		id:         "job-001",
 		status:     jobReady,
 		lastOutput: "Key findings:\n- found one issue",
