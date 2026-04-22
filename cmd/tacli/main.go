@@ -376,8 +376,7 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 	defer rl.Close()
 
 	for {
-		fmt.Fprintln(rl.Stdout(), "")
-		fmt.Fprintln(rl.Stdout(), buildNativeStatusLine(runtime, state))
+		rl.SetPrompt(nativePromptWithStatus(runtime, state))
 		line, err := rl.Readline()
 		if err != nil && !errors.Is(err, io.EOF) {
 			if errors.Is(err, readline.ErrInterrupt) {
@@ -422,9 +421,6 @@ func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {
 				}
 			}()
 			state = "running"
-			fmt.Fprintln(rl.Stdout(), "")
-			fmt.Fprintln(rl.Stdout(), buildNativeStatusLine(runtime, state))
-			fmt.Fprintln(rl.Stdout(), "")
 			output, runErr := runtime.executeTaskStreaming(ctx, task, func(token string) {
 				fmt.Fprint(rl.Stdout(), token)
 			})
@@ -485,13 +481,18 @@ func buildNativeStatusLine(runtime *chatRuntime, state string) string {
 		window = 32768
 	}
 	return fmt.Sprintf(
-		"[status] v%s  model=%s  ctx=%s/%s  state=%s",
+		"[status] %s  model=%s  ctx=%s/%s  state=%s",
 		strings.TrimSpace(version),
 		strings.TrimSpace(runtime.cfg.Model),
 		compactTokenCount(estimateTokenUsage(runtime.session.Messages(), "")),
 		compactTokenCount(window),
 		label,
 	)
+}
+
+func nativePromptWithStatus(runtime *chatRuntime, state string) string {
+	// Render prompt on top, status below, then move cursor back to input line.
+	return fmt.Sprintf("\n> \n\n%s\033[2A\r> ", buildNativeStatusLine(runtime, state))
 }
 
 func normalizeNativeInputLine(s string) string {
