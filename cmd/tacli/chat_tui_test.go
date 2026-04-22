@@ -154,6 +154,63 @@ func TestResizeKeepsViewportPinnedToBottomWhenComposerHeightChanges(t *testing.T
 	}
 }
 
+func TestComputeLayoutShrinksViewportWhenInputGrows(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+
+	m := chatTUIModel{
+		runtime:      r,
+		width:        100,
+		height:       30,
+		chatViewport: viewport.New(80, 10),
+		input:        textarea.New(),
+	}
+	m.input.SetHeight(1)
+	small := m.computeLayout()
+
+	m.input.SetHeight(6)
+	large := m.computeLayout()
+
+	if large.viewportHeight >= small.viewportHeight {
+		t.Fatalf("expected viewport to shrink when input grows: small=%d large=%d", small.viewportHeight, large.viewportHeight)
+	}
+	if large.chatTop != small.chatTop {
+		t.Fatalf("expected header/todo anchor to stay stable: small=%d large=%d", small.chatTop, large.chatTop)
+	}
+}
+
+func TestDesiredInputHeightRespectsAvailableViewportSpace(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+
+	m := chatTUIModel{
+		runtime:      r,
+		width:        80,
+		height:       14,
+		chatViewport: viewport.New(76, 6),
+		input:        textarea.New(),
+	}
+	m.input.SetValue(strings.Repeat("line\n", 20))
+
+	got := m.desiredInputHeight()
+	if got < 1 {
+		t.Fatalf("expected positive desired input height, got %d", got)
+	}
+
+	layout := m.computeLayout()
+	if layout.viewportHeight < 6 {
+		t.Fatalf("expected minimum viewport height to be preserved, got %d", layout.viewportHeight)
+	}
+}
+
 func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
 	m := chatTUIModel{
 		width:         80,
@@ -779,6 +836,10 @@ func TestSanitizeUserVisibleLogLineDropsTerminalProbeLine(t *testing.T) {
 }
 
 func TestUseAltScreenModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_FULLSCREEN", "")
+	if !useAltScreenMode() {
+		t.Fatalf("expected alt-screen mode enabled by default")
+	}
 	t.Setenv("TACLI_FULLSCREEN", "1")
 	if !useAltScreenMode() {
 		t.Fatalf("expected alt-screen mode enabled")
@@ -786,6 +847,10 @@ func TestUseAltScreenModeFromEnv(t *testing.T) {
 	t.Setenv("TACLI_FULLSCREEN", "0")
 	if useAltScreenMode() {
 		t.Fatalf("expected alt-screen mode disabled")
+	}
+	t.Setenv("TACLI_FULLSCREEN", "garbage")
+	if !useAltScreenMode() {
+		t.Fatalf("expected alt-screen mode enabled for unknown values")
 	}
 }
 

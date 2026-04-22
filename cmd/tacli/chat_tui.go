@@ -480,7 +480,14 @@ func runChatTUI(runtime *chatRuntime) int {
 
 func useAltScreenMode() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_FULLSCREEN")))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
+	switch v {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func waitForTUIEvent(events chan tea.Msg) tea.Cmd {
@@ -825,101 +832,15 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	if forwardInput && !keyHandled && !mouseHandled {
+		prevHeight := m.input.Height()
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
-		// Dynamic input height
-		newHeight := m.desiredInputHeight()
-		if newHeight != m.input.Height() {
-			m.input.SetHeight(newHeight)
+		if m.reconcileInputHeight(prevHeight) {
+			immediateRefresh = true
 		}
 	}
 	m.resize(immediateRefresh)
 	return m, tea.Batch(cmds...)
-}
-
-func (m chatTUIModel) View() string {
-	header := m.renderHeader()
-
-	content := m.renderConversation()
-
-	parts := []string{
-		header,
-		m.renderTodoSummary(),
-		content,
-		m.renderComposer(),
-		m.renderStatusLine(),
-	}
-	view := appStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	lines := strings.Split(strings.ReplaceAll(view, "\r\n", "\n"), "\n")
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], " ")
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m chatTUIModel) renderStatusLine() string {
-	statusParts := []string{
-		statusVersionStyle.Render(strings.TrimSpace(version)),
-		contextStatus(m.runtime, m.input.Value()),
-	}
-	if m.busy {
-		statusParts = append(statusParts, m.spinner.View()+" "+m.statusText)
-	} else {
-		statusParts = append(statusParts, m.statusText)
-	}
-	if strings.TrimSpace(m.stepText) != "" {
-		statusParts = append(statusParts, chipAccentStyle.Render(m.stepText))
-	}
-	return statusStyle.Width(max(0, m.width-2)).Render(strings.Join(statusParts, "  "))
-}
-
-func (m *chatTUIModel) resize(forceRefresh bool) {
-	if m.width <= 0 || m.height <= 0 {
-		return
-	}
-	footerHeight := 1
-	extra := 7 + footerHeight + m.input.Height()
-	contentWidth := max(20, m.width-4)
-	availableHeight := m.height - extra
-	m.chatViewport.Height = max(6, availableHeight)
-	if m.runtime != nil {
-		m.chatTop = lipgloss.Height(m.renderHeader())
-		if todo := strings.TrimSpace(m.renderTodoSummary()); todo != "" {
-			m.chatTop += lipgloss.Height(todo)
-		}
-		m.chatTop += m.conversationTitleHeight()
-	} else {
-		m.chatTop = 0
-	}
-	newChatWidth := max(18, contentWidth)
-	widthChanged := m.chatViewport.Width != newChatWidth
-	m.chatViewport.Width = newChatWidth
-	m.input.SetWidth(max(20, contentWidth-4))
-	if widthChanged {
-		m.entriesDirty = true
-	}
-	if widthChanged || forceRefresh {
-		m.refreshViewports(forceRefresh)
-	}
-}
-
-func (m *chatTUIModel) refreshViewports(forceReanchor bool) {
-	if m.chatViewport.Width > 0 {
-		if m.entriesDirty || m.entriesWidth != m.chatViewport.Width {
-			offset := m.chatViewport.YOffset
-			m.renderedBody = m.renderEntries()
-			m.chatViewport.SetContent(m.renderedBody)
-			if m.stickToBottom {
-				m.chatViewport.GotoBottom()
-			} else {
-				m.chatViewport.SetYOffset(offset)
-			}
-			m.entriesDirty = false
-			m.entriesWidth = m.chatViewport.Width
-		} else if forceReanchor && m.stickToBottom {
-			m.chatViewport.GotoBottom()
-		}
-	}
 }
 
 func (m *chatTUIModel) renderEntries() string {
@@ -1312,6 +1233,10 @@ func (m chatTUIModel) conversationTitleHeight() int {
 	return lipgloss.Height(paneTitleStyle.Width(width).Render("messages"))
 }
 
+func (m chatTUIModel) conversationTitleHeightForWidth(width int) int {
+	return lipgloss.Height(paneTitleStyle.Width(max(20, width)).Render("messages"))
+}
+
 func (m chatTUIModel) isDoubleClick(line, col int) bool {
 	if m.lastClickTime.IsZero() {
 		return false
@@ -1573,107 +1498,6 @@ func parseApprovalFields(body string) map[string]string {
 		fields[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
 	}
 	return fields
-}
-
-func (m chatTUIModel) renderHeader() string {
-	chips := []string{
-		titleStyle.Render("tacli"),
-		chipAccentStyle.Render("version " + strings.TrimSpace(version)),
-		chipAccentStyle.Render(m.runtime.cfg.Model),
-		chipMutedStyle.Render(m.runtime.sessionName),
-	}
-	if m.runtime.approver.Mode() == tools.ApprovalDangerously {
-		chips = append(chips, chipWarnStyle.Render("dangerously"))
-	} else {
-		chips = append(chips, chipMutedStyle.Render("confirm"))
-	}
-	return headerStyle.Width(max(20, m.width-2)).Render(strings.Join(chips, "  ·  "))
-}
-
-func (m chatTUIModel) renderConversation() string {
-	visibleEntries := m.visibleConversationEntries()
-	title := paneTitleStyle.Width(max(20, m.chatViewport.Width)).Render(
-		fmt.Sprintf(i18n.T("tui.label.messages"), len(visibleEntries)),
-	)
-	view := m.chatViewport.View()
-	if m.selActive {
-		view = m.highlightViewportSelection(view)
-	}
-	return conversationStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, view))
-}
-
-func (m chatTUIModel) renderTodoSummary() string {
-	items := m.runtime.loop.TodoItems()
-	if len(items) == 0 {
-		return ""
-	}
-	width := max(20, m.width-2)
-	lines := []string{todoLabelStyle.Render(i18n.T("tui.label.plan"))}
-	for _, item := range items {
-		lines = append(lines, todoBodyStyle.Width(width).Render(todoLine(item)))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
-}
-
-func (m chatTUIModel) renderComposer() string {
-	lines := []string{
-		lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(strings.Repeat("─", max(20, m.width-2))),
-	}
-	if hint := strings.TrimSpace(m.composerHint()); hint != "" {
-		lines = append(lines, inputHintStyle.Render(hint))
-	}
-	lines = append(lines, m.input.View())
-	return inputPaneStyle.Width(max(20, m.width-2)).Render(
-		lipgloss.JoinVertical(lipgloss.Left, lines...),
-	)
-}
-
-func todoLine(item tools.TodoItem) string {
-	switch item.Status {
-	case "completed":
-		return "[done] " + item.Text
-	case "in_progress":
-		return "[doing] " + item.Text
-	default:
-		return "[todo] " + item.Text
-	}
-}
-
-func (m *chatTUIModel) refreshInputState() {
-	m.input.Prompt = ""
-	m.input.SetHeight(m.desiredInputHeight())
-	switch {
-	case m.approval != nil:
-		m.input.Placeholder = i18n.T("tui.placeholder.approval")
-	case m.busy:
-		m.input.Placeholder = busyPlaceholder(len(m.queuedTasks))
-	default:
-		m.input.Placeholder = i18n.T("tui.placeholder.default")
-	}
-}
-
-func (m chatTUIModel) desiredInputHeight() int {
-	lines := max(1, strings.Count(m.input.Value(), "\n")+1)
-	if m.height <= 0 {
-		return lines
-	}
-	footerHeight := 1
-	maxVisible := m.height - (7 + footerHeight + 6)
-	if maxVisible < 1 {
-		maxVisible = 1
-	}
-	return min(lines, maxVisible)
-}
-
-func (m chatTUIModel) composerHint() string {
-	switch {
-	case m.approval != nil:
-		return i18n.T("tui.hint.approval")
-	case m.busy:
-		return busyHint(len(m.queuedTasks))
-	default:
-		return i18n.T("tui.hint.send")
-	}
 }
 
 func (m *chatTUIModel) startTask(task string) tea.Cmd {
