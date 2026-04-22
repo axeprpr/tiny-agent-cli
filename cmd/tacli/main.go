@@ -350,12 +350,12 @@ func runChat(args []string) int {
 func useTUIChatMode() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
 	switch v {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
+	case "", "0", "false", "no", "off":
 		return false
-	default:
+	case "1", "true", "yes", "on":
 		return true
+	default:
+		return false
 	}
 }
 
@@ -498,9 +498,9 @@ func buildNativeStatusLine(runtime *chatRuntime, state string) string {
 }
 
 func nativePromptWithStatus(runtime *chatRuntime, state string) string {
-	// Render prompt on top, status below, then move back one line to keep
-	// editing on the prompt while status stays at the bottom.
-	return fmt.Sprintf("> \n%s\033[1A\r> ", buildNativeStatusLine(runtime, state))
+	_ = runtime
+	_ = state
+	return "> "
 }
 
 func normalizeNativeInputLine(s string) string {

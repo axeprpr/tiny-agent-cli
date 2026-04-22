@@ -96,8 +96,8 @@ func TestDebugLogsDisabledByDefault(t *testing.T) {
 
 func TestUseTUIChatModeFromEnv(t *testing.T) {
 	t.Setenv("TACLI_TUI", "")
-	if !useTUIChatMode() {
-		t.Fatalf("expected TUI mode enabled by default")
+	if useTUIChatMode() {
+		t.Fatalf("expected TUI mode disabled by default")
 	}
 	t.Setenv("TACLI_TUI", "1")
 	if !useTUIChatMode() {
@@ -108,8 +108,8 @@ func TestUseTUIChatModeFromEnv(t *testing.T) {
 		t.Fatalf("expected TUI mode disabled")
 	}
 	t.Setenv("TACLI_TUI", "garbage")
-	if !useTUIChatMode() {
-		t.Fatalf("expected TUI mode enabled for unknown values")
+	if useTUIChatMode() {
+		t.Fatalf("expected TUI mode disabled for unknown values")
 	}
 }
 
@@ -135,11 +135,8 @@ func TestNativePromptWithStatusIncludesInputAndStatus(t *testing.T) {
 		session: agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil).NewSession(),
 	}
 	prompt := nativePromptWithStatus(runtime, "ready")
-	if !strings.Contains(prompt, "> ") {
+	if prompt != "> " {
 		t.Fatalf("expected prompt marker, got %q", prompt)
-	}
-	if !strings.Contains(prompt, "[status]") {
-		t.Fatalf("expected status marker, got %q", prompt)
 	}
 }
 
