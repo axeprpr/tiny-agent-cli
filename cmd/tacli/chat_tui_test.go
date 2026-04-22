@@ -220,6 +220,44 @@ func TestCtrlOEntersViewModeAndBlurInput(t *testing.T) {
 	}
 }
 
+func TestEscTogglesToViewModeWhenIdle(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(chatTUIModel)
+
+	if m.focusMode != chatFocusView {
+		t.Fatalf("expected esc to enter view mode when idle, got %q", m.focusMode)
+	}
+}
+
+func TestEscReturnsToInputModeFromViewModeWhenIdle(t *testing.T) {
+	m := chatTUIModel{
+		input:     textarea.New(),
+		focusMode: chatFocusView,
+		keys: chatKeyMap{
+			Interrupt: key.NewBinding(key.WithKeys("esc")),
+		},
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(chatTUIModel)
+
+	if m.focusMode != chatFocusInput {
+		t.Fatalf("expected esc to return to input mode, got %q", m.focusMode)
+	}
+	if !m.input.Focused() {
+		t.Fatalf("expected input to focus after esc returns to input mode")
+	}
+}
+
 func TestViewModeArrowKeysScrollViewport(t *testing.T) {
 	m := chatTUIModel{
 		chatViewport: viewport.New(80, 3),

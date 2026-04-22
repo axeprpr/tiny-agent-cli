@@ -559,6 +559,10 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entries = append(m.entries, tuiEntry{role: "system", text: i18n.T("cmd.interrupt.ok")})
 				m.entriesDirty = true
 				immediateRefresh = true
+			} else if m.focusMode == chatFocusInput {
+				m.setFocusMode(chatFocusView)
+			} else {
+				m.setFocusMode(chatFocusInput)
 			}
 		case m.focusMode == chatFocusView && (key.Matches(msg, m.keys.VimUp) || msg.Type == tea.KeyUp):
 			keyHandled = true
