@@ -115,7 +115,7 @@ func todoLine(item tools.TodoItem) string {
 }
 
 func (m *chatTUIModel) refreshInputState() {
-	m.input.Prompt = ""
+	m.input.Prompt = "│ "
 	m.input.SetHeight(m.desiredInputHeight())
 	switch {
 	case m.approval != nil:
@@ -150,4 +150,3 @@ func (m chatTUIModel) composerHint() string {
 		return i18n.T("tui.hint.send")
 	}
 }
-

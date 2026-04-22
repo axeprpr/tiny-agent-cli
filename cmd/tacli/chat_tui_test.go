@@ -559,7 +559,7 @@ func TestMouseSingleClickDoesNotCopy(t *testing.T) {
 	updated, cmd := m.Update(press)
 	m = updated.(chatTUIModel)
 	if cmd != nil {
-		t.Fatalf("expected no copy command on mouse press")
+		t.Fatalf("expected no command on mouse press")
 	}
 
 	release := tea.MouseMsg{
@@ -571,11 +571,11 @@ func TestMouseSingleClickDoesNotCopy(t *testing.T) {
 	updated, cmd = m.Update(release)
 	_ = updated.(chatTUIModel)
 	if cmd != nil {
-		t.Fatalf("expected no copy command on single click")
+		t.Fatalf("expected no command on single click")
 	}
 }
 
-func TestMouseDoubleClickCopiesWord(t *testing.T) {
+func TestMouseDoubleClickSelectsWord(t *testing.T) {
 	r := &chatRuntime{
 		cfg:         config.Config{Model: "test-model"},
 		sessionName: "chat-test",
@@ -592,11 +592,11 @@ func TestMouseDoubleClickCopiesWord(t *testing.T) {
 	m.entriesDirty = true
 	m.refreshViewports(true)
 
-	contentLines := strings.Split(m.renderEntries(), "\n")
+	contentLines := m.wrappedContentLines()
 	targetLine := -1
 	targetCol := -1
 	for i, line := range contentLines {
-		if idx := strings.Index(line, "beta"); idx >= 0 {
+		if idx := strings.Index(ansi.Strip(line), "beta"); idx >= 0 {
 			targetLine = i
 			targetCol = idx + 1
 			break
@@ -612,31 +612,18 @@ func TestMouseDoubleClickCopiesWord(t *testing.T) {
 
 	updated, _ := m.Update(press)
 	m = updated.(chatTUIModel)
-	updated, _ = m.Update(release) // first click, no copy
+	updated, _ = m.Update(release)
 	m = updated.(chatTUIModel)
 	m.lastClickTime = time.Now()
 	updated, _ = m.Update(press)
 	m = updated.(chatTUIModel)
 	updated, cmd := m.Update(release)
 	m = updated.(chatTUIModel)
-	if cmd == nil {
-		t.Fatalf("expected copy command on double click")
-	}
-	copyMsg := cmd()
-	updated, _ = m.Update(copyMsg)
-	m = updated.(chatTUIModel)
-	if m.statusText != "copied" {
-		t.Fatalf("expected copied status, got %q", m.statusText)
+	if cmd != nil {
+		t.Fatalf("expected no command on double click")
 	}
 	if got := m.selectedContentText(); got != "beta" {
 		t.Fatalf("expected selected word beta, got %q", got)
-	}
-}
-
-func TestBuildOSC52SequenceProducesControlSequence(t *testing.T) {
-	seq := buildOSC52Sequence("copy me")
-	if !strings.Contains(seq, "]52;") {
-		t.Fatalf("expected OSC52 sequence, got %q", seq)
 	}
 }
 
@@ -647,13 +634,13 @@ func TestSelectedContentTextUsesDisplayCoordinates(t *testing.T) {
 	}
 	m.entriesDirty = true
 	m.refreshViewports(true)
-	all := strings.Split(m.renderEntries(), "\n")
+	all := m.wrappedContentLines()
 	if len(all) == 0 {
 		t.Fatalf("expected rendered content")
 	}
 	targetLine := -1
 	for i, line := range all {
-		if strings.Contains(line, "abcdef") {
+		if strings.Contains(ansi.Strip(line), "abcdef") {
 			targetLine = i
 			break
 		}
@@ -661,7 +648,7 @@ func TestSelectedContentTextUsesDisplayCoordinates(t *testing.T) {
 	if targetLine < 0 {
 		t.Fatalf("expected body line in rendered entries")
 	}
-	plain := strings.Split(m.renderEntries(), "\n")[targetLine]
+	plain := ansi.Strip(all[targetLine])
 	start := strings.Index(plain, "abcdef")
 	if start < 0 {
 		t.Fatalf("expected abcdef in target line")
@@ -924,17 +911,11 @@ func TestMouseDragCopyMatchesWrappedLineCoordinates(t *testing.T) {
 	m = updated.(chatTUIModel)
 	updated, cmd := m.Update(release)
 	m = updated.(chatTUIModel)
-	if cmd == nil {
-		t.Fatalf("expected copy command on drag release")
-	}
-	copyMsg := cmd()
-	updated, _ = m.Update(copyMsg)
-	m = updated.(chatTUIModel)
-	if m.statusText != "copied" {
-		t.Fatalf("expected copied status, got %q", m.statusText)
+	if cmd != nil {
+		t.Fatalf("expected no command on drag release")
 	}
 	if got := m.selectedContentText(); got != "gamma" {
-		t.Fatalf("unexpected copied text: got %q want %q", got, "gamma")
+		t.Fatalf("unexpected selected text: got %q want %q", got, "gamma")
 	}
 }
 
@@ -1087,7 +1068,7 @@ func TestSessionLoadReloadsVisibleConversation(t *testing.T) {
 	m = updated.(chatTUIModel)
 	m.resize(true)
 
-	content := m.renderEntries()
+	content := ansi.Strip(m.renderEntries())
 	if strings.Contains(content, "current question") {
 		t.Fatalf("expected previous session content to be replaced, got %q", content)
 	}

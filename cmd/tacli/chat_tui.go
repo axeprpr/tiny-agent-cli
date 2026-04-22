@@ -12,8 +12,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/atotto/clipboard"
-	osc52 "github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -55,11 +53,6 @@ type tuiStreamMsg struct {
 }
 
 type tuiRefreshMsg struct{}
-
-type tuiCopyResultMsg struct {
-	ok     bool
-	detail string
-}
 
 type tuiEntry struct {
 	role string
@@ -377,9 +370,23 @@ func newChatTUIModel(runtime *chatRuntime, events chan tea.Msg) chatTUIModel {
 	ta := textarea.New()
 	ta.Placeholder = i18n.T("tui.placeholder.default")
 	ta.Focus()
-	ta.Prompt = ""
+	ta.Prompt = "│ "
 	ta.ShowLineNumbers = false
 	ta.SetHeight(1)
+	ta.Cursor.BlinkSpeed = 420 * time.Millisecond
+	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	ta.Cursor.Style = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("81")).
+		Background(lipgloss.Color("81"))
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("81")).
+		Bold(true)
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240"))
+	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -695,20 +702,14 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selEndCol = col
 				releaseLine, releaseCol = line, col
 			}
-			text := ""
 			if m.mouseDragged || m.selStartLine != m.selEndLine || m.selStartCol != m.selEndCol {
-				text = m.selectedContentText()
 			} else if m.isDoubleClick(releaseLine, releaseCol) {
 				if startCol, endCol, ok := m.wordBoundsAt(releaseLine, releaseCol); ok {
 					m.selStartLine = releaseLine
 					m.selEndLine = releaseLine
 					m.selStartCol = startCol
 					m.selEndCol = endCol
-					text = m.selectedContentText()
 				}
-			}
-			if cmd := copyTextCmd(text); cmd != nil {
-				cmds = append(cmds, cmd)
 			}
 			m.selActive = false
 			m.mousePressed = false
@@ -718,17 +719,6 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastClickCol = releaseCol
 			immediateRefresh = true
 		}
-	case tuiCopyResultMsg:
-		if msg.ok {
-			m.statusText = "copied"
-		} else {
-			m.statusText = "copy failed"
-			if strings.TrimSpace(msg.detail) != "" {
-				m.entries = append(m.entries, tuiEntry{role: "system", text: "copy failed: " + msg.detail})
-				m.entriesDirty = true
-			}
-		}
-		immediateRefresh = true
 	case tuiLogMsg:
 		m.stepText = nextStepStatus(m.stepText, msg.kind, msg.text)
 		m.appendActivityEntry(msg.kind, msg.text)
@@ -952,8 +942,12 @@ func (m *chatTUIModel) markdownRenderer(width int) (*glamour.TermRenderer, error
 	if m.mdRenderer != nil && m.mdWidth == width {
 		return m.mdRenderer, nil
 	}
+	style := "dark"
+	if !lipgloss.HasDarkBackground() {
+		style = "light"
+	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("notty"),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -1094,39 +1088,6 @@ func isLeftMouseRelease(msg tea.MouseMsg) bool {
 	return msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft
 }
 
-func copyTextCmd(text string) tea.Cmd {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	return func() tea.Msg {
-		oscErr := writeOSC52(text)
-		sysErr := clipboard.WriteAll(text)
-		if oscErr == nil || sysErr == nil {
-			return tuiCopyResultMsg{ok: true}
-		}
-		return tuiCopyResultMsg{
-			ok:     false,
-			detail: fmt.Sprintf("osc52=%v; system=%v", oscErr, sysErr),
-		}
-	}
-}
-
-func buildOSC52Sequence(text string) string {
-	seq := osc52.New(text)
-	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
-		seq = seq.Tmux()
-	} else if strings.TrimSpace(os.Getenv("STY")) != "" {
-		seq = seq.Screen()
-	}
-	return seq.String()
-}
-
-func writeOSC52(text string) error {
-	_, err := io.WriteString(os.Stdout, buildOSC52Sequence(text))
-	return err
-}
-
 func (m chatTUIModel) contentPosAtMouse(msg tea.MouseMsg) (int, int, bool) {
 	if m.chatViewport.Height <= 0 {
 		return 0, 0, false
@@ -1188,7 +1149,7 @@ func (m chatTUIModel) selectedContentText() string {
 	out := make([]string, 0, endLine-startLine+1)
 	for i := startLine; i <= endLine; i++ {
 		// renderStyledBody widens lines to viewport width, so trim only right
-		// padding spaces before copying to avoid huge trailing whitespace.
+		// padding spaces before returning selected text.
 		plain := strings.TrimRight(ansi.Strip(lines[i]), " \t")
 		width := runewidth.StringWidth(plain)
 		from := 0
