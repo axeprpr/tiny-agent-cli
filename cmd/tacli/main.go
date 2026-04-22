@@ -349,7 +349,14 @@ func runChat(args []string) int {
 
 func useTUIChatMode() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("TACLI_TUI")))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
+	switch v {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func runChatNative(runtime *chatRuntime, reader *bufio.Reader) int {

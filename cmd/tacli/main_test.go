@@ -95,6 +95,10 @@ func TestDebugLogsDisabledByDefault(t *testing.T) {
 }
 
 func TestUseTUIChatModeFromEnv(t *testing.T) {
+	t.Setenv("TACLI_TUI", "")
+	if !useTUIChatMode() {
+		t.Fatalf("expected TUI mode enabled by default")
+	}
 	t.Setenv("TACLI_TUI", "1")
 	if !useTUIChatMode() {
 		t.Fatalf("expected TUI mode enabled")
@@ -102,6 +106,10 @@ func TestUseTUIChatModeFromEnv(t *testing.T) {
 	t.Setenv("TACLI_TUI", "0")
 	if useTUIChatMode() {
 		t.Fatalf("expected TUI mode disabled")
+	}
+	t.Setenv("TACLI_TUI", "garbage")
+	if !useTUIChatMode() {
+		t.Fatalf("expected TUI mode enabled for unknown values")
 	}
 }
 
