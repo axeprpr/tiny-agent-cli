@@ -463,6 +463,9 @@ func runChatTUI(runtime *chatRuntime) int {
 	}
 
 	opts := []tea.ProgramOption{
+		tea.WithEnvironment(os.Environ()),
+		tea.WithInput(os.Stdin),
+		tea.WithOutput(os.Stdout),
 		tea.WithFilter(chatMouseEventFilter),
 	}
 	if useAltScreenMode() {

@@ -211,6 +211,31 @@ func TestDesiredInputHeightRespectsAvailableViewportSpace(t *testing.T) {
 	}
 }
 
+func TestViewLineCountStaysStableWhileTypingSingleLine(t *testing.T) {
+	r := &chatRuntime{
+		cfg:         config.Config{Model: "test-model"},
+		sessionName: "chat-test",
+		approver:    newTUIApprover(tools.ApprovalConfirm, make(chan tea.Msg, 1)),
+	}
+	r.loop = agent.New(chatClientStub{}, tools.NewRegistry(".", "bash", time.Second, nil), 32768, nil)
+	r.session = r.loop.NewSession()
+
+	m := newChatTUIModel(r, make(chan tea.Msg, 1))
+	m.width = 100
+	m.height = 28
+	m.resize(true)
+
+	baseLines := strings.Count(m.View(), "\n")
+	for _, ch := range []rune{'a', 'b', 'c', 'd', 'e'} {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = updated.(chatTUIModel)
+		gotLines := strings.Count(m.View(), "\n")
+		if gotLines != baseLines {
+			t.Fatalf("expected stable line count while typing, base=%d got=%d after %q", baseLines, gotLines, string(ch))
+		}
+	}
+}
+
 func TestRefreshViewportsPreservesOffsetWhenUserScrolledUp(t *testing.T) {
 	m := chatTUIModel{
 		width:         80,
