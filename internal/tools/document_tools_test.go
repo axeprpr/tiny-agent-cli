@@ -2,8 +2,10 @@ package tools
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +39,23 @@ func TestInspectPDFToolRejectsInvalidPDF(t *testing.T) {
 	tool := newInspectPDFTool(dir)
 	if _, err := tool.Call(context.Background(), json.RawMessage(`{"path":"broken.pdf"}`)); err == nil {
 		t.Fatalf("expected invalid pdf error")
+	}
+}
+
+func TestInspectPDFTool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "demo.pdf")
+	writeTestPDF(t, path, "Hello PDF")
+
+	tool := newInspectPDFTool(dir)
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"path":"demo.pdf","max_pages":1,"max_chars":200}`))
+	if err != nil {
+		t.Fatalf("inspect pdf: %v", err)
+	}
+	for _, want := range []string{"page_count: 1", "text_preview:", "H e l l o P D F"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in %q", want, out)
+		}
 	}
 }
 
@@ -100,5 +119,38 @@ func writeTestDOCX(t *testing.T, path string) {
 	writeZipFile("word/media/image1.png", "png")
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close zip: %v", err)
+	}
+}
+
+func writeTestPDF(t *testing.T, path, text string) {
+	t.Helper()
+	stream := fmt.Sprintf("BT /F1 18 Tf 50 100 Td (%s) Tj ET", text)
+	objects := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(stream), stream),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+	}
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objects)+1)
+	for i, obj := range objects {
+		offsets[i+1] = buf.Len()
+		buf.WriteString(fmt.Sprintf("%d 0 obj\n%s\nendobj\n", i+1, obj))
+	}
+	xrefOffset := buf.Len()
+	buf.WriteString("xref\n")
+	buf.WriteString(fmt.Sprintf("0 %d\n", len(objects)+1))
+	buf.WriteString("0000000000 65535 f \n")
+	for i := 1; i <= len(objects); i++ {
+		buf.WriteString(fmt.Sprintf("%010d 00000 n \n", offsets[i]))
+	}
+	buf.WriteString("trailer\n")
+	buf.WriteString(fmt.Sprintf("<< /Size %d /Root 1 0 R >>\n", len(objects)+1))
+	buf.WriteString("startxref\n")
+	buf.WriteString(fmt.Sprintf("%d\n%%%%EOF\n", xrefOffset))
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write pdf: %v", err)
 	}
 }

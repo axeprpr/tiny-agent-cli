@@ -2,7 +2,6 @@ package tools
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,7 +23,7 @@ func TestDiscoverSkillsFindsWorkspaceAndCodexHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover skills: %v", err)
 	}
-	if len(got) < 19 {
+	if len(got) < 18 {
 		t.Fatalf("unexpected skill count: %#v", got)
 	}
 
@@ -35,7 +34,7 @@ func TestDiscoverSkillsFindsWorkspaceAndCodexHome(t *testing.T) {
 		}
 		return names
 	}(), " "))
-	for _, want := range []string{"home a", "local a", "local b", "config a", "memory", "planning", "hooks", "agent-browser", "frontend-design", "code-refactoring"} {
+	for _, want := range []string{"home a", "local a", "local b", "config a", "memory", "planning", "hooks", "frontend-design", "code-refactoring"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing skill %q in %#v", want, got)
 		}
@@ -83,7 +82,7 @@ func TestParseSkillMarkdownCapturesToolDefinitions(t *testing.T) {
 
 func TestBundledSkillsCarryInstructions(t *testing.T) {
 	got := BundledSkills()
-	if len(got) < 18 {
+	if len(got) < 14 {
 		t.Fatalf("expected expanded bundled skills, got %#v", got)
 	}
 	found := false
@@ -97,49 +96,6 @@ func TestBundledSkillsCarryInstructions(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing bundled code-refactoring skill in %#v", got)
-	}
-}
-
-func TestDiscoverSkillsEvaluatesBundledAvailabilityFromEnv(t *testing.T) {
-	prevEnv := skillEnv
-	prevLookup := skillLookupPath
-	t.Cleanup(func() {
-		skillEnv = prevEnv
-		skillLookupPath = prevLookup
-	})
-	skillEnv = func(key string) string {
-		switch key {
-		case "TAVILY_API_KEY":
-			return ""
-		case "CONTEXT7_API_KEY":
-			return "ctx-key"
-		default:
-			return ""
-		}
-	}
-	skillLookupPath = func(file string) (string, error) {
-		return "", exec.ErrNotFound
-	}
-
-	got, err := DiscoverSkills(t.TempDir())
-	if err != nil {
-		t.Fatalf("discover skills: %v", err)
-	}
-	index := map[string]Skill{}
-	for _, skill := range got {
-		index[strings.ToLower(skill.Name)] = skill
-	}
-	if index["tavily"].Enabled {
-		t.Fatalf("expected tavily disabled without API key: %#v", index["tavily"])
-	}
-	if !strings.Contains(index["tavily"].DisabledReason, "TAVILY_API_KEY") {
-		t.Fatalf("unexpected tavily reason: %#v", index["tavily"])
-	}
-	if !index["context7"].Enabled {
-		t.Fatalf("expected context7 enabled with probe env: %#v", index["context7"])
-	}
-	if index["tmux"].Enabled {
-		t.Fatalf("expected tmux disabled without binary: %#v", index["tmux"])
 	}
 }
 

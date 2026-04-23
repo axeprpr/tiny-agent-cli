@@ -256,15 +256,6 @@ var bundledSkills = []Skill{
 		Enabled:         true,
 	},
 	{
-		Name:            "agent-browser",
-		Description:     "Plan browser-style investigation flows using native HTTP, HTML inspection, and verification tools.",
-		Instructions:    "When a task looks browser-centric, first decide whether native tools already provide enough evidence. Prefer fetch_url, web_search, read_file, and run_command before suggesting browser-only steps. For UI issues, describe what to inspect, what user-visible states matter, and how to verify them concretely.",
-		Path:            "bundled:agent-browser",
-		Source:          "bundled",
-		ToolDefinitions: []string{"fetch_url", "web_search", "run_command", "read_file"},
-		Enabled:         true,
-	},
-	{
 		Name:            "superpowers",
 		Description:     "Escalate from basic execution to high-leverage workflows such as decomposition, verification, and constraint-aware planning.",
 		Instructions:    "Use this skill for tasks that benefit from stronger structure. Break work into phases, surface assumptions early, keep a tight inspect-edit-verify loop, and explicitly choose the smallest high-leverage action that changes the outcome.",
@@ -283,30 +274,12 @@ var bundledSkills = []Skill{
 		Enabled:         true,
 	},
 	{
-		Name:            "tavily",
-		Description:     "Use Tavily-style web research patterns: focused query formation, source comparison, and answer grounding.",
-		Instructions:    "When web research is needed, form narrow queries, compare sources, and report the strongest evidence rather than a blended guess. Capture exact claims, recency, and unresolved conflicts. If an API-backed search tool is unavailable, fall back cleanly to native web_search and fetch_url patterns.",
-		Path:            "bundled:tavily",
-		Source:          "bundled",
-		ToolDefinitions: []string{"web_search", "fetch_url"},
-		Enabled:         true,
-	},
-	{
 		Name:            "frontend-design",
 		Description:     "Preserve or improve frontend quality with deliberate typography, hierarchy, and interaction decisions.",
 		Instructions:    "For frontend work, avoid generic UI changes. State the intended visual direction, respect the existing design system when one exists, and verify layouts across mobile and desktop. Prefer specific hierarchy, spacing, color, and copy decisions over vague styling language.",
 		Path:            "bundled:frontend-design",
 		Source:          "bundled",
 		ToolDefinitions: []string{"read_file", "edit_file", "write_file"},
-		Enabled:         true,
-	},
-	{
-		Name:            "context7",
-		Description:     "Treat external reference material as structured context: identify the authoritative source, the exact version, and the applicable constraints.",
-		Instructions:    "For documentation-heavy tasks, explicitly identify what version or environment matters before using the reference. Prefer primary sources, isolate the exact API or behavior in question, and call out where local code may differ from upstream defaults.",
-		Path:            "bundled:context7",
-		Source:          "bundled",
-		ToolDefinitions: []string{"read_file", "fetch_url", "web_search"},
 		Enabled:         true,
 	},
 	{
@@ -325,15 +298,6 @@ var bundledSkills = []Skill{
 		Path:            "bundled:marketing-skills",
 		Source:          "bundled",
 		ToolDefinitions: []string{"read_file", "write_file", "edit_file"},
-		Enabled:         true,
-	},
-	{
-		Name:            "tmux",
-		Description:     "Plan terminal multiplexing workflows and session hygiene for longer-running local tasks.",
-		Instructions:    "For tmux-related tasks, think in terms of sessions, panes, commands, logs, and cleanup. Prefer reproducible pane layouts and explicit attach/detach flows. If tmux-specific capabilities are unavailable, explain the intended session plan and fallback terminal workflow.",
-		Path:            "bundled:tmux",
-		Source:          "bundled",
-		ToolDefinitions: []string{"run_command"},
 		Enabled:         true,
 	},
 	{
@@ -447,9 +411,4 @@ func notYetAvailable(reason string) skillProbe {
 	}
 }
 
-var bundledSkillProbes = map[string]skillProbe{
-	"agent-browser": notYetAvailable("native browser automation is not built into this binary yet"),
-	"tavily":        requireEnv("TAVILY_API_KEY"),
-	"context7":      requireEnv("CONTEXT7_API_KEY", "CONTEXT7_BASE_URL"),
-	"tmux":          requireBinary("tmux"),
-}
+var bundledSkillProbes = map[string]skillProbe{}
