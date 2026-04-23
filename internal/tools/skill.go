@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,7 +19,16 @@ type Skill struct {
 	Path            string
 	Source          string
 	ToolDefinitions []string
+	Enabled         bool
+	DisabledReason  string
 }
+
+type skillProbe func(workDir string) (bool, string)
+
+var (
+	skillLookupPath = exec.LookPath
+	skillEnv        = os.Getenv
+)
 
 func DiscoverSkills(workDir string) ([]Skill, error) {
 	roots, err := skillRoots(workDir)
@@ -47,6 +58,10 @@ func DiscoverSkills(workDir string) ([]Skill, error) {
 			seen[key] = true
 			out = append(out, item)
 		}
+	}
+
+	for i := range out {
+		out[i] = evaluateSkillAvailability(out[i], workDir)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -174,12 +189,23 @@ func parseSkillMarkdown(fallbackName, path, text string) Skill {
 		Path:            strings.TrimSpace(path),
 		Source:          "local",
 		ToolDefinitions: uniqueSkillToolNames(toolDefs),
+		Enabled:         true,
 	}
 }
 
 func BundledSkills() []Skill {
 	out := make([]Skill, len(bundledSkills))
 	copy(out, bundledSkills)
+	return out
+}
+
+func EnabledSkills(skills []Skill) []Skill {
+	out := make([]Skill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Enabled {
+			out = append(out, skill)
+		}
+	}
 	return out
 }
 
@@ -209,6 +235,7 @@ var bundledSkills = []Skill{
 		Path:            "bundled:memory",
 		Source:          "bundled",
 		ToolDefinitions: []string{"update_todo"},
+		Enabled:         true,
 	},
 	{
 		Name:            "planning",
@@ -217,6 +244,7 @@ var bundledSkills = []Skill{
 		Path:            "bundled:planning",
 		Source:          "bundled",
 		ToolDefinitions: []string{"read_file", "list_files"},
+		Enabled:         true,
 	},
 	{
 		Name:            "hooks",
@@ -225,5 +253,203 @@ var bundledSkills = []Skill{
 		Path:            "bundled:hooks",
 		Source:          "bundled",
 		ToolDefinitions: []string{"run_command"},
+		Enabled:         true,
 	},
+	{
+		Name:            "agent-browser",
+		Description:     "Plan browser-style investigation flows using native HTTP, HTML inspection, and verification tools.",
+		Instructions:    "When a task looks browser-centric, first decide whether native tools already provide enough evidence. Prefer fetch_url, web_search, read_file, and run_command before suggesting browser-only steps. For UI issues, describe what to inspect, what user-visible states matter, and how to verify them concretely.",
+		Path:            "bundled:agent-browser",
+		Source:          "bundled",
+		ToolDefinitions: []string{"fetch_url", "web_search", "run_command", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "superpowers",
+		Description:     "Escalate from basic execution to high-leverage workflows such as decomposition, verification, and constraint-aware planning.",
+		Instructions:    "Use this skill for tasks that benefit from stronger structure. Break work into phases, surface assumptions early, keep a tight inspect-edit-verify loop, and explicitly choose the smallest high-leverage action that changes the outcome.",
+		Path:            "bundled:superpowers",
+		Source:          "bundled",
+		ToolDefinitions: []string{"update_task_contract", "update_todo", "read_file", "run_command"},
+		Enabled:         true,
+	},
+	{
+		Name:            "pdf-processing",
+		Description:     "Handle PDF-oriented tasks with a text-first, evidence-driven workflow.",
+		Instructions:    "For PDF requests, first identify whether the user needs metadata, extracted text, page-level inspection, or conversion. Prefer deterministic extraction and summarize page boundaries, missing text, encoding problems, and verification limits explicitly.",
+		Path:            "bundled:pdf-processing",
+		Source:          "bundled",
+		ToolDefinitions: []string{"inspect_pdf", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "tavily",
+		Description:     "Use Tavily-style web research patterns: focused query formation, source comparison, and answer grounding.",
+		Instructions:    "When web research is needed, form narrow queries, compare sources, and report the strongest evidence rather than a blended guess. Capture exact claims, recency, and unresolved conflicts. If an API-backed search tool is unavailable, fall back cleanly to native web_search and fetch_url patterns.",
+		Path:            "bundled:tavily",
+		Source:          "bundled",
+		ToolDefinitions: []string{"web_search", "fetch_url"},
+		Enabled:         true,
+	},
+	{
+		Name:            "frontend-design",
+		Description:     "Preserve or improve frontend quality with deliberate typography, hierarchy, and interaction decisions.",
+		Instructions:    "For frontend work, avoid generic UI changes. State the intended visual direction, respect the existing design system when one exists, and verify layouts across mobile and desktop. Prefer specific hierarchy, spacing, color, and copy decisions over vague styling language.",
+		Path:            "bundled:frontend-design",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "edit_file", "write_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "context7",
+		Description:     "Treat external reference material as structured context: identify the authoritative source, the exact version, and the applicable constraints.",
+		Instructions:    "For documentation-heavy tasks, explicitly identify what version or environment matters before using the reference. Prefer primary sources, isolate the exact API or behavior in question, and call out where local code may differ from upstream defaults.",
+		Path:            "bundled:context7",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "fetch_url", "web_search"},
+		Enabled:         true,
+	},
+	{
+		Name:            "systematic-debugging",
+		Description:     "Run debugging as a disciplined loop: reproduce, isolate, hypothesize, test, and confirm.",
+		Instructions:    "For bugs, start by reproducing the issue or extracting the strongest available symptoms. Narrow the failing surface, test one hypothesis at a time, and preserve evidence after each step. Do not jump to code edits until the likely failure mechanism is clear enough to justify the change.",
+		Path:            "bundled:systematic-debugging",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "run_command", "grep", "review_diff"},
+		Enabled:         true,
+	},
+	{
+		Name:            "marketing-skills",
+		Description:     "Write positioning, messaging, and launch-oriented content with clear audience and outcome framing.",
+		Instructions:    "When producing marketing-oriented material, identify the audience, value proposition, and CTA first. Prefer concrete messaging over hype, vary tone deliberately, and keep claims aligned with what the product or code actually does.",
+		Path:            "bundled:marketing-skills",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "write_file", "edit_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "tmux",
+		Description:     "Plan terminal multiplexing workflows and session hygiene for longer-running local tasks.",
+		Instructions:    "For tmux-related tasks, think in terms of sessions, panes, commands, logs, and cleanup. Prefer reproducible pane layouts and explicit attach/detach flows. If tmux-specific capabilities are unavailable, explain the intended session plan and fallback terminal workflow.",
+		Path:            "bundled:tmux",
+		Source:          "bundled",
+		ToolDefinitions: []string{"run_command"},
+		Enabled:         true,
+	},
+	{
+		Name:            "skill-creator",
+		Description:     "Create or refine skills with crisp purpose, boundaries, and tool usage guidance.",
+		Instructions:    "When defining a skill, make the trigger conditions explicit, keep instructions tight, and separate policy from implementation steps. Include expected tools, likely failure modes, and when the skill should be skipped.",
+		Path:            "bundled:skill-creator",
+		Source:          "bundled",
+		ToolDefinitions: []string{"write_file", "edit_file", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "webapp-testing",
+		Description:     "Test web apps with a verification-first mindset: startup, routing, responses, assets, and user-visible outcomes.",
+		Instructions:    "For webapp testing, define what must be true from a user perspective before running commands. Check the smallest useful surface first, such as build success, server reachability, route responses, and critical asset loading. Distinguish local verification from assumptions clearly.",
+		Path:            "bundled:webapp-testing",
+		Source:          "bundled",
+		ToolDefinitions: []string{"check_webapp", "fetch_url", "run_command", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "docx",
+		Description:     "Handle DOCX-oriented requests with structure-aware extraction, conversion, and verification discipline.",
+		Instructions:    "For DOCX tasks, separate container structure, document text, and formatting fidelity concerns. Make clear whether the goal is extraction, transformation, or validation, and report any unsupported formatting or media limitations explicitly.",
+		Path:            "bundled:docx",
+		Source:          "bundled",
+		ToolDefinitions: []string{"inspect_docx", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "changelog-maintenance",
+		Description:     "Keep changelog entries accurate, scoped, and useful to downstream readers.",
+		Instructions:    "When updating changelogs, group changes by user-facing impact rather than implementation trivia. Avoid speculative claims, call out breaking changes explicitly, and align entries with what was actually tested or shipped.",
+		Path:            "bundled:changelog-maintenance",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "edit_file", "write_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "gpt-researcher",
+		Description:     "Run structured research loops: clarify the question, gather evidence, compare findings, and synthesize limits.",
+		Instructions:    "For research tasks, restate the target question precisely, gather multiple sources when the answer is unstable, and distinguish facts from inferences. Prefer a short synthesis with explicit unresolved questions over a long ungrounded summary.",
+		Path:            "bundled:gpt-researcher",
+		Source:          "bundled",
+		ToolDefinitions: []string{"web_search", "fetch_url", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "code-refactoring",
+		Description:     "Approach refactors with behavior preservation, clear boundaries, and verification at each slice.",
+		Instructions:    "For refactors, define the invariant first: what must not change. Prefer small mechanical moves, keep naming and dependency changes explicit, and verify behavior after each slice before broadening the refactor.",
+		Path:            "bundled:code-refactoring",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "edit_file", "write_file", "review_diff", "run_command"},
+		Enabled:         true,
+	},
+}
+
+func evaluateSkillAvailability(skill Skill, workDir string) Skill {
+	if strings.TrimSpace(skill.Path) == "" {
+		skill.Enabled = true
+		skill.DisabledReason = ""
+		return skill
+	}
+	if !strings.EqualFold(strings.TrimSpace(skill.Source), "bundled") {
+		if !skill.Enabled {
+			skill.Enabled = true
+		}
+		skill.DisabledReason = ""
+		return skill
+	}
+	if probe, ok := bundledSkillProbes[strings.ToLower(strings.TrimSpace(skill.Name))]; ok && probe != nil {
+		enabled, reason := probe(workDir)
+		skill.Enabled = enabled
+		skill.DisabledReason = strings.TrimSpace(reason)
+		if enabled {
+			skill.DisabledReason = ""
+		}
+		return skill
+	}
+	skill.Enabled = true
+	skill.DisabledReason = ""
+	return skill
+}
+
+func requireEnv(keys ...string) skillProbe {
+	return func(_ string) (bool, string) {
+		for _, key := range keys {
+			if strings.TrimSpace(skillEnv(key)) != "" {
+				return true, ""
+			}
+		}
+		return false, "missing env: " + strings.Join(keys, " or ")
+	}
+}
+
+func requireBinary(name string) skillProbe {
+	return func(_ string) (bool, string) {
+		if _, err := skillLookupPath(name); err == nil {
+			return true, ""
+		} else if errors.Is(err, exec.ErrNotFound) || err != nil {
+			return false, "missing binary: " + strings.TrimSpace(name)
+		}
+		return false, "missing binary: " + strings.TrimSpace(name)
+	}
+}
+
+func notYetAvailable(reason string) skillProbe {
+	return func(_ string) (bool, string) {
+		return false, strings.TrimSpace(reason)
+	}
+}
+
+var bundledSkillProbes = map[string]skillProbe{
+	"agent-browser": notYetAvailable("native browser automation is not built into this binary yet"),
+	"tavily":        requireEnv("TAVILY_API_KEY"),
+	"context7":      requireEnv("CONTEXT7_API_KEY", "CONTEXT7_BASE_URL"),
+	"tmux":          requireBinary("tmux"),
 }

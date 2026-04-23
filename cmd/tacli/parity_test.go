@@ -219,7 +219,7 @@ func TestCLIParityControlPlaneScenario(t *testing.T) {
 	}
 
 	result = runCLIHarness(t, workDir, []string{"skills", "--workdir", workDir}, nil)
-	if result.code != 0 || !strings.Contains(result.stdout, "Demo [local]: Parity scenario tools=read_file") {
+	if result.code != 0 || !strings.Contains(result.stdout, "Demo [local] enabled: Parity scenario tools=read_file") {
 		t.Fatalf("skills failed: %#v", result)
 	}
 

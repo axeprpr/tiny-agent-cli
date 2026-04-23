@@ -84,6 +84,9 @@ func NewRegistryWithOptions(workDir, shell string, commandTimeout time.Duration,
 		newRunCommandTool(workDir, shell, commandTimeout, nil),
 		newFetchURLTool(),
 		newWebSearchTool(),
+		newInspectDOCXTool(workDir),
+		newInspectPDFTool(workDir),
+		newCheckWebappTool(),
 		newListMCPServersTool(filepath.Join(workDir, ".tacli")),
 		newListMCPResourcesTool(workDir, filepath.Join(workDir, ".tacli")),
 		newReadMCPResourceTool(workDir, filepath.Join(workDir, ".tacli")),
@@ -416,6 +419,13 @@ func (r *Registry) Preview(name string, raw json.RawMessage) string {
 		return compactKeyValue("id", args["id"], 24)
 	case "list_files", "read_file", "write_file", "fetch_url":
 		return compactPreviewString(args["path"], 80) + compactKeyValue("url", args["url"], 80)
+	case "inspect_docx", "inspect_pdf":
+		return compactPreviewString(args["path"], 80)
+	case "check_webapp":
+		return joinPreviewParts(
+			compactKeyValue("url", args["url"], 80),
+			compactKeyValue("title_contains", args["title_contains"], 40),
+		)
 	case "edit_file":
 		return joinPreviewParts(
 			compactKeyValue("path", args["path"], 60),

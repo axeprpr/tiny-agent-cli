@@ -75,6 +75,7 @@ type chatRuntime struct {
 	skills             []tools.Skill
 	foregroundMu       sync.Mutex
 	foregroundCancel   context.CancelFunc
+	onAgentEvent       func(agent.AgentEvent)
 }
 
 type runtimeAgentEventSink struct {
@@ -87,6 +88,13 @@ func (s runtimeAgentEventSink) RecordAgentEvent(ctx context.Context, event agent
 	}
 	data := cloneAnyMap(event.Data)
 	s.runtime.recordTrace(ctx, "agent", event.Type, data)
+	if s.runtime.onAgentEvent != nil {
+		s.runtime.onAgentEvent(agent.AgentEvent{
+			Time: event.Time,
+			Type: event.Type,
+			Data: data,
+		})
+	}
 }
 
 type memoryIntent struct {

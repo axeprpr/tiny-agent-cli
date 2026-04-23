@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tiny-agent-cli/internal/agent"
 	"tiny-agent-cli/internal/i18n"
 	"tiny-agent-cli/internal/model"
 	"tiny-agent-cli/internal/tools"
@@ -49,6 +50,11 @@ type tuiStreamMsg struct {
 }
 
 type tuiRefreshMsg struct{}
+
+type tuiAgentEventMsg struct {
+	eventType string
+	data      map[string]any
+}
 
 type tuiEntry struct {
 	role string
@@ -461,6 +467,12 @@ func runChatTUI(runtime *chatRuntime) int {
 	events := make(chan tea.Msg, 256)
 	approver := newTUIApprover(runtime.cfg.ApprovalMode, events)
 	runtime.approver = approver
+	runtime.onAgentEvent = func(event agent.AgentEvent) {
+		events <- tuiAgentEventMsg{
+			eventType: strings.TrimSpace(event.Type),
+			data:      cloneAnyMap(event.Data),
+		}
+	}
 	var jobs tools.JobControl
 	if runtime.orchestrator != nil {
 		jobs = runtime.orchestrator
@@ -480,9 +492,11 @@ func runChatTUI(runtime *chatRuntime) int {
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, i18n.T("usage.error.ui"), err)
+		runtime.onAgentEvent = nil
 		runtime.beforeExit(false)
 		return 1
 	}
+	runtime.onAgentEvent = nil
 	return 0
 }
 
@@ -731,6 +745,14 @@ func (m chatTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.refreshQueued {
 			m.refreshQueued = true
 			cmds = append(cmds, scheduleViewportRefresh())
+		}
+		cmds = append(cmds, waitForTUIEvent(m.events))
+	case tuiAgentEventMsg:
+		if text, ok := gateRetryStatusText(msg.eventType, msg.data); ok {
+			m.entries = append(m.entries, tuiEntry{role: "system", text: text})
+			m.statusText = text
+			m.entriesDirty = true
+			immediateRefresh = true
 		}
 		cmds = append(cmds, waitForTUIEvent(m.events))
 	case tuiRefreshMsg:
@@ -1305,6 +1327,40 @@ func (m *chatTUIModel) appendActivityEntry(kind, text string) {
 	default:
 		m.entries = append(m.entries, tuiEntry{role: "activity", text: formatInlineLogEntry(kind, text)})
 	}
+}
+
+func gateRetryStatusText(eventType string, data map[string]any) (string, bool) {
+	if strings.TrimSpace(eventType) != "turn_summary" || data == nil {
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(anyString(data["decision"])), "retry") {
+		return "", false
+	}
+	tag := gateRetryTag(anyString(data["reminder"]))
+	if tag == "" {
+		return "", false
+	}
+	return "[gate retry] " + tag, true
+}
+
+func gateRetryTag(reminder string) string {
+	reminder = strings.TrimSpace(reminder)
+	for _, tag := range []string{
+		"finish-gate",
+		"verify-completion-claims",
+		"plan-before-mutate",
+		"diagnose-before-retry",
+	} {
+		if strings.HasPrefix(reminder, "<system-reminder>"+tag) {
+			return tag
+		}
+	}
+	return ""
+}
+
+func anyString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func shouldSkipInlineActivity(kind, text string) bool {

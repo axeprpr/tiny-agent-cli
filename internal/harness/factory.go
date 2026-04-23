@@ -70,12 +70,14 @@ func BuildPromptContext(cfg config.Config, loop *agent.Agent, sessionMode, memor
 	}
 	var skills []agent.PromptSkill
 	if discovered, err := tools.DiscoverSkills(cfg.WorkDir); err == nil {
-		skills = make([]agent.PromptSkill, 0, len(discovered))
-		for _, item := range discovered {
+		enabled := tools.EnabledSkills(discovered)
+		skills = make([]agent.PromptSkill, 0, len(enabled))
+		for _, item := range enabled {
 			skills = append(skills, agent.PromptSkill{
-				Name:        item.Name,
-				Description: item.Description,
-				Path:        item.Path,
+				Name:         item.Name,
+				Description:  item.Description,
+				Path:         item.Path,
+				Instructions: item.Instructions,
 			})
 		}
 	}

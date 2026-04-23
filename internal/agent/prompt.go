@@ -23,9 +23,10 @@ type PromptContext struct {
 }
 
 type PromptSkill struct {
-	Name        string
-	Description string
-	Path        string
+	Name         string
+	Description  string
+	Path         string
+	Instructions string
 }
 
 type PromptCapability struct {
@@ -239,11 +240,8 @@ func renderSkillSection(skills []PromptSkill) string {
 	sort.Slice(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
-	if len(items) > 16 {
-		items = items[:16]
-	}
-
 	var lines []string
+	var instructionBlocks []string
 	for _, item := range items {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
@@ -259,11 +257,18 @@ func renderSkillSection(skills []PromptSkill) string {
 			line += " (" + path + ")"
 		}
 		lines = append(lines, line)
+		if instructions := strings.TrimSpace(item.Instructions); instructions != "" {
+			instructionBlocks = append(instructionBlocks, name+":\n"+instructions)
+		}
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	return "Available skills:\n- " + strings.Join(lines, "\n- ")
+	sections := []string{"Available skills:\n- " + strings.Join(lines, "\n- ")}
+	if len(instructionBlocks) > 0 {
+		sections = append(sections, "Skill instructions:\n"+strings.Join(instructionBlocks, "\n\n"))
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func renderCapabilitySection(capabilities []PromptCapability) string {

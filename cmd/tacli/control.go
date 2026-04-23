@@ -250,11 +250,19 @@ func formatSkills(skills []tools.Skill) string {
 	lines := make([]string, 0, len(skills))
 	for _, skill := range skills {
 		line := skill.Name + " [" + firstNonEmpty(skill.Source, "local") + "]"
+		if skill.Enabled {
+			line += " enabled"
+		} else {
+			line += " disabled"
+		}
 		if strings.TrimSpace(skill.Description) != "" {
 			line += ": " + skill.Description
 		}
 		if len(skill.ToolDefinitions) > 0 {
 			line += " tools=" + strings.Join(skill.ToolDefinitions, ",")
+		}
+		if !skill.Enabled && strings.TrimSpace(skill.DisabledReason) != "" {
+			line += " reason=" + skill.DisabledReason
 		}
 		lines = append(lines, line)
 	}

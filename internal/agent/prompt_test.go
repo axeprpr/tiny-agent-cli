@@ -55,10 +55,10 @@ func TestBuildSystemPromptIncludesRoleGuidance(t *testing.T) {
 func TestBuildSystemPromptIncludesSkills(t *testing.T) {
 	prompt := BuildSystemPrompt(PromptContext{
 		Skills: []PromptSkill{
-			{Name: "playwright", Description: "Browser automation", Path: "/skills/playwright/SKILL.md"},
+			{Name: "playwright", Description: "Browser automation", Path: "/skills/playwright/SKILL.md", Instructions: "Use browser-oriented verification steps."},
 		},
 	})
-	for _, want := range []string{"Available skills:", "playwright: Browser automation"} {
+	for _, want := range []string{"Available skills:", "playwright: Browser automation", "Skill instructions:", "Use browser-oriented verification steps."} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}

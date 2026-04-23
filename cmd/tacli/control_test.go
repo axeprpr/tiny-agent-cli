@@ -280,7 +280,7 @@ func TestRunSkillsListsWorkspaceSkill(t *testing.T) {
 		t.Fatalf("runSkills exit code = %d, stderr=%q", code, string(stderrBytes))
 	}
 	text := string(stdoutBytes)
-	if !strings.Contains(text, "Demo Skill [local]: Demo description tools=read_file,write_file") {
+	if !strings.Contains(text, "Demo Skill [local] enabled: Demo description tools=read_file,write_file") {
 		t.Fatalf("expected workspace skill in output, got %q", text)
 	}
 }

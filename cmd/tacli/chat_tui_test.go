@@ -613,6 +613,63 @@ func TestTaskDoneNormalizesStreamedTerminalOutputWithoutDuplicateAssistant(t *te
 	}
 }
 
+func TestGateRetryStatusText(t *testing.T) {
+	text, ok := gateRetryStatusText("turn_summary", map[string]any{
+		"decision": "retry",
+		"reminder": "<system-reminder>finish-gate\nYou are not done yet.",
+	})
+	if !ok {
+		t.Fatalf("expected gate retry text")
+	}
+	if text != "[gate retry] finish-gate" {
+		t.Fatalf("unexpected gate retry text: %q", text)
+	}
+}
+
+func TestTUIAgentEventShowsGateRetry(t *testing.T) {
+	m := chatTUIModel{
+		input: textarea.New(),
+	}
+
+	updated, _ := m.Update(tuiAgentEventMsg{
+		eventType: "turn_summary",
+		data: map[string]any{
+			"decision": "retry",
+			"reminder": "<system-reminder>verify-completion-claims\nBefore finishing, strengthen evidence.",
+		},
+	})
+	m = updated.(chatTUIModel)
+
+	if len(m.entries) != 1 {
+		t.Fatalf("expected one gate retry entry, got %#v", m.entries)
+	}
+	if m.entries[0].role != "system" || m.entries[0].text != "[gate retry] verify-completion-claims" {
+		t.Fatalf("unexpected gate retry entry: %#v", m.entries[0])
+	}
+	if m.statusText != "[gate retry] verify-completion-claims" {
+		t.Fatalf("unexpected status text: %q", m.statusText)
+	}
+}
+
+func TestTUIAgentEventIgnoresNonGateRetry(t *testing.T) {
+	m := chatTUIModel{
+		input: textarea.New(),
+	}
+
+	updated, _ := m.Update(tuiAgentEventMsg{
+		eventType: "turn_summary",
+		data: map[string]any{
+			"decision": "retry",
+			"reminder": "<system-reminder>answer-now\nAnswer directly.",
+		},
+	})
+	m = updated.(chatTUIModel)
+
+	if len(m.entries) != 0 {
+		t.Fatalf("expected non-gate retry to stay hidden, got %#v", m.entries)
+	}
+}
+
 func TestSessionLoadReloadsVisibleConversation(t *testing.T) {
 	stateDir := t.TempDir()
 	if err := session.Save(session.SessionPath(stateDir, "source"), session.State{

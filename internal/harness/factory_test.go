@@ -33,12 +33,15 @@ func TestBuildPromptContextUsesSortedToolNamesAndRole(t *testing.T) {
 		t.Fatalf("unexpected memory text: %q", ctx.MemoryText)
 	}
 	expectedToolNames := []string{
+		"check_webapp",
 		"create_task",
 		"delete_task",
 		"edit_file",
 		"fetch_url",
 		"glob_search",
 		"grep",
+		"inspect_docx",
+		"inspect_pdf",
 		"list_files",
 		"list_mcp_resources",
 		"list_mcp_servers",
