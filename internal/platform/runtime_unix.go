@@ -1,6 +1,6 @@
 //go:build !windows
 
-package tools
+package platform
 
 import (
 	"errors"
@@ -8,7 +8,15 @@ import (
 	"syscall"
 )
 
-func configureCommandCancellation(cmd *exec.Cmd) {
+func IsWindows() bool {
+	return false
+}
+
+func DefaultShell() string {
+	return "bash"
+}
+
+func ConfigureCommandCancellation(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
 	}

@@ -147,6 +147,8 @@ func run(args []string) int {
 		return runTask(withDangerouslyFlag(args[1:], globalDangerously))
 	case "chat":
 		return runChat(withDangerouslyFlag(args[1:], globalDangerously))
+	case "dashboard":
+		return runDashboard(withDangerouslyFlag(args[1:], globalDangerously))
 	case "status":
 		return runStatus(args[1:])
 	case "contract":
@@ -1976,6 +1978,9 @@ func (r *chatRuntime) pluginCommand(fields []string, raw string) string {
 	if r.pluginManager == nil {
 		return "plugin manager unavailable"
 	}
+	if !r.pluginManager.Supported() {
+		return r.pluginManager.SupportMessage()
+	}
 	if len(fields) == 1 || strings.EqualFold(fields[1], "list") {
 		_, _ = r.pluginManager.Discover()
 		discovered := r.pluginManager.List()
@@ -2038,6 +2043,9 @@ func (r *chatRuntime) pluginCommand(fields []string, raw string) string {
 func (r *chatRuntime) reloadPluginsCommand() string {
 	if r.pluginManager == nil {
 		return "plugin manager unavailable"
+	}
+	if !r.pluginManager.Supported() {
+		return r.pluginManager.SupportMessage()
 	}
 	reloaded, err := r.pluginManager.ReloadLoaded()
 	if err != nil {
@@ -3944,6 +3952,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  tacli                 # default chat on interactive terminals")
 	fmt.Fprintln(os.Stderr, "  tacli -d              # default chat in dangerously mode")
 	fmt.Fprintln(os.Stderr, "  tacli chat")
+	fmt.Fprintln(os.Stderr, "  tacli dashboard [--port 8421]")
 	fmt.Fprintln(os.Stderr, "  tacli init [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli plan [--workdir <path>]")
 	fmt.Fprintln(os.Stderr, "  tacli run [--dangerously] <task>")
@@ -3966,5 +3975,6 @@ func printRunUsage() {
 	fmt.Fprintln(os.Stderr, `  tacli -d "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  tacli run --dangerously "run go test ./..."`)
 	fmt.Fprintln(os.Stderr, `  tacli chat`)
+	fmt.Fprintln(os.Stderr, `  tacli dashboard --port 8421`)
 	fmt.Fprintln(os.Stderr, `  tacli chat --resume bugfix`)
 }

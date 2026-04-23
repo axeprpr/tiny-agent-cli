@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"tiny-agent-cli/internal/platform"
 )
 
 type State struct {
@@ -32,13 +34,7 @@ func Path(stateDir string) string {
 }
 
 func ScopeKey(workDir string) string {
-	workDir = strings.TrimSpace(workDir)
-	if workDir == "" {
-		return "default"
-	}
-	workDir = filepath.Clean(workDir)
-	workDir = strings.ReplaceAll(workDir, "\\", "/")
-	return workDir
+	return platform.NormalizeScopeKey(workDir)
 }
 
 func Load(path string) (State, error) {

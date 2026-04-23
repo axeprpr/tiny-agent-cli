@@ -1288,7 +1288,11 @@ func TestReloadPluginsCommandWithoutLoadedPlugins(t *testing.T) {
 		t.Fatalf("new plugin manager: %v", err)
 	}
 	r.pluginManager = manager
-	if got := r.reloadPluginsCommand(); got != "reloaded 0 plugins" {
+	got := r.reloadPluginsCommand()
+	if manager.Supported() && got != "reloaded 0 plugins" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+	if !manager.Supported() && got != manager.SupportMessage() {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }

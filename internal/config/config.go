@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"tiny-agent-cli/internal/platform"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -148,10 +148,7 @@ func (c *Config) Validate() error {
 }
 
 func defaultShell() string {
-	if runtime.GOOS == "windows" {
-		return "powershell.exe"
-	}
-	return "bash"
+	return platform.DefaultShell()
 }
 
 func getEnv(key, fallback string) string {

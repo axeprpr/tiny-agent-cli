@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"tiny-agent-cli/internal/platform"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -44,6 +45,7 @@ type Loaded struct {
 
 type Manager struct {
 	dir        string
+	supported  bool
 	discovered []Descriptor
 	loaded     map[string]Loaded
 }
@@ -54,9 +56,27 @@ func NewManager() (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{
-		dir:    dir,
-		loaded: make(map[string]Loaded),
+		dir:       dir,
+		supported: platform.PluginsSupported(),
+		loaded:    make(map[string]Loaded),
 	}, nil
+}
+
+func (m *Manager) Supported() bool {
+	if m == nil {
+		return false
+	}
+	return m.supported
+}
+
+func (m *Manager) SupportMessage() string {
+	if m == nil {
+		return platform.PluginSupportMessage()
+	}
+	if m.supported {
+		return "plugins supported"
+	}
+	return platform.PluginSupportMessage()
 }
 
 func (m *Manager) Discover() ([]Descriptor, error) {
@@ -193,6 +213,9 @@ func pluginDir() (string, error) {
 }
 
 func discoverDir(dir string) ([]Descriptor, error) {
+	if !platform.PluginsSupported() {
+		return nil, nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -201,8 +224,9 @@ func discoverDir(dir string) ([]Descriptor, error) {
 		return nil, err
 	}
 	out := make([]Descriptor, 0, len(entries))
+	ext := platform.PluginLibraryExt()
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".so" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ext {
 			continue
 		}
 		full := filepath.Join(dir, entry.Name())

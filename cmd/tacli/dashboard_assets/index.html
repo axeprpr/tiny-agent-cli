@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>tacli dashboard</title>
+  <style>
+    :root {
+      --bg: #f6f0e8;
+      --bg-strong: #efe5d7;
+      --panel: rgba(255,255,255,0.78);
+      --panel-strong: rgba(255,255,255,0.92);
+      --text: #1d2430;
+      --muted: #5d6777;
+      --line: rgba(29,36,48,0.1);
+      --accent: #0d6f9d;
+      --accent-soft: rgba(13,111,157,0.12);
+      --user: #152033;
+      --assistant: #ffffff;
+      --tool: #eef4f8;
+      --system: #f5eee3;
+      --danger: #a53434;
+      --shadow: 0 18px 45px rgba(44, 34, 24, 0.12);
+      --radius: 22px;
+      --radius-sm: 16px;
+      --composer-h: 96px;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(13,111,157,0.13), transparent 28%),
+        radial-gradient(circle at top right, rgba(181,104,44,0.14), transparent 26%),
+        linear-gradient(180deg, #fbf7f1 0%, var(--bg) 100%);
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+    body {
+      display: flex;
+      justify-content: center;
+    }
+    .app {
+      width: min(100%, 980px);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 14px calc(18px + env(safe-area-inset-bottom));
+      gap: 12px;
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(16px);
+      background: rgba(246,240,232,0.76);
+      border: 1px solid rgba(255,255,255,0.5);
+      box-shadow: var(--shadow);
+      border-radius: 24px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: 0.04em;
+      text-transform: lowercase;
+    }
+    .sub {
+      color: var(--muted);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+    }
+    .statusbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .chip {
+      border-radius: 999px;
+      padding: 8px 11px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font: 600 12px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .chip.busy {
+      background: rgba(181,104,44,0.14);
+      color: #8b4a15;
+    }
+    .chip.connected {
+      background: rgba(26,132,76,0.12);
+      color: #19633f;
+    }
+    .recent-files {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+    .file-pill {
+      flex: 0 0 auto;
+      min-width: 180px;
+      max-width: 260px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 11px 12px;
+      box-shadow: var(--shadow);
+    }
+    .file-pill .path {
+      font: 600 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow-wrap: anywhere;
+    }
+    .file-pill .meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font: 500 11px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .file-pill .actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+    }
+    .conversation {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: calc(var(--composer-h) + 18px);
+    }
+    .entry {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 100%;
+    }
+    .entry.user { align-items: flex-end; }
+    .entry.assistant, .entry.system, .entry.tool, .entry.files { align-items: flex-start; }
+    .bubble {
+      width: min(100%, 760px);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      overflow-wrap: anywhere;
+      user-select: text;
+    }
+    .entry.user .bubble {
+      background: var(--user);
+      color: #f8fbff;
+      border-color: rgba(255,255,255,0.12);
+    }
+    .entry.assistant .bubble {
+      background: var(--assistant);
+    }
+    .entry.system .bubble, .entry.files .bubble {
+      background: var(--system);
+    }
+    .entry.tool .bubble {
+      background: var(--tool);
+      width: min(100%, 820px);
+    }
+    .bubble .markdown {
+      font-size: 16px;
+      line-height: 1.62;
+    }
+    .bubble .markdown > :first-child { margin-top: 0; }
+    .bubble .markdown > :last-child { margin-bottom: 0; }
+    .bubble pre {
+      white-space: pre-wrap;
+      background: rgba(17,24,39,0.92);
+      color: #edf4ff;
+      padding: 12px;
+      border-radius: 14px;
+      overflow-x: auto;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .bubble code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.92em;
+    }
+    .meta-line {
+      padding-inline: 6px;
+      color: var(--muted);
+      font: 600 11px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .pending {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pending::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--accent);
+      animation: pulse 1.15s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(0.75); opacity: 0.45; }
+      50% { transform: scale(1.05); opacity: 1; }
+    }
+    .tool-details {
+      width: 100%;
+    }
+    .tool-details summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font: 700 13px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .tool-details summary::-webkit-details-marker { display: none; }
+    .tool-status {
+      text-transform: uppercase;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+    }
+    .tool-block {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 10px;
+    }
+    .tool-block label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font: 700 11px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .tool-block pre {
+      margin: 0;
+      background: rgba(255,255,255,0.65);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .file-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+      width: min(100%, 820px);
+    }
+    .file-card {
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.7);
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.4);
+    }
+    .file-name {
+      font: 700 13px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow-wrap: anywhere;
+    }
+    .file-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button, .button, label.upload-btn {
+      appearance: none;
+      border: 0;
+      cursor: pointer;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      padding: 10px 14px;
+      font: 700 13px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 40px;
+    }
+    button.secondary, .button.secondary, label.upload-btn.secondary {
+      background: rgba(29,36,48,0.08);
+      color: var(--text);
+    }
+    button.ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .composer-wrap {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 30;
+      display: flex;
+      justify-content: center;
+      padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+      background: linear-gradient(180deg, rgba(246,240,232,0) 0%, rgba(246,240,232,0.9) 25%, rgba(246,240,232,1) 100%);
+      backdrop-filter: blur(18px);
+    }
+    .composer {
+      width: min(100%, 980px);
+      background: var(--panel-strong);
+      border: 1px solid rgba(255,255,255,0.65);
+      box-shadow: var(--shadow);
+      border-radius: 26px;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+    }
+    .attachment-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-inline: 2px;
+    }
+    .attachment {
+      background: var(--accent-soft);
+      color: #0f5a7d;
+      border: 1px solid rgba(13,111,157,0.2);
+      border-radius: 14px;
+      padding: 7px 10px;
+      font: 700 12px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      max-width: 100%;
+    }
+    .attachment button {
+      min-height: 0;
+      padding: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(13,111,157,0.12);
+      color: inherit;
+      font-size: 12px;
+    }
+    .composer-main {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    textarea {
+      width: 100%;
+      resize: none;
+      min-height: 54px;
+      max-height: 180px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.7);
+      color: var(--text);
+      border-radius: 18px;
+      padding: 13px 14px;
+      font: 500 15px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      outline: none;
+    }
+    .composer-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    input[type="file"] { display: none; }
+    .approval-modal, .viewer-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(18,24,31,0.52);
+      backdrop-filter: blur(9px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .approval-modal.active, .viewer-modal.active {
+      display: flex;
+    }
+    .modal-card {
+      width: min(100%, 720px);
+      max-height: min(92vh, 920px);
+      background: #fffaf3;
+      border-radius: 28px;
+      box-shadow: 0 32px 80px rgba(10, 14, 22, 0.3);
+      border: 1px solid rgba(255,255,255,0.55);
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+      overflow: hidden;
+    }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .modal-head h2 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+    .viewer-body {
+      overflow: auto;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.78);
+      padding: 14px;
+    }
+    .viewer-body pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 14px/1.52 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--text);
+    }
+    .approval-summary {
+      border-radius: 18px;
+      background: rgba(165,52,52,0.05);
+      border: 1px solid rgba(165,52,52,0.14);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      font: 500 14px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+    .empty {
+      padding: 20px;
+      text-align: center;
+      color: var(--muted);
+      font: 600 14px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (max-width: 720px) {
+      .app {
+        padding-inline: 10px;
+      }
+      .topbar {
+        border-radius: 20px;
+        padding: 12px;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .statusbar {
+        justify-content: flex-start;
+      }
+      .composer-main {
+        grid-template-columns: 1fr;
+      }
+      .composer-actions {
+        justify-content: space-between;
+      }
+      button, .button, label.upload-btn {
+        flex: 1 1 auto;
+      }
+      .modal-card {
+        width: 100%;
+        max-height: 100vh;
+        border-radius: 22px;
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>tacli dashboard</h1>
+        <div class="sub" id="sessionLine">loading session...</div>
+      </div>
+      <div class="statusbar">
+        <div class="chip" id="modelChip">model</div>
+        <div class="chip" id="approvalChip">approval</div>
+        <div class="chip" id="busyChip">idle</div>
+        <div class="chip" id="connChip">connecting</div>
+      </div>
+    </header>
+
+    <section id="recentFilesWrap" style="display:none">
+      <div class="recent-files" id="recentFiles"></div>
+    </section>
+
+    <main class="conversation" id="conversation">
+      <div class="empty">Loading conversation…</div>
+    </main>
+  </div>
+
+  <div class="composer-wrap">
+    <div class="composer">
+      <div class="attachment-strip" id="attachmentStrip"></div>
+      <div class="composer-main">
+        <textarea id="composer" placeholder="Send a message or a /command. Shift+Enter for newline."></textarea>
+        <div class="composer-actions">
+          <label class="upload-btn secondary" for="fileInput">Attach files</label>
+          <input id="fileInput" type="file" multiple>
+          <button class="secondary" id="clearBtn" type="button">Clear</button>
+          <button id="sendBtn" type="button">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="approval-modal" id="approvalModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Approval Required</h2>
+      </div>
+      <div class="approval-summary" id="approvalSummary"></div>
+      <div class="approval-actions">
+        <button class="ghost" id="denyApproval">Deny</button>
+        <button class="secondary" id="allowOnce">Allow once</button>
+        <button id="allowAlways">Always allow</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="viewer-modal" id="viewerModal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="viewerTitle">File viewer</h2>
+        <button class="ghost" id="closeViewer">Close</button>
+      </div>
+      <div class="viewer-body">
+        <pre id="viewerContent"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      snapshot: null,
+      attachments: [],
+      connected: false,
+    };
+
+    const els = {
+      conversation: document.getElementById("conversation"),
+      sessionLine: document.getElementById("sessionLine"),
+      modelChip: document.getElementById("modelChip"),
+      approvalChip: document.getElementById("approvalChip"),
+      busyChip: document.getElementById("busyChip"),
+      connChip: document.getElementById("connChip"),
+      recentFilesWrap: document.getElementById("recentFilesWrap"),
+      recentFiles: document.getElementById("recentFiles"),
+      attachmentStrip: document.getElementById("attachmentStrip"),
+      composer: document.getElementById("composer"),
+      sendBtn: document.getElementById("sendBtn"),
+      clearBtn: document.getElementById("clearBtn"),
+      fileInput: document.getElementById("fileInput"),
+      approvalModal: document.getElementById("approvalModal"),
+      approvalSummary: document.getElementById("approvalSummary"),
+      denyApproval: document.getElementById("denyApproval"),
+      allowOnce: document.getElementById("allowOnce"),
+      allowAlways: document.getElementById("allowAlways"),
+      viewerModal: document.getElementById("viewerModal"),
+      viewerTitle: document.getElementById("viewerTitle"),
+      viewerContent: document.getElementById("viewerContent"),
+      closeViewer: document.getElementById("closeViewer"),
+    };
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function formatBytes(size) {
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function scrollNearBottom() {
+      const threshold = 180;
+      const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+      if (distance < threshold) {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+      }
+    }
+
+    function fileCard(file) {
+      const viewButton = file.is_text
+        ? `<button class="secondary" type="button" data-view="${encodeURIComponent(file.path)}">View</button>`
+        : "";
+      return `
+        <div class="file-card">
+          <div class="file-name">${escapeHtml(file.path)}</div>
+          <div class="meta-line">${formatBytes(file.size)}</div>
+          <div class="file-actions">
+            ${viewButton}
+            <a class="button secondary" href="${file.download_url}">Download</a>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRecentFiles(files) {
+      if (!files || !files.length) {
+        els.recentFilesWrap.style.display = "none";
+        els.recentFiles.innerHTML = "";
+        return;
+      }
+      els.recentFilesWrap.style.display = "";
+      els.recentFiles.innerHTML = files.map((file) => `
+        <div class="file-pill">
+          <div class="path">${escapeHtml(file.path)}</div>
+          <div class="meta">${formatBytes(file.size)}</div>
+          <div class="actions">
+            ${file.is_text ? `<button class="secondary" type="button" data-view="${encodeURIComponent(file.path)}">View</button>` : ""}
+            <a class="button secondary" href="${file.download_url}">Download</a>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderAttachments() {
+      if (!state.attachments.length) {
+        els.attachmentStrip.innerHTML = "";
+        return;
+      }
+      els.attachmentStrip.innerHTML = state.attachments.map((file, index) => `
+        <div class="attachment">
+          <span>${escapeHtml(file.path)}</span>
+          <button type="button" data-remove-attachment="${index}">×</button>
+        </div>
+      `).join("");
+    }
+
+    function renderEntries(entries) {
+      if (!entries || !entries.length) {
+        els.conversation.innerHTML = `<div class="empty">Start with a message, a slash command, or some files.</div>`;
+        return;
+      }
+      els.conversation.innerHTML = entries.map((entry) => {
+        if (entry.type === "tool" && entry.tool) {
+          const tool = entry.tool;
+          return `
+            <section class="entry tool">
+              <div class="bubble">
+                <details class="tool-details">
+                  <summary>
+                    <span>${escapeHtml(tool.tool || "tool")}</span>
+                    <span class="tool-status">${escapeHtml(tool.status || "unknown")}</span>
+                    <span class="tool-status">${tool.duration_ms || 0}ms</span>
+                  </summary>
+                  <div class="tool-block">
+                    ${tool.args_preview ? `<div><label>Input</label><pre>${escapeHtml(tool.args_preview)}</pre></div>` : ""}
+                    ${tool.output_sample ? `<div><label>Output</label><pre>${escapeHtml(tool.output_sample)}</pre></div>` : ""}
+                    ${tool.error ? `<div><label>Error</label><pre>${escapeHtml(tool.error)}</pre></div>` : ""}
+                  </div>
+                </details>
+              </div>
+            </section>
+          `;
+        }
+        if (entry.type === "files" && entry.files && entry.files.length) {
+          return `
+            <section class="entry files">
+              <div class="meta-line">${escapeHtml(entry.text || "files")}</div>
+              <div class="file-grid">${entry.files.map(fileCard).join("")}</div>
+            </section>
+          `;
+        }
+        const role = entry.role || "assistant";
+        const pending = entry.pending ? `<div class="meta-line"><span class="pending">Generating…</span></div>` : "";
+        const files = entry.files && entry.files.length
+          ? `<div class="file-grid">${entry.files.map(fileCard).join("")}</div>`
+          : "";
+        return `
+          <section class="entry ${role}">
+            ${pending}
+            <div class="bubble">
+              <div class="markdown">${entry.html || `<p>${escapeHtml(entry.text || "")}</p>`}</div>
+            </div>
+            ${files}
+          </section>
+        `;
+      }).join("");
+      scrollNearBottom();
+    }
+
+    function renderApproval(pending) {
+      if (!pending) {
+        els.approvalModal.classList.remove("active");
+        return;
+      }
+      const body = pending.kind === "command"
+        ? `<div><strong>Command</strong><pre>${escapeHtml(pending.command || "")}</pre></div>`
+        : `<div><strong>Write</strong><pre>${escapeHtml(pending.path || "")}</pre><div>${pending.byte_count || 0} bytes</div><pre>${escapeHtml(pending.preview || "")}</pre></div>`;
+      els.approvalSummary.innerHTML = body;
+      els.approvalModal.classList.add("active");
+      els.denyApproval.dataset.id = pending.id;
+      els.allowOnce.dataset.id = pending.id;
+      els.allowAlways.dataset.id = pending.id;
+    }
+
+    function renderSnapshot(snapshot) {
+      state.snapshot = snapshot;
+      els.sessionLine.textContent = `${snapshot.session} · ${snapshot.session_id || "session"} · v${snapshot.version}`;
+      els.modelChip.textContent = snapshot.model || "model";
+      els.approvalChip.textContent = snapshot.approval_mode || "approval";
+      els.busyChip.textContent = snapshot.busy ? "running" : "idle";
+      els.busyChip.className = `chip ${snapshot.busy ? "busy" : ""}`;
+      els.connChip.textContent = state.connected ? "connected" : "offline";
+      els.connChip.className = `chip ${state.connected ? "connected" : ""}`;
+      renderRecentFiles(snapshot.recent_files || []);
+      renderEntries(snapshot.entries || []);
+      renderApproval(snapshot.pending_approval || null);
+      els.sendBtn.disabled = !!snapshot.busy;
+      els.composer.disabled = !!snapshot.busy;
+    }
+
+    async function fetchState() {
+      const res = await fetch("/api/state");
+      if (!res.ok) throw new Error("failed to load state");
+      renderSnapshot(await res.json());
+    }
+
+    async function sendMessage() {
+      const text = els.composer.value.trim();
+      if (!text && !state.attachments.length) return;
+      const body = {
+        text,
+        attachments: state.attachments.map((item) => item.path),
+      };
+      const res = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        alert(await res.text());
+        return;
+      }
+      els.composer.value = "";
+      autoResize();
+      state.attachments = [];
+      renderAttachments();
+    }
+
+    async function uploadFiles(fileList) {
+      if (!fileList || !fileList.length) return;
+      const body = new FormData();
+      Array.from(fileList).forEach((file) => body.append("files", file));
+      const res = await fetch("/api/upload", { method: "POST", body });
+      if (!res.ok) {
+        alert(await res.text());
+        return;
+      }
+      const payload = await res.json();
+      state.attachments.push(...(payload.files || []));
+      renderAttachments();
+    }
+
+    async function resolveApproval(decision, id) {
+      const res = await fetch("/api/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, decision }),
+      });
+      if (!res.ok) alert(await res.text());
+    }
+
+    async function openViewer(path) {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+      if (!res.ok) {
+        alert(await res.text());
+        return;
+      }
+      const payload = await res.json();
+      els.viewerTitle.textContent = payload.file?.path || path;
+      els.viewerContent.textContent = payload.content || "";
+      els.viewerModal.classList.add("active");
+    }
+
+    function closeViewer() {
+      els.viewerModal.classList.remove("active");
+    }
+
+    function connectEvents() {
+      const es = new EventSource("/api/events");
+      es.addEventListener("state", (event) => {
+        state.connected = true;
+        renderSnapshot(JSON.parse(event.data));
+      });
+      es.addEventListener("ping", () => {
+        state.connected = true;
+        if (state.snapshot) renderSnapshot(state.snapshot);
+      });
+      es.onerror = () => {
+        state.connected = false;
+        if (state.snapshot) renderSnapshot(state.snapshot);
+      };
+    }
+
+    function autoResize() {
+      els.composer.style.height = "auto";
+      els.composer.style.height = Math.min(180, els.composer.scrollHeight) + "px";
+    }
+
+    els.sendBtn.addEventListener("click", sendMessage);
+    els.clearBtn.addEventListener("click", () => {
+      els.composer.value = "";
+      state.attachments = [];
+      renderAttachments();
+      autoResize();
+    });
+    els.fileInput.addEventListener("change", async (event) => {
+      await uploadFiles(event.target.files);
+      event.target.value = "";
+    });
+    els.composer.addEventListener("input", autoResize);
+    els.composer.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+    els.attachmentStrip.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-remove-attachment]");
+      if (!button) return;
+      state.attachments.splice(Number(button.dataset.removeAttachment), 1);
+      renderAttachments();
+    });
+    document.body.addEventListener("click", (event) => {
+      const viewButton = event.target.closest("[data-view]");
+      if (viewButton) {
+        openViewer(decodeURIComponent(viewButton.dataset.view));
+      }
+    });
+    els.closeViewer.addEventListener("click", closeViewer);
+    els.viewerModal.addEventListener("click", (event) => {
+      if (event.target === els.viewerModal) closeViewer();
+    });
+    els.denyApproval.addEventListener("click", () => resolveApproval("deny", els.denyApproval.dataset.id));
+    els.allowOnce.addEventListener("click", () => resolveApproval("approve", els.allowOnce.dataset.id));
+    els.allowAlways.addEventListener("click", () => resolveApproval("always", els.allowAlways.dataset.id));
+
+    fetchState().then(connectEvents).catch((error) => {
+      els.conversation.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    });
+    autoResize();
+  </script>
+</body>
+</html>

@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"tiny-agent-cli/internal/i18n"
+	"tiny-agent-cli/internal/platform"
 )
 
 const (
@@ -202,12 +203,5 @@ func normalizeApprovalMode(mode string) string {
 }
 
 func IsInteractiveTerminal(file *os.File) bool {
-	if file == nil {
-		return false
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
+	return platform.IsInteractiveTerminal(file)
 }

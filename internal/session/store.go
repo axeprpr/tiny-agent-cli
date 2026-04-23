@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/platform"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -52,11 +53,11 @@ type TreeNode struct {
 }
 
 func SessionPath(stateDir, name string) string {
-	return filepath.Join(stateDir, "sessions", safeName(name)+".json")
+	return filepath.Join(stateDir, "sessions", platform.SafeName(name)+".json")
 }
 
 func TranscriptPath(stateDir, name string) string {
-	return filepath.Join(stateDir, "transcripts", safeName(name)+".log")
+	return filepath.Join(stateDir, "transcripts", platform.SafeName(name)+".log")
 }
 
 func ListSessionNames(stateDir string) ([]string, error) {
@@ -135,7 +136,7 @@ func BuildSessionTree(stateDir string) ([]*TreeNode, error) {
 		if p := strings.TrimSpace(item.Path); p != "" {
 			pathToName[p] = item.Name
 		}
-		safeToName[safeName(item.Name)] = item.Name
+		safeToName[platform.SafeName(item.Name)] = item.Name
 	}
 
 	roots := make([]*TreeNode, 0, len(summaries))
@@ -210,17 +211,6 @@ func AppendTranscript(path, role, text string) error {
 	return err
 }
 
-func safeName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "default"
-	}
-	name = strings.ReplaceAll(name, "/", "-")
-	name = strings.ReplaceAll(name, "\\", "-")
-	name = strings.ReplaceAll(name, " ", "-")
-	return name
-}
-
 func resolveParentName(parent string, idToName, pathToName, safeToName map[string]string, nodes map[string]*TreeNode) string {
 	ref := strings.TrimSpace(parent)
 	if ref == "" {
@@ -236,7 +226,7 @@ func resolveParentName(parent string, idToName, pathToName, safeToName map[strin
 	if name := strings.TrimSpace(safeToName[base]); name != "" {
 		return name
 	}
-	if name := strings.TrimSpace(safeToName[safeName(ref)]); name != "" {
+	if name := strings.TrimSpace(safeToName[platform.SafeName(ref)]); name != "" {
 		return name
 	}
 	if _, ok := nodes[ref]; ok {

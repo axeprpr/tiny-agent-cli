@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/platform"
 )
 
 type ToolInvocation struct {
@@ -280,14 +280,7 @@ func runHookCommand(command string, req hookCommandRequest) hookCommandOutcome {
 }
 
 func hookShellCommand(command string) *exec.Cmd {
-	if isWindowsShell() {
-		return exec.Command("cmd", "/C", command)
-	}
-	return exec.Command("sh", "-lc", command)
-}
-
-func isWindowsShell() bool {
-	return runtime.GOOS == "windows"
+	return platform.HookShellCommand(command)
 }
 
 func hookErrorEnv(isError bool) string {

@@ -12,13 +12,13 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"tiny-agent-cli/internal/model"
+	"tiny-agent-cli/internal/platform"
 )
 
 type runCommandTool struct {
@@ -123,11 +123,11 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	name, shellArgs := shellInvocation(t.shell, command)
+	name, shellArgs := platform.ShellInvocation(t.shell, command)
 	cmd := exec.CommandContext(runCtx, name, shellArgs...)
 	cmd.Dir = t.workDir
 	cmd.Env = commandEnv(t.workDir)
-	configureCommandCancellation(cmd)
+	platform.ConfigureCommandCancellation(cmd)
 
 	if onUpdate == nil {
 		out, waitErr := cmd.CombinedOutput()
@@ -202,6 +202,7 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 	var full bytes.Buffer
 	tail := make([]byte, 0, maxTailCaptureBytes)
 	lastEmit := time.Time{}
+	emitted := false
 	for chunk := range chunks {
 		if len(chunk) == 0 {
 			continue
@@ -216,7 +217,14 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 			if lastEmit.IsZero() || now.Sub(lastEmit) >= 250*time.Millisecond {
 				onUpdate(compactCommandPreview(string(tail)))
 				lastEmit = now
+				emitted = true
 			}
+		}
+	}
+	if onUpdate != nil && len(tail) > 0 {
+		preview := compactCommandPreview(string(tail))
+		if strings.TrimSpace(preview) != "" && !emitted {
+			onUpdate(preview)
 		}
 	}
 	close(readErrCh)
@@ -231,6 +239,10 @@ func (t *runCommandTool) call(ctx context.Context, raw json.RawMessage, onUpdate
 	}
 
 	text := finalizeCommandText(t.workDir, strings.TrimSpace(full.String()))
+	if onUpdate != nil && !emitted && strings.TrimSpace(text) != "" {
+		onUpdate(text)
+		emitted = true
+	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
 		kind := runCommandFailureTimeout
@@ -395,13 +407,6 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
-}
-
-func shellInvocation(shell, command string) (string, []string) {
-	if runtime.GOOS == "windows" || strings.Contains(strings.ToLower(shell), "powershell") {
-		return shell, []string{"-NoProfile", "-Command", command}
-	}
-	return shell, []string{"-c", command}
 }
 
 func validateCommand(command string) error {
