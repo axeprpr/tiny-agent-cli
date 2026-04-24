@@ -24,17 +24,20 @@
       --radius: 22px;
       --radius-sm: 16px;
       --composer-h: 96px;
+      --font-ui: "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "SFMono-Regular", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
     }
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
       min-height: 100%;
+      overflow-x: hidden;
       color: var(--text);
       background:
         radial-gradient(circle at top left, rgba(13,111,157,0.13), transparent 28%),
         radial-gradient(circle at top right, rgba(181,104,44,0.14), transparent 26%),
         linear-gradient(180deg, #fbf7f1 0%, var(--bg) 100%);
-      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      font-family: var(--font-ui);
     }
     body {
       display: flex;
@@ -77,7 +80,6 @@
     }
     .sub {
       color: var(--muted);
-      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 12px;
     }
     .statusbar {
@@ -92,7 +94,7 @@
       background: var(--panel-strong);
       border: 1px solid var(--line);
       color: var(--muted);
-      font: 600 12px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 600 12px/1 var(--font-ui);
     }
     .chip.busy {
       background: rgba(181,104,44,0.14);
@@ -101,36 +103,6 @@
     .chip.connected {
       background: rgba(26,132,76,0.12);
       color: #19633f;
-    }
-    .recent-files {
-      display: flex;
-      gap: 10px;
-      overflow-x: auto;
-      padding-bottom: 2px;
-    }
-    .file-pill {
-      flex: 0 0 auto;
-      min-width: 180px;
-      max-width: 260px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 11px 12px;
-      box-shadow: var(--shadow);
-    }
-    .file-pill .path {
-      font: 600 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
-      overflow-wrap: anywhere;
-    }
-    .file-pill .meta {
-      margin-top: 6px;
-      color: var(--muted);
-      font: 500 11px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    .file-pill .actions {
-      margin-top: 10px;
-      display: flex;
-      gap: 8px;
     }
     .conversation {
       display: flex;
@@ -178,21 +150,22 @@
     .bubble .markdown > :last-child { margin-bottom: 0; }
     .bubble pre {
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       background: rgba(17,24,39,0.92);
       color: #edf4ff;
       padding: 12px;
       border-radius: 14px;
-      overflow-x: auto;
-      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 13px/1.45 var(--font-mono);
     }
     .bubble code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-family: var(--font-mono);
       font-size: 0.92em;
     }
     .meta-line {
       padding-inline: 6px;
       color: var(--muted);
-      font: 600 11px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 600 11px/1 var(--font-ui);
     }
     .pending {
       display: inline-flex;
@@ -220,7 +193,7 @@
       display: flex;
       gap: 10px;
       align-items: center;
-      font: 700 13px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 700 13px/1.4 var(--font-ui);
     }
     .tool-details summary::-webkit-details-marker { display: none; }
     .tool-status {
@@ -240,7 +213,7 @@
       display: block;
       margin-bottom: 5px;
       color: var(--muted);
-      font: 700 11px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 700 11px/1 var(--font-ui);
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -266,7 +239,7 @@
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.4);
     }
     .file-name {
-      font: 700 13px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 700 13px/1.35 var(--font-mono);
       overflow-wrap: anywhere;
     }
     .file-actions {
@@ -282,7 +255,7 @@
       background: var(--accent);
       color: #fff;
       padding: 10px 14px;
-      font: 700 13px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 700 13px/1 var(--font-ui);
       text-decoration: none;
       display: inline-flex;
       align-items: center;
@@ -325,6 +298,57 @@
       display: grid;
       gap: 10px;
     }
+    .approval-bar {
+      display: none;
+      gap: 10px;
+      border-radius: 20px;
+      border: 1px solid rgba(165,52,52,0.18);
+      background: rgba(165,52,52,0.05);
+      padding: 12px;
+    }
+    .approval-bar.active {
+      display: grid;
+    }
+    .approval-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .approval-title {
+      font: 700 13px/1.3 var(--font-ui);
+      color: var(--danger);
+    }
+    .approval-summary-text {
+      color: var(--text);
+      font: 500 13px/1.45 var(--font-ui);
+      overflow-wrap: anywhere;
+    }
+    .approval-toggle {
+      min-height: 34px;
+      padding: 8px 12px;
+      flex: 0 0 auto;
+    }
+    .approval-details {
+      display: none;
+      border-top: 1px solid rgba(165,52,52,0.12);
+      padding-top: 10px;
+    }
+    .approval-details.active {
+      display: block;
+    }
+    .approval-details pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(29,36,48,0.1);
+      padding: 12px;
+      font: 13px/1.45 var(--font-mono);
+      color: var(--text);
+    }
     .attachment-strip {
       display: flex;
       flex-wrap: wrap;
@@ -337,7 +361,7 @@
       border: 1px solid rgba(13,111,157,0.2);
       border-radius: 14px;
       padding: 7px 10px;
-      font: 700 12px/1.3 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 700 12px/1.3 var(--font-ui);
       display: inline-flex;
       gap: 8px;
       align-items: center;
@@ -369,7 +393,7 @@
       color: var(--text);
       border-radius: 18px;
       padding: 13px 14px;
-      font: 500 15px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 500 15px/1.45 var(--font-ui);
       outline: none;
     }
     .composer-actions {
@@ -380,7 +404,7 @@
       justify-content: flex-end;
     }
     input[type="file"] { display: none; }
-    .approval-modal, .viewer-modal {
+    .viewer-modal {
       position: fixed;
       inset: 0;
       z-index: 50;
@@ -391,9 +415,7 @@
       justify-content: center;
       padding: 18px;
     }
-    .approval-modal.active, .viewer-modal.active {
-      display: flex;
-    }
+    .viewer-modal.active { display: flex; }
     .modal-card {
       width: min(100%, 720px);
       max-height: min(92vh, 920px);
@@ -428,17 +450,8 @@
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
-      font: 14px/1.52 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 14px/1.52 var(--font-mono);
       color: var(--text);
-    }
-    .approval-summary {
-      border-radius: 18px;
-      background: rgba(165,52,52,0.05);
-      border: 1px solid rgba(165,52,52,0.14);
-      padding: 14px;
-      display: grid;
-      gap: 10px;
-      font: 500 14px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     .approval-actions {
       display: flex;
@@ -450,7 +463,7 @@
       padding: 20px;
       text-align: center;
       color: var(--muted);
-      font: 600 14px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 600 14px/1.5 var(--font-ui);
     }
     @media (max-width: 720px) {
       .app {
@@ -467,6 +480,13 @@
       }
       .composer-main {
         grid-template-columns: 1fr;
+      }
+      .approval-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .approval-toggle {
+        width: 100%;
       }
       .composer-actions {
         justify-content: space-between;
@@ -498,10 +518,6 @@
       </div>
     </header>
 
-    <section id="recentFilesWrap" style="display:none">
-      <div class="recent-files" id="recentFiles"></div>
-    </section>
-
     <main class="conversation" id="conversation">
       <div class="empty">Loading conversation…</div>
     </main>
@@ -509,6 +525,21 @@
 
   <div class="composer-wrap">
     <div class="composer">
+      <div class="approval-bar" id="approvalBar">
+        <div class="approval-head">
+          <div>
+            <div class="approval-title" id="approvalTitle">Approval required</div>
+            <div class="approval-summary-text" id="approvalSummaryText"></div>
+          </div>
+          <button class="ghost approval-toggle" id="approvalToggle" type="button">Show details</button>
+        </div>
+        <div class="approval-details" id="approvalDetails"></div>
+        <div class="approval-actions">
+          <button class="ghost" id="denyApproval">Deny</button>
+          <button class="secondary" id="allowOnce">Allow once</button>
+          <button id="allowAlways">Always allow</button>
+        </div>
+      </div>
       <div class="attachment-strip" id="attachmentStrip"></div>
       <div class="composer-main">
         <textarea id="composer" placeholder="Send a message or a /command. Shift+Enter for newline."></textarea>
@@ -518,20 +549,6 @@
           <button class="secondary" id="clearBtn" type="button">Clear</button>
           <button id="sendBtn" type="button">Send</button>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="approval-modal" id="approvalModal">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>Approval Required</h2>
-      </div>
-      <div class="approval-summary" id="approvalSummary"></div>
-      <div class="approval-actions">
-        <button class="ghost" id="denyApproval">Deny</button>
-        <button class="secondary" id="allowOnce">Allow once</button>
-        <button id="allowAlways">Always allow</button>
       </div>
     </div>
   </div>
@@ -553,6 +570,7 @@
       snapshot: null,
       attachments: [],
       connected: false,
+      approvalExpanded: false,
     };
 
     const els = {
@@ -562,15 +580,16 @@
       approvalChip: document.getElementById("approvalChip"),
       busyChip: document.getElementById("busyChip"),
       connChip: document.getElementById("connChip"),
-      recentFilesWrap: document.getElementById("recentFilesWrap"),
-      recentFiles: document.getElementById("recentFiles"),
+      approvalBar: document.getElementById("approvalBar"),
+      approvalTitle: document.getElementById("approvalTitle"),
+      approvalSummaryText: document.getElementById("approvalSummaryText"),
+      approvalDetails: document.getElementById("approvalDetails"),
+      approvalToggle: document.getElementById("approvalToggle"),
       attachmentStrip: document.getElementById("attachmentStrip"),
       composer: document.getElementById("composer"),
       sendBtn: document.getElementById("sendBtn"),
       clearBtn: document.getElementById("clearBtn"),
       fileInput: document.getElementById("fileInput"),
-      approvalModal: document.getElementById("approvalModal"),
-      approvalSummary: document.getElementById("approvalSummary"),
       denyApproval: document.getElementById("denyApproval"),
       allowOnce: document.getElementById("allowOnce"),
       allowAlways: document.getElementById("allowAlways"),
@@ -615,25 +634,6 @@
           </div>
         </div>
       `;
-    }
-
-    function renderRecentFiles(files) {
-      if (!files || !files.length) {
-        els.recentFilesWrap.style.display = "none";
-        els.recentFiles.innerHTML = "";
-        return;
-      }
-      els.recentFilesWrap.style.display = "";
-      els.recentFiles.innerHTML = files.map((file) => `
-        <div class="file-pill">
-          <div class="path">${escapeHtml(file.path)}</div>
-          <div class="meta">${formatBytes(file.size)}</div>
-          <div class="actions">
-            ${file.is_text ? `<button class="secondary" type="button" data-view="${encodeURIComponent(file.path)}">View</button>` : ""}
-            <a class="button secondary" href="${file.download_url}">Download</a>
-          </div>
-        </div>
-      `).join("");
     }
 
     function renderAttachments() {
@@ -704,14 +704,28 @@
 
     function renderApproval(pending) {
       if (!pending) {
-        els.approvalModal.classList.remove("active");
+        state.approvalExpanded = false;
+        els.approvalBar.classList.remove("active");
+        els.approvalDetails.classList.remove("active");
+        els.approvalDetails.innerHTML = "";
+        els.approvalSummaryText.textContent = "";
+        els.approvalTitle.textContent = "Approval required";
+        els.approvalToggle.textContent = "Show details";
         return;
       }
-      const body = pending.kind === "command"
-        ? `<div><strong>Command</strong><pre>${escapeHtml(pending.command || "")}</pre></div>`
-        : `<div><strong>Write</strong><pre>${escapeHtml(pending.path || "")}</pre><div>${pending.byte_count || 0} bytes</div><pre>${escapeHtml(pending.preview || "")}</pre></div>`;
-      els.approvalSummary.innerHTML = body;
-      els.approvalModal.classList.add("active");
+      const isCommand = pending.kind === "command";
+      const summary = isCommand
+        ? (pending.command || "Command approval")
+        : `${pending.path || "Write approval"} · ${pending.byte_count || 0} bytes`;
+      const detail = isCommand
+        ? `<pre>${escapeHtml(pending.command || "")}</pre>`
+        : `<pre>${escapeHtml(pending.preview || "")}</pre>`;
+      els.approvalTitle.textContent = isCommand ? "Command approval" : "Write approval";
+      els.approvalSummaryText.textContent = summary;
+      els.approvalDetails.innerHTML = detail;
+      els.approvalBar.classList.add("active");
+      els.approvalDetails.classList.toggle("active", state.approvalExpanded);
+      els.approvalToggle.textContent = state.approvalExpanded ? "Hide details" : "Show details";
       els.denyApproval.dataset.id = pending.id;
       els.allowOnce.dataset.id = pending.id;
       els.allowAlways.dataset.id = pending.id;
@@ -726,11 +740,11 @@
       els.busyChip.className = `chip ${snapshot.busy ? "busy" : ""}`;
       els.connChip.textContent = state.connected ? "connected" : "offline";
       els.connChip.className = `chip ${state.connected ? "connected" : ""}`;
-      renderRecentFiles(snapshot.recent_files || []);
       renderEntries(snapshot.entries || []);
       renderApproval(snapshot.pending_approval || null);
-      els.sendBtn.disabled = !!snapshot.busy;
-      els.composer.disabled = !!snapshot.busy;
+      const blocked = !!snapshot.busy || !!snapshot.pending_approval;
+      els.sendBtn.disabled = blocked;
+      els.composer.disabled = blocked;
     }
 
     async function fetchState() {
@@ -854,6 +868,10 @@
     els.closeViewer.addEventListener("click", closeViewer);
     els.viewerModal.addEventListener("click", (event) => {
       if (event.target === els.viewerModal) closeViewer();
+    });
+    els.approvalToggle.addEventListener("click", () => {
+      state.approvalExpanded = !state.approvalExpanded;
+      renderApproval(state.snapshot?.pending_approval || null);
     });
     els.denyApproval.addEventListener("click", () => resolveApproval("deny", els.denyApproval.dataset.id));
     els.allowOnce.addEventListener("click", () => resolveApproval("approve", els.allowOnce.dataset.id));
