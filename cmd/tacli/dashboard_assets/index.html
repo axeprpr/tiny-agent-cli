@@ -689,6 +689,14 @@
         const files = entry.files && entry.files.length
           ? `<div class="file-grid">${entry.files.map(fileCard).join("")}</div>`
           : "";
+        if (entry.pending && !(entry.html || entry.text || "").trim()) {
+          return `
+            <section class="entry ${role}">
+              ${pending}
+              ${files}
+            </section>
+          `;
+        }
         return `
           <section class="entry ${role}">
             ${pending}
