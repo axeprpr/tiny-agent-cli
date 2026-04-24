@@ -21,7 +21,7 @@
       --system: #f5eee3;
       --danger: #a53434;
       --shadow: 0 18px 45px rgba(44, 34, 24, 0.12);
-      --radius: 16px;
+      --radius: 14px;
       --radius-sm: 12px;
       --composer-h: 96px;
       --font-ui: "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -138,6 +138,15 @@
     .entry.system .bubble, .entry.files .bubble {
       background: var(--system);
     }
+    .entry.system .bubble pre {
+      background: rgba(255,255,255,0.72);
+      color: var(--text);
+      border: 1px solid var(--line);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      overflow-x: auto;
+    }
     .entry.tool {
       width: min(100%, 820px);
     }
@@ -196,12 +205,14 @@
       padding: 12px 14px;
       display: grid;
       gap: 10px;
+      min-width: 0;
     }
     .tool-head {
       display: flex;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
+      min-width: 0;
     }
     .tool-kind {
       border-radius: 999px;
@@ -215,12 +226,16 @@
     .tool-name {
       font: 700 13px/1.35 var(--font-mono);
       color: var(--text);
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .tool-status {
       text-transform: uppercase;
       font-size: 11px;
       color: var(--muted);
       letter-spacing: 0.06em;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .tool-details {
       width: 100%;
@@ -252,6 +267,11 @@
       background: rgba(255,255,255,0.65);
       color: var(--text);
       border: 1px solid var(--line);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      overflow-x: auto;
+      max-width: 100%;
     }
     .file-grid {
       display: grid;
@@ -411,7 +431,12 @@
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 10px;
-      align-items: end;
+      align-items: center;
+    }
+    .composer-input-zone {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
     }
     textarea {
       width: 100%;
@@ -432,6 +457,59 @@
       align-items: center;
       flex-wrap: wrap;
       justify-content: flex-end;
+      min-height: 54px;
+    }
+    .slash-menu {
+      display: none;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.9);
+      box-shadow: 0 10px 25px rgba(30, 24, 16, 0.12);
+      overflow-x: hidden;
+      overflow-y: auto;
+      max-height: 336px; /* roughly 8 visible rows */
+    }
+    .slash-menu.active {
+      display: grid;
+    }
+    .slash-item {
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--text);
+      display: grid;
+      grid-template-columns: minmax(150px, 190px) 1fr;
+      align-items: center;
+      min-height: 0;
+      padding: 10px 12px;
+      gap: 8px;
+      text-align: left;
+      font: 600 13px/1.35 var(--font-ui);
+    }
+    .slash-item:not(:last-child) {
+      border-bottom: 1px solid var(--line);
+    }
+    .slash-item.active {
+      background: rgba(13,111,157,0.12);
+    }
+    .slash-item .cmd {
+      font: 700 12px/1.2 var(--font-mono);
+      color: #0b4f70;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .slash-item .desc {
+      color: var(--muted);
+      font: 600 12px/1.35 var(--font-ui);
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 760px) {
+      .slash-item {
+        grid-template-columns: minmax(116px, 150px) 1fr;
+      }
     }
     input[type="file"] { display: none; }
     .viewer-modal {
@@ -572,11 +650,13 @@
       </div>
       <div class="attachment-strip" id="attachmentStrip"></div>
       <div class="composer-main">
-        <textarea id="composer" placeholder="Send a message or a /command. Shift+Enter for newline."></textarea>
+        <div class="composer-input-zone">
+          <textarea id="composer" placeholder="Send a message or a /command. Shift+Enter for newline."></textarea>
+          <div class="slash-menu" id="slashMenu"></div>
+        </div>
         <div class="composer-actions">
           <label class="upload-btn secondary" for="fileInput">Attach files</label>
           <input id="fileInput" type="file" multiple>
-          <button class="secondary" id="clearBtn" type="button">Clear</button>
           <button id="sendBtn" type="button">Send</button>
         </div>
       </div>
@@ -602,6 +682,13 @@
       connected: false,
       approvalExpanded: false,
       sending: false,
+      slash: {
+        active: false,
+        start: -1,
+        end: -1,
+        selected: 0,
+        options: [],
+      },
     };
 
     const els = {
@@ -618,8 +705,8 @@
       approvalToggle: document.getElementById("approvalToggle"),
       attachmentStrip: document.getElementById("attachmentStrip"),
       composer: document.getElementById("composer"),
+      slashMenu: document.getElementById("slashMenu"),
       sendBtn: document.getElementById("sendBtn"),
-      clearBtn: document.getElementById("clearBtn"),
       fileInput: document.getElementById("fileInput"),
       denyApproval: document.getElementById("denyApproval"),
       allowOnce: document.getElementById("allowOnce"),
@@ -629,6 +716,33 @@
       viewerContent: document.getElementById("viewerContent"),
       closeViewer: document.getElementById("closeViewer"),
     };
+    const slashCommands = [
+      { cmd: "/help", desc: "Show command help" },
+      { cmd: "/status", desc: "Show runtime status" },
+      { cmd: "/plan", desc: "Show current plan" },
+      { cmd: "/contract", desc: "Show task contract" },
+      { cmd: "/tasks", desc: "Show todo tasks" },
+      { cmd: "/review", desc: "Run quick review mode" },
+      { cmd: "/model", desc: "Switch model" },
+      { cmd: "/approval", desc: "Set approval mode" },
+      { cmd: "/memory", desc: "Manage memory notes" },
+      { cmd: "/remember", desc: "Save project memory" },
+      { cmd: "/remember-global", desc: "Save global memory" },
+      { cmd: "/forget", desc: "Delete project memory" },
+      { cmd: "/forget-global", desc: "Delete global memory" },
+      { cmd: "/scope", desc: "Show project scope" },
+      { cmd: "/skills", desc: "List available skills" },
+      { cmd: "/capabilities", desc: "List capabilities" },
+      { cmd: "/bg", desc: "Start background task" },
+      { cmd: "/jobs", desc: "List background jobs" },
+      { cmd: "/job", desc: "Inspect a background job" },
+      { cmd: "/job-send", desc: "Send follow-up to a job" },
+      { cmd: "/job-cancel", desc: "Cancel a background job" },
+      { cmd: "/job-apply", desc: "Apply job result into context" },
+      { cmd: "/save", desc: "Export session transcript" },
+      { cmd: "/reset", desc: "Reset conversation context" },
+      { cmd: "/init", desc: "Initialize repository guidance" },
+    ];
 
     function escapeHtml(text) {
       return text
@@ -723,6 +837,10 @@
         const files = entry.files && entry.files.length
           ? `<div class="file-grid">${entry.files.map(fileCard).join("")}</div>`
           : "";
+        const shouldRenderAsPre = role === "system" && entry.type === "system";
+        const bodyHtml = shouldRenderAsPre
+          ? `<pre>${escapeHtml(entry.text || "")}</pre>`
+          : (entry.html || `<p>${escapeHtml(entry.text || "")}</p>`);
         if (entry.pending && !(entry.html || entry.text || "").trim()) {
           return `
             <section class="entry ${role}">
@@ -735,13 +853,91 @@
           <section class="entry ${role}">
             ${pending}
             <div class="bubble">
-              <div class="markdown">${entry.html || `<p>${escapeHtml(entry.text || "")}</p>`}</div>
+              <div class="markdown">${bodyHtml}</div>
             </div>
             ${files}
           </section>
         `;
       }).join("");
       scrollNearBottom();
+    }
+
+    function hideSlashMenu() {
+      state.slash.active = false;
+      state.slash.options = [];
+      state.slash.start = -1;
+      state.slash.end = -1;
+      state.slash.selected = 0;
+      els.slashMenu.classList.remove("active");
+      els.slashMenu.innerHTML = "";
+    }
+
+    function renderSlashMenu() {
+      if (!state.slash.active || !state.slash.options.length) {
+        hideSlashMenu();
+        return;
+      }
+      els.slashMenu.classList.add("active");
+      els.slashMenu.innerHTML = state.slash.options.map((item, index) => `
+        <button class="slash-item ${index === state.slash.selected ? "active" : ""}" type="button" data-slash-index="${index}">
+          <span class="cmd">${escapeHtml(item.cmd)}</span>
+          <span class="desc">${escapeHtml(item.desc)}</span>
+        </button>
+      `).join("");
+      requestAnimationFrame(() => {
+        const active = els.slashMenu.querySelector(".slash-item.active");
+        if (active && typeof active.scrollIntoView === "function") {
+          active.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
+    }
+
+    function updateSlashMenu() {
+      const raw = els.composer.value;
+      const cursor = typeof els.composer.selectionStart === "number" ? els.composer.selectionStart : raw.length;
+      const head = raw.slice(0, cursor);
+      const match = head.match(/(^|[\s\n])(\/[^\s\n]*)$/);
+      if (!match) {
+        hideSlashMenu();
+        return;
+      }
+      const token = match[2] || "/";
+      const query = token.toLowerCase();
+      const options = slashCommands
+        .filter((item) => item.cmd.toLowerCase().startsWith(query))
+        .sort((a, b) => a.cmd.localeCompare(b.cmd));
+      if (!options.length) {
+        hideSlashMenu();
+        return;
+      }
+      const start = cursor - token.length;
+      state.slash.active = true;
+      state.slash.start = start;
+      state.slash.end = cursor;
+      state.slash.options = options;
+      if (state.slash.selected >= options.length) {
+        state.slash.selected = 0;
+      }
+      renderSlashMenu();
+    }
+
+    function applySlashSelection(index) {
+      if (!state.slash.active || !state.slash.options.length) return;
+      const item = state.slash.options[Math.max(0, Math.min(index, state.slash.options.length - 1))];
+      if (!item) return;
+      const raw = els.composer.value;
+      const start = Math.max(0, state.slash.start);
+      const end = Math.max(start, state.slash.end);
+      const before = raw.slice(0, start);
+      const after = raw.slice(end);
+      const insertion = `${item.cmd} `;
+      const next = `${before}${insertion}${after}`;
+      els.composer.value = next;
+      const caret = before.length + insertion.length;
+      els.composer.focus();
+      els.composer.setSelectionRange(caret, caret);
+      hideSlashMenu();
+      autoResize();
     }
 
     function renderApproval(pending) {
@@ -789,7 +985,6 @@
       els.sendBtn.disabled = blocked;
       els.sendBtn.textContent = state.sending ? "Sending…" : "Send";
       els.composer.disabled = blocked;
-      els.clearBtn.disabled = state.sending;
       els.fileInput.disabled = state.sending;
     }
 
@@ -821,6 +1016,7 @@
         }
         els.composer.value = "";
         autoResize();
+        hideSlashMenu();
         state.attachments = [];
         renderAttachments();
       } catch (error) {
@@ -892,22 +1088,47 @@
     }
 
     els.sendBtn.addEventListener("click", sendMessage);
-    els.clearBtn.addEventListener("click", () => {
-      els.composer.value = "";
-      state.attachments = [];
-      renderAttachments();
-      autoResize();
-    });
     els.fileInput.addEventListener("change", async (event) => {
       await uploadFiles(event.target.files);
       event.target.value = "";
     });
-    els.composer.addEventListener("input", autoResize);
+    els.composer.addEventListener("input", () => {
+      autoResize();
+      updateSlashMenu();
+    });
     els.composer.addEventListener("keydown", (event) => {
+      if (state.slash.active && state.slash.options.length) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          state.slash.selected = (state.slash.selected + 1) % state.slash.options.length;
+          renderSlashMenu();
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          state.slash.selected = (state.slash.selected - 1 + state.slash.options.length) % state.slash.options.length;
+          renderSlashMenu();
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          applySlashSelection(state.slash.selected);
+          return;
+        }
+        if (event.key === "Escape") {
+          hideSlashMenu();
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         sendMessage();
       }
+    });
+    els.slashMenu.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-slash-index]");
+      if (!button) return;
+      applySlashSelection(Number(button.dataset.slashIndex));
     });
     els.attachmentStrip.addEventListener("click", (event) => {
       const button = event.target.closest("[data-remove-attachment]");
@@ -937,6 +1158,7 @@
       els.conversation.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
     autoResize();
+    updateSlashMenu();
   </script>
 </body>
 </html>

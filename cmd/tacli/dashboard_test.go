@@ -107,6 +107,33 @@ func TestCollectDashboardArtifactPathsMergesExplicitAndCreated(t *testing.T) {
 	}
 }
 
+func TestCollectDashboardArtifactPathsSkipsInternalAndLockFiles(t *testing.T) {
+	got := collectDashboardArtifactPaths(map[string]struct{}{
+		".openclaw/agents/main/sessions/a.jsonl.lock": {},
+		".codex/logs.sqlite-shm":                      {},
+		"exports/summary.pdf":                         {},
+	}, []string{
+		".tacli/uploads/2026/demo.png",
+		"notes/tmp.lock",
+		"docs/report.md",
+	})
+	if len(got) != 2 {
+		t.Fatalf("unexpected filtered paths: %#v", got)
+	}
+	for _, want := range []string{"docs/report.md", "exports/summary.pdf"} {
+		found := false
+		for _, item := range got {
+			if item == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing surfaced path %q in %#v", want, got)
+		}
+	}
+}
+
 func TestToolArtifactPathsOnlyTracksExplicitFileWrites(t *testing.T) {
 	got := toolArtifactPaths(tools.ToolAuditEvent{
 		Tool:      "write_file",

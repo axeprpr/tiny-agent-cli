@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -488,10 +488,14 @@ func (s *dashboardServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	_, _ = w.Write(data)
 }
 
 func (s *dashboardServer) handleState(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	writeJSON(w, http.StatusOK, s.snapshot())
 }
 
@@ -588,24 +592,16 @@ func (s *dashboardServer) handleMessage(w http.ResponseWriter, r *http.Request) 
 		Files:     attachments,
 		CreatedAt: nowText(),
 	})
-	assistantID := s.addEntryLocked(dashboardEntry{
-		Type:      "message",
-		Role:      "assistant",
-		Pending:   true,
-		CreatedAt: nowText(),
-	})
 	s.busy = true
 	s.mu.Unlock()
 	s.broadcastState()
 
 	taskText := buildDashboardTask(text, attachments)
 	taskContent := any(taskText)
-	if s.runtime.modelSupportsVision {
-		if built, ok := buildDashboardTaskContent(s.runtime.cfg.WorkDir, text, attachments); ok {
-			taskContent = built
-		}
+	if built, ok := buildDashboardTaskContent(s.runtime.cfg.WorkDir, text, attachments); ok {
+		taskContent = built
 	}
-	go s.runConversationTask(taskText, taskContent, assistantID)
+	go s.runConversationTask(taskText, taskContent)
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 }
 
@@ -692,7 +688,7 @@ func (s *dashboardServer) handleApprove(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *dashboardServer) runConversationTask(taskText string, content any, assistantID string) {
+func (s *dashboardServer) runConversationTask(taskText string, content any) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
@@ -700,19 +696,25 @@ func (s *dashboardServer) runConversationTask(taskText string, content any, assi
 	s.mu.Lock()
 	s.runArtifacts = make(map[string]struct{})
 	s.mu.Unlock()
+	assistantID := ""
 	output, err := s.runtime.executeTaskContentStreaming(context.Background(), taskText, content, func(token string) {
-		s.appendAssistantToken(assistantID, token)
+		s.appendAssistantToken(&assistantID, token)
 	})
+	if err != nil && assistantID == "" && dashboardContentHasImage(content) {
+		output, err = s.runtime.executeTaskContentStreaming(context.Background(), taskText, taskText, func(token string) {
+			s.appendAssistantToken(&assistantID, token)
+		})
+	}
 	after, _ := captureWorkspaceSnapshot(s.runtime.cfg.WorkDir)
 	createdFiles := createdWorkspaceFiles(before, after)
 
 	s.mu.Lock()
 	artifactPaths := collectDashboardArtifactPaths(s.runArtifacts, createdFiles)
 	fileCards := s.buildFileCards(artifactPaths)
-	s.updateAssistantEntryLocked(assistantID, strings.TrimSpace(output), false)
+	finalText := strings.TrimSpace(output)
 	if err != nil {
-		if strings.TrimSpace(output) == "" {
-			s.updateAssistantEntryLocked(assistantID, "agent error: "+err.Error(), false)
+		if finalText == "" {
+			finalText = "agent error: " + err.Error()
 		} else {
 			s.addEntryLocked(dashboardEntry{
 				Type:      "system",
@@ -722,6 +724,17 @@ func (s *dashboardServer) runConversationTask(taskText string, content any, assi
 				CreatedAt: nowText(),
 			})
 		}
+	}
+	if assistantID == "" && finalText != "" {
+		assistantID = s.addEntryLocked(dashboardEntry{
+			Type:      "message",
+			Role:      "assistant",
+			Pending:   true,
+			CreatedAt: nowText(),
+		})
+	}
+	if assistantID != "" {
+		s.updateAssistantEntryLocked(assistantID, finalText, false)
 	}
 	if len(fileCards) > 0 {
 		s.addEntryLocked(dashboardEntry{
@@ -802,15 +815,32 @@ func (s *dashboardServer) addToolEvent(event tools.ToolAuditEvent) {
 	s.broadcastState()
 }
 
-func (s *dashboardServer) appendAssistantToken(id, token string) {
+func (s *dashboardServer) appendAssistantToken(id *string, token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
 	s.mu.Lock()
-	for i := range s.entries {
-		if s.entries[i].ID != id {
-			continue
+	assistantID := ""
+	if id != nil {
+		assistantID = strings.TrimSpace(*id)
+	}
+	if assistantID == "" {
+		assistantID = s.addEntryLocked(dashboardEntry{
+			Type:      "message",
+			Role:      "assistant",
+			Pending:   true,
+			CreatedAt: nowText(),
+		})
+		if id != nil {
+			*id = assistantID
 		}
-		s.entries[i].Text += token
-		s.entries[i].HTML = renderMarkdownHTML(s.entries[i].Text)
-		break
+	}
+	for i := range s.entries {
+		if s.entries[i].ID == assistantID {
+			s.entries[i].Text += token
+			s.entries[i].HTML = renderMarkdownHTML(s.entries[i].Text)
+			break
+		}
 	}
 	s.mu.Unlock()
 	s.scheduleBroadcast()
@@ -1028,7 +1058,7 @@ func captureWorkspaceSnapshot(root string) (map[string]workspaceFileState, error
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
 			switch rel {
-			case ".git", ".tacli":
+			case ".git", ".tacli", ".openclaw", ".codex", ".claude":
 				return filepath.SkipDir
 			}
 			return nil
@@ -1081,6 +1111,9 @@ func collectDashboardArtifactPaths(explicit map[string]struct{}, created []strin
 		if path == "" {
 			continue
 		}
+		if !shouldSurfaceDashboardArtifact(path) {
+			continue
+		}
 		if _, ok := seen[path]; ok {
 			continue
 		}
@@ -1090,6 +1123,9 @@ func collectDashboardArtifactPaths(explicit map[string]struct{}, created []strin
 	for _, path := range created {
 		path = strings.TrimSpace(filepath.ToSlash(path))
 		if path == "" {
+			continue
+		}
+		if !shouldSurfaceDashboardArtifact(path) {
 			continue
 		}
 		if _, ok := seen[path]; ok {
@@ -1123,10 +1159,31 @@ func toolArtifactPaths(event tools.ToolAuditEvent) []string {
 		return nil
 	}
 	path := strings.TrimSpace(filepath.ToSlash(payload.Path))
-	if path == "" {
+	if path == "" || !shouldSurfaceDashboardArtifact(path) {
 		return nil
 	}
 	return []string{path}
+}
+
+func shouldSurfaceDashboardArtifact(path string) bool {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return false
+	}
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasPrefix(lower, ".openclaw/"),
+		strings.HasPrefix(lower, ".codex/"),
+		strings.HasPrefix(lower, ".claude/"),
+		strings.HasPrefix(lower, ".tacli/"):
+		return false
+	case strings.HasSuffix(lower, ".lock"),
+		strings.HasSuffix(lower, ".swp"),
+		strings.HasSuffix(lower, ".tmp"):
+		return false
+	default:
+		return true
+	}
 }
 
 func buildDashboardTask(text string, attachments []dashboardFile) string {
@@ -1179,6 +1236,19 @@ func buildDashboardTaskContent(root, text string, attachments []dashboardFile) (
 		return nil, false
 	}
 	return parts, true
+}
+
+func dashboardContentHasImage(content any) bool {
+	parts, ok := content.([]model.ContentPart)
+	if !ok {
+		return false
+	}
+	for _, part := range parts {
+		if strings.EqualFold(strings.TrimSpace(part.Type), "image_url") && part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func dashboardFileLooksImage(path string) bool {
