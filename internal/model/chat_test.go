@@ -14,6 +14,18 @@ func TestContentStringFromArray(t *testing.T) {
 	}
 }
 
+func TestContentStringFromMultimodalParts(t *testing.T) {
+	value := []ContentPart{
+		{Type: "text", Text: "describe this"},
+		{Type: "image_url", ImageURL: &ImageURL{URL: "data:image/png;base64,aaa"}},
+	}
+
+	got := ContentString(value)
+	if got != "describe this\n[image]" {
+		t.Fatalf("unexpected multimodal content string: %q", got)
+	}
+}
+
 func TestStripThinkingTagsRemovesBlockAndMixedClosers(t *testing.T) {
 	input := "start<think>private</thinking> end"
 	got := StripThinkingTags(input)

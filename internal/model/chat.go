@@ -40,6 +40,16 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
 type Tool struct {
 	Type     string       `json:"type"`
 	Function FunctionSpec `json:"function"`
@@ -97,6 +107,25 @@ func ContentString(value any) string {
 		}
 		return strings.Join(parts, "\n")
 	case map[string]any:
+		if typ, _ := v["type"].(string); typ != "" {
+			switch strings.TrimSpace(strings.ToLower(typ)) {
+			case "text", "input_text":
+				if text, ok := v["text"].(string); ok {
+					return text
+				}
+			case "image_url", "input_image":
+				if image, ok := v["image_url"].(map[string]any); ok {
+					if url, ok := image["url"].(string); ok && strings.TrimSpace(url) != "" {
+						return "[image]"
+					}
+				}
+				if image, ok := v["source"].(map[string]any); ok {
+					if typ, _ := image["type"].(string); strings.EqualFold(strings.TrimSpace(typ), "base64") {
+						return "[image]"
+					}
+				}
+			}
+		}
 		if text, ok := v["text"].(string); ok {
 			return text
 		}
@@ -110,6 +139,22 @@ func ContentString(value any) string {
 			return string(marshaled)
 		}
 		return fmt.Sprintf("%v", v)
+	case ContentPart:
+		if strings.EqualFold(strings.TrimSpace(v.Type), "text") || strings.EqualFold(strings.TrimSpace(v.Type), "input_text") {
+			return v.Text
+		}
+		if v.ImageURL != nil && strings.TrimSpace(v.ImageURL.URL) != "" {
+			return "[image]"
+		}
+		return ""
+	case []ContentPart:
+		var parts []string
+		for _, item := range v {
+			if text := ContentString(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
 	default:
 		return fmt.Sprintf("%v", v)
 	}

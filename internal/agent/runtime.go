@@ -50,13 +50,17 @@ func (r *ConversationRuntime) QueueFollowUpMessage(text string) bool {
 }
 
 func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result, error) {
+	return r.RunTaskWithContent(ctx, task, task)
+}
+
+func (r *ConversationRuntime) RunTaskWithContent(ctx context.Context, task string, content any) (Result, error) {
 	if r == nil || r.session == nil {
 		return Result{}, fmt.Errorf("conversation runtime is not configured")
 	}
 	s := r.session
 	s.messages = append(s.messages, model.Message{
 		Role:    "user",
-		Content: task,
+		Content: content,
 	})
 
 	turn := 0
@@ -131,17 +135,21 @@ func (r *ConversationRuntime) RunTask(ctx context.Context, task string) (Result,
 }
 
 func (r *ConversationRuntime) RunTaskStreaming(ctx context.Context, task string, onToken func(string)) (Result, error) {
+	return r.RunTaskStreamingWithContent(ctx, task, task, onToken)
+}
+
+func (r *ConversationRuntime) RunTaskStreamingWithContent(ctx context.Context, task string, content any, onToken func(string)) (Result, error) {
 	if r == nil || r.session == nil {
 		return Result{}, fmt.Errorf("conversation runtime is not configured")
 	}
 	s := r.session
 	if s.agent.streamClient == nil {
-		return r.RunTask(ctx, task)
+		return r.RunTaskWithContent(ctx, task, content)
 	}
 
 	s.messages = append(s.messages, model.Message{
 		Role:    "user",
-		Content: task,
+		Content: content,
 	})
 
 	turn := 0

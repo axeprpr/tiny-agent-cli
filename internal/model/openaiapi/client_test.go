@@ -2,6 +2,7 @@ package openaiapi
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -199,6 +200,90 @@ func TestModelsInfoFallsBackToAPIMetadataEndpoint(t *testing.T) {
 	}
 	if info.ContextWindow != 400000 {
 		t.Fatalf("unexpected context window after fallback: %#v", info)
+	}
+}
+
+func TestModelsInfoParsesVisionCapability(t *testing.T) {
+	client := NewClient("https://api.example.test", "test-model", "")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"data":[{"id":"gpt-5","capabilities":{"vision":true}}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	info, ok, err := client.ModelInfo(context.Background(), "gpt-5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || !info.SupportsVision {
+		t.Fatalf("expected model to support vision, got %#v", info)
+	}
+}
+
+func TestSupportsVisionByName(t *testing.T) {
+	for _, modelName := range []string{"gpt-5", "gpt-4o-mini", "qwen2.5-vl", "llava:latest"} {
+		if !SupportsVisionByName(modelName) {
+			t.Fatalf("expected %q to be treated as vision-capable", modelName)
+		}
+	}
+	if SupportsVisionByName("qwen2.5-coder:7b") {
+		t.Fatalf("expected plain coder model to be non-vision by default")
+	}
+}
+
+func TestCompleteMarshalsMultimodalContent(t *testing.T) {
+	var body map[string]any
+	client := NewClient("https://api.example.test", "test-model", "")
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			reply := `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(reply)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	_, err := client.Complete(context.Background(), model.Request{
+		Messages: []model.Message{{
+			Role: "user",
+			Content: []model.ContentPart{
+				{Type: "text", Text: "what is in this image?"},
+				{Type: "image_url", ImageURL: &model.ImageURL{URL: "data:image/png;base64,aaa"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("unexpected request body: %#v", body)
+	}
+	first, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected first message: %#v", messages[0])
+	}
+	content, ok := first["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("unexpected content payload: %#v", first["content"])
 	}
 }
 

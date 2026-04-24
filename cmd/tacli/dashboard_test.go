@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,27 @@ func TestBuildDashboardTaskIncludesAttachments(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestBuildDashboardTaskContentIncludesImageParts(t *testing.T) {
+	root := t.TempDir()
+	pngData, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pic.png"), pngData, 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	got, ok := buildDashboardTaskContent(root, "describe it", []dashboardFile{{Path: "pic.png", Name: "pic.png"}})
+	if !ok {
+		t.Fatalf("expected multimodal content to be built")
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexpected multimodal parts: %#v", got)
+	}
+	if got[0].Text == "" || got[1].ImageURL == nil || !strings.HasPrefix(got[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("unexpected multimodal payload: %#v", got)
 	}
 }
 

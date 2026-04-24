@@ -67,6 +67,7 @@ type chatRuntime struct {
 	permissions        *tools.PermissionStore
 	taskStore          *tasks.Store
 	modelContextWindow int
+	modelSupportsVision bool
 	autoMemoryExit     bool
 	dirtySession       bool
 	tracer             *trace.FileSink
@@ -2183,27 +2184,39 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (r *chatRuntime) executeTask(ctx context.Context, task string) (string, error) {
-	return r.executeTaskStreaming(ctx, task, nil)
+	return r.executeTaskContentStreaming(ctx, task, task, nil)
 }
 
 func (r *chatRuntime) executeTaskStreaming(ctx context.Context, task string, onToken func(string)) (string, error) {
-	if handled, output, err := r.tryHandleNaturalLanguageMemory(task); handled {
+	return r.executeTaskContentStreaming(ctx, task, task, onToken)
+}
+
+func (r *chatRuntime) executeTaskContent(ctx context.Context, taskText string, content any) (string, error) {
+	return r.executeTaskContentStreaming(ctx, taskText, content, nil)
+}
+
+func (r *chatRuntime) executeTaskContentStreaming(ctx context.Context, taskText string, content any, onToken func(string)) (string, error) {
+	taskText = strings.TrimSpace(taskText)
+	if content == nil {
+		content = taskText
+	}
+	if handled, output, err := r.tryHandleNaturalLanguageMemory(taskText); handled {
 		return output, err
 	}
 	r.maybeApplyReadyJobSummaries()
-	r.maybeStartAutoExplore(task)
+	r.maybeStartAutoExplore(taskText)
 	r.recordTrace(ctx, "runtime", "task_start", map[string]any{
-		"task_chars": len(strings.TrimSpace(task)),
+		"task_chars": len(strings.TrimSpace(taskText)),
 		"streaming":  onToken != nil && r.loop.CanStream(),
 	})
 
-	_ = session.AppendTranscript(r.transcriptPath, "user", task)
+	_ = session.AppendTranscript(r.transcriptPath, "user", taskText)
 	var result agent.Result
 	var err error
 	if onToken != nil && r.loop.CanStream() {
-		result, err = r.session.RunTaskStreaming(ctx, task, onToken)
+		result, err = r.session.RunTaskStreamingWithContent(ctx, taskText, content, onToken)
 	} else {
-		result, err = r.session.RunTask(ctx, task)
+		result, err = r.session.RunTaskWithContent(ctx, taskText, content)
 	}
 	r.dirtySession = true
 	if err != nil {
@@ -2687,6 +2700,7 @@ func (r *chatRuntime) refreshModelMetadata() {
 		return
 	}
 	r.modelContextWindow = 0
+	r.modelSupportsVision = openaiapi.SupportsVisionByName(r.cfg.Model)
 	client := harness.NewFactory(r.cfg).NewModelClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2697,6 +2711,7 @@ func (r *chatRuntime) refreshModelMetadata() {
 	if info.ContextWindow > 0 {
 		r.modelContextWindow = info.ContextWindow
 	}
+	r.modelSupportsVision = info.SupportsVision
 }
 
 func (r *chatRuntime) newSession() *agent.Session {

@@ -437,6 +437,11 @@ func (s *Session) RunTask(ctx context.Context, task string) (Result, error) {
 	return s.Runtime().RunTask(ctx, task)
 }
 
+func (s *Session) RunTaskWithContent(ctx context.Context, task string, content any) (Result, error) {
+	s.activeTask = strings.TrimSpace(task)
+	return s.Runtime().RunTaskWithContent(ctx, task, content)
+}
+
 func (s *Session) Compact() bool {
 	if s == nil {
 		return false
@@ -448,6 +453,11 @@ func (s *Session) Compact() bool {
 func (s *Session) RunTaskStreaming(ctx context.Context, task string, onToken func(string)) (Result, error) {
 	s.activeTask = strings.TrimSpace(task)
 	return s.Runtime().RunTaskStreaming(ctx, task, onToken)
+}
+
+func (s *Session) RunTaskStreamingWithContent(ctx context.Context, task string, content any, onToken func(string)) (Result, error) {
+	s.activeTask = strings.TrimSpace(task)
+	return s.Runtime().RunTaskStreamingWithContent(ctx, task, content, onToken)
 }
 
 func (s *Session) captureInitialPlanningState() {

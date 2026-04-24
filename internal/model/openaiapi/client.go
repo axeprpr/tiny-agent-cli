@@ -25,6 +25,7 @@ type Client struct {
 type ModelInfo struct {
 	ID            string
 	ContextWindow int
+	SupportsVision bool
 }
 
 type ClientOption func(*Client)
@@ -389,8 +390,9 @@ func (c *Client) modelsInfoFromURL(ctx context.Context, url string) ([]ModelInfo
 			continue
 		}
 		infos = append(infos, ModelInfo{
-			ID:            id,
-			ContextWindow: extractContextWindow(item),
+			ID:             id,
+			ContextWindow:  extractContextWindow(item),
+			SupportsVision: extractVisionCapability(item, id),
 		})
 	}
 	return infos, nil
@@ -462,6 +464,94 @@ func extractContextWindow(item map[string]any) int {
 	return 0
 }
 
+func SupportsVisionByName(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	normalized = strings.NewReplacer("_", "-", " ", "", ".", "-").Replace(normalized)
+	switch {
+	case normalized == "":
+		return false
+	case strings.Contains(normalized, "vision"):
+		return true
+	case strings.Contains(normalized, "vl"):
+		return true
+	case strings.Contains(normalized, "llava"):
+		return true
+	case strings.Contains(normalized, "minicpm-v"):
+		return true
+	case strings.Contains(normalized, "qwen2-5-vl"), strings.Contains(normalized, "qwen2.5-vl"), strings.Contains(normalized, "qwen-vl"):
+		return true
+	case strings.HasPrefix(normalized, "gpt-4o"), strings.HasPrefix(normalized, "gpt4o"):
+		return true
+	case strings.HasPrefix(normalized, "gpt-4-1"), strings.HasPrefix(normalized, "gpt4-1"):
+		return true
+	case strings.HasPrefix(normalized, "gpt-5"), strings.HasPrefix(normalized, "gpt5"):
+		return true
+	case strings.HasPrefix(normalized, "o4"), strings.HasPrefix(normalized, "o3"):
+		return true
+	case strings.Contains(normalized, "gemini"):
+		return true
+	default:
+		return false
+	}
+}
+
+func extractVisionCapability(item map[string]any, modelName string) bool {
+	for _, key := range []string{
+		"vision",
+		"supports_vision",
+		"image_input",
+		"supports_image_input",
+		"multimodal",
+		"supports_multimodal",
+	} {
+		if value, ok := boolFromAny(item[key]); ok {
+			return value
+		}
+	}
+	for _, key := range []string{"modalities", "input_modalities", "capabilities"} {
+		if hasImageModality(item[key]) {
+			return true
+		}
+	}
+	for _, key := range []string{"top_provider", "provider", "capabilities", "metadata"} {
+		nested, ok := item[key].(map[string]any)
+		if !ok || nested == nil {
+			continue
+		}
+		if extractVisionCapability(nested, modelName) {
+			return true
+		}
+	}
+	return SupportsVisionByName(modelName)
+}
+
+func hasImageModality(value any) bool {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			if hasImageModality(item) {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if hasImageModality(item) {
+				return true
+			}
+		}
+	case string:
+		normalized := strings.ToLower(strings.TrimSpace(v))
+		return strings.Contains(normalized, "image") || strings.Contains(normalized, "vision")
+	case map[string]any:
+		for _, item := range v {
+			if hasImageModality(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func intFromAny(value any) int {
 	switch v := value.(type) {
 	case float64:
@@ -487,4 +577,25 @@ func intFromAny(value any) int {
 		}
 	}
 	return 0
+}
+
+func boolFromAny(value any) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		}
+	case float64:
+		return v != 0, true
+	case int:
+		return v != 0, true
+	case int64:
+		return v != 0, true
+	}
+	return false, false
 }

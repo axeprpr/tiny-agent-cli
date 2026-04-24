@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"html"
 	"io"
 	"io/fs"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -597,7 +599,13 @@ func (s *dashboardServer) handleMessage(w http.ResponseWriter, r *http.Request) 
 	s.broadcastState()
 
 	taskText := buildDashboardTask(text, attachments)
-	go s.runConversationTask(taskText, assistantID)
+	taskContent := any(taskText)
+	if s.runtime.modelSupportsVision {
+		if built, ok := buildDashboardTaskContent(s.runtime.cfg.WorkDir, text, attachments); ok {
+			taskContent = built
+		}
+	}
+	go s.runConversationTask(taskText, taskContent, assistantID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 }
 
@@ -684,7 +692,7 @@ func (s *dashboardServer) handleApprove(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *dashboardServer) runConversationTask(taskText, assistantID string) {
+func (s *dashboardServer) runConversationTask(taskText string, content any, assistantID string) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
@@ -692,7 +700,7 @@ func (s *dashboardServer) runConversationTask(taskText, assistantID string) {
 	s.mu.Lock()
 	s.runArtifacts = make(map[string]struct{})
 	s.mu.Unlock()
-	output, err := s.runtime.executeTaskStreaming(context.Background(), taskText, func(token string) {
+	output, err := s.runtime.executeTaskContentStreaming(context.Background(), taskText, content, func(token string) {
 		s.appendAssistantToken(assistantID, token)
 	})
 	after, _ := captureWorkspaceSnapshot(s.runtime.cfg.WorkDir)
@@ -1137,6 +1145,68 @@ func buildDashboardTask(text string, attachments []dashboardFile) string {
 		lines = append(lines, "", text)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func buildDashboardTaskContent(root, text string, attachments []dashboardFile) ([]model.ContentPart, bool) {
+	text = strings.TrimSpace(text)
+	parts := make([]model.ContentPart, 0, len(attachments)+1)
+	if len(attachments) == 0 {
+		if text == "" {
+			return nil, false
+		}
+		return []model.ContentPart{{Type: "text", Text: text}}, true
+	}
+	fallback := buildDashboardTask(text, attachments)
+	if strings.TrimSpace(fallback) != "" {
+		parts = append(parts, model.ContentPart{Type: "text", Text: fallback})
+	}
+	addedImage := false
+	for _, item := range attachments {
+		if !dashboardFileLooksImage(item.Name) {
+			continue
+		}
+		url, err := buildDashboardImageDataURL(root, item.Path)
+		if err != nil {
+			continue
+		}
+		parts = append(parts, model.ContentPart{
+			Type:     "image_url",
+			ImageURL: &model.ImageURL{URL: url},
+		})
+		addedImage = true
+	}
+	if !addedImage {
+		return nil, false
+	}
+	return parts, true
+}
+
+func dashboardFileLooksImage(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(filepath.Ext(path))) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildDashboardImageDataURL(root, rel string) (string, error) {
+	abs, _, err := resolveWorkspacePath(root, rel)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	mimeType := strings.TrimSpace(mime.TypeByExtension(strings.ToLower(filepath.Ext(rel))))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return "", fmt.Errorf("not an image")
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func buildApprovalPreview(content string) string {
