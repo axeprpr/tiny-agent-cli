@@ -138,8 +138,7 @@
     .entry.system .bubble, .entry.files .bubble {
       background: var(--system);
     }
-    .entry.tool .bubble {
-      background: var(--tool);
+    .entry.tool {
       width: min(100%, 820px);
     }
     .bubble .markdown {
@@ -184,24 +183,51 @@
       0%, 100% { transform: scale(0.75); opacity: 0.45; }
       50% { transform: scale(1.05); opacity: 1; }
     }
-    .tool-details {
+    .tool-card {
       width: 100%;
-    }
-    .tool-details summary {
-      cursor: pointer;
-      list-style: none;
-      display: flex;
+      border-radius: 18px;
+      border: 1px solid rgba(29,36,48,0.12);
+      background: var(--tool);
+      box-shadow: var(--shadow);
+      padding: 12px 14px;
+      display: grid;
       gap: 10px;
-      align-items: center;
-      font: 700 13px/1.4 var(--font-ui);
     }
-    .tool-details summary::-webkit-details-marker { display: none; }
+    .tool-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .tool-kind {
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: rgba(29,36,48,0.08);
+      color: var(--muted);
+      font: 700 11px/1 var(--font-ui);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .tool-name {
+      font: 700 13px/1.35 var(--font-mono);
+      color: var(--text);
+    }
     .tool-status {
       text-transform: uppercase;
       font-size: 11px;
       color: var(--muted);
       letter-spacing: 0.06em;
     }
+    .tool-details {
+      width: 100%;
+    }
+    .tool-details summary {
+      cursor: pointer;
+      list-style: none;
+      color: var(--muted);
+      font: 600 12px/1.3 var(--font-ui);
+    }
+    .tool-details summary::-webkit-details-marker { display: none; }
     .tool-block {
       margin-top: 10px;
       border-top: 1px solid var(--line);
@@ -571,6 +597,7 @@
       attachments: [],
       connected: false,
       approvalExpanded: false,
+      sending: false,
     };
 
     const els = {
@@ -659,13 +686,16 @@
           const tool = entry.tool;
           return `
             <section class="entry tool">
-              <div class="bubble">
+              <div class="meta-line">Tool</div>
+              <div class="tool-card">
+                <div class="tool-head">
+                  <span class="tool-kind">Tool</span>
+                  <span class="tool-name">${escapeHtml(tool.tool || "tool")}</span>
+                  <span class="tool-status">${escapeHtml(tool.status || "unknown")}</span>
+                  <span class="tool-status">${tool.duration_ms || 0}ms</span>
+                </div>
                 <details class="tool-details">
-                  <summary>
-                    <span>${escapeHtml(tool.tool || "tool")}</span>
-                    <span class="tool-status">${escapeHtml(tool.status || "unknown")}</span>
-                    <span class="tool-status">${tool.duration_ms || 0}ms</span>
-                  </summary>
+                  <summary>Show tool details</summary>
                   <div class="tool-block">
                     ${tool.args_preview ? `<div><label>Input</label><pre>${escapeHtml(tool.args_preview)}</pre></div>` : ""}
                     ${tool.output_sample ? `<div><label>Output</label><pre>${escapeHtml(tool.output_sample)}</pre></div>` : ""}
@@ -744,15 +774,19 @@
       els.sessionLine.textContent = `${snapshot.session} · ${snapshot.session_id || "session"} · v${snapshot.version}`;
       els.modelChip.textContent = snapshot.model || "model";
       els.approvalChip.textContent = snapshot.approval_mode || "approval";
-      els.busyChip.textContent = snapshot.busy ? "running" : "idle";
-      els.busyChip.className = `chip ${snapshot.busy ? "busy" : ""}`;
+      const busyText = state.sending ? "sending" : (snapshot.busy ? "running" : "idle");
+      els.busyChip.textContent = busyText;
+      els.busyChip.className = `chip ${(snapshot.busy || state.sending) ? "busy" : ""}`;
       els.connChip.textContent = state.connected ? "connected" : "offline";
       els.connChip.className = `chip ${state.connected ? "connected" : ""}`;
       renderEntries(snapshot.entries || []);
       renderApproval(snapshot.pending_approval || null);
-      const blocked = !!snapshot.busy || !!snapshot.pending_approval;
+      const blocked = state.sending || !!snapshot.busy || !!snapshot.pending_approval;
       els.sendBtn.disabled = blocked;
+      els.sendBtn.textContent = state.sending ? "Sending…" : "Send";
       els.composer.disabled = blocked;
+      els.clearBtn.disabled = state.sending;
+      els.fileInput.disabled = state.sending;
     }
 
     async function fetchState() {
@@ -762,25 +796,35 @@
     }
 
     async function sendMessage() {
+      if (state.sending) return;
       const text = els.composer.value.trim();
       if (!text && !state.attachments.length) return;
       const body = {
         text,
         attachments: state.attachments.map((item) => item.path),
       };
-      const res = await fetch("/api/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        alert(await res.text());
-        return;
+      state.sending = true;
+      if (state.snapshot) renderSnapshot(state.snapshot);
+      try {
+        const res = await fetch("/api/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          alert(await res.text());
+          return;
+        }
+        els.composer.value = "";
+        autoResize();
+        state.attachments = [];
+        renderAttachments();
+      } catch (error) {
+        alert(error instanceof Error ? error.message : String(error));
+      } finally {
+        state.sending = false;
+        if (state.snapshot) renderSnapshot(state.snapshot);
       }
-      els.composer.value = "";
-      autoResize();
-      state.attachments = [];
-      renderAttachments();
     }
 
     async function uploadFiles(fileList) {

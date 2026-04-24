@@ -121,6 +121,8 @@ type webSearchTool struct {
 	searchEndpoints func(query string) []string
 }
 
+const ddgSearchMaxAttempts = 2
+
 func newWebSearchTool() Tool {
 	return &webSearchTool{
 		client:          &http.Client{Timeout: 20 * time.Second},
@@ -188,32 +190,18 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	if len(results) == 0 {
 		for _, endpoint := range endpoints {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			endpointResults, err := t.searchDDGEndpoint(ctx, endpoint)
 			if err != nil {
 				lastErr = err
 				continue
 			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
-
-			resp, err := t.client.Do(req)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-			resp.Body.Close()
-			if err != nil {
-				lastErr = err
-				continue
-			}
-				results = parseDDGResults(string(body))
-				if len(results) > 0 {
-					source = endpoint
-					break
-				}
+			results = endpointResults
+			if len(results) > 0 {
+				source = endpoint
+				break
 			}
 		}
+	}
 	if len(results) == 0 && lastErr != nil {
 		return "", lastErr
 	}
@@ -251,6 +239,58 @@ func (t *webSearchTool) Call(ctx context.Context, raw json.RawMessage) (string, 
 		}
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func (t *webSearchTool) searchDDGEndpoint(ctx context.Context, endpoint string) ([]ddgResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= ddgSearchMaxAttempts; attempt++ {
+		results, err := t.searchDDGEndpointOnce(ctx, endpoint)
+		if err == nil {
+			return results, nil
+		}
+		lastErr = err
+		if !isRetryableWebSearchError(err) || attempt == ddgSearchMaxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+		}
+	}
+	return nil, lastErr
+}
+
+func (t *webSearchTool) searchDDGEndpointOnce(ctx context.Context, endpoint string) ([]ddgResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; tiny-agent-cli/0.1)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("web search request failed for %s: %w", endpoint, err)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("web search read failed for %s: %w", endpoint, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("web search endpoint %s returned %s: %s", endpoint, resp.Status, compactWebText(stripTags(string(body)), 180))
+	}
+	page := string(body)
+	if !looksLikeDuckDuckGoResultPage(page) {
+		return nil, fmt.Errorf("web search endpoint %s returned an unexpected page", endpoint)
+	}
+	results := parseDDGResults(page)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("web search endpoint %s returned no parseable results", endpoint)
+	}
+	return results, nil
 }
 
 func dedupeSearchResults(results []ddgResult) []ddgResult {
@@ -462,6 +502,29 @@ func defaultSearchEndpoints(query string) []string {
 		)
 	}
 	return endpoints
+}
+
+func looksLikeDuckDuckGoResultPage(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "result__a") || strings.Contains(lower, "result-link") || strings.Contains(lower, "uddg=") {
+		return true
+	}
+	if strings.Contains(lower, "<title>") && strings.Contains(lower, "duckduckgo") && strings.Contains(lower, "no results") {
+		return true
+	}
+	return false
+}
+
+func isRetryableWebSearchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "temporary") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "unexpected eof")
 }
 
 type scoredResult struct {

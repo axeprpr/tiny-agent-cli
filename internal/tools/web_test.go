@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -36,7 +37,7 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				body := `<html><body><div>no result blocks here</div></body></html>`
 				if req.URL.Path == "/lite" {
-					body = `<html><body><a href="https://example.com/fallback">Fallback Result</a></body></html>`
+					body = `<html><body><a class="result-link" href="https://example.com/fallback">Fallback Result</a></body></html>`
 				}
 				return &http.Response{
 					StatusCode: http.StatusOK,
@@ -64,6 +65,81 @@ func TestWebSearchUsesSecondaryEndpointFallback(t *testing.T) {
 	}
 	if !strings.Contains(out, "source: https://search.test/lite") {
 		t.Fatalf("expected source endpoint in output, got: %q", out)
+	}
+}
+
+func TestWebSearchIgnoresNonOKPrimaryEndpoint(t *testing.T) {
+	tool := &webSearchTool{
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/html" {
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Status:     "400 Bad Request",
+						Body:       io.NopCloser(strings.NewReader("bad request")),
+						Header:     make(http.Header),
+						Request:    req,
+					}, nil
+				}
+				body := `<html><body><a class="result-link" href="https://example.com/fallback">Fallback Result</a></body></html>`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+		searchEndpoints: func(_ string) []string {
+			return []string{"https://search.test/html", "https://search.test/lite"}
+		},
+	}
+
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"query":"tiny agent"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "source: https://search.test/lite") {
+		t.Fatalf("expected lite fallback source, got: %q", out)
+	}
+}
+
+func TestWebSearchRetriesRetryableEndpointErrors(t *testing.T) {
+	attempts := 0
+	tool := &webSearchTool{
+		client: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				if attempts == 1 {
+					return nil, errors.New("context deadline exceeded")
+				}
+				body := `<html><body><a class="result-link" href="https://example.com/retry">Retry Result</a></body></html>`
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}),
+		},
+		searchEndpoints: func(_ string) []string {
+			return []string{"https://search.test/html"}
+		},
+	}
+
+	out, err := tool.Call(context.Background(), json.RawMessage(`{"query":"tiny agent"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected one retry, got %d attempts", attempts)
+	}
+	if !strings.Contains(out, "Retry Result") {
+		t.Fatalf("expected retry result in output, got: %q", out)
 	}
 }
 
