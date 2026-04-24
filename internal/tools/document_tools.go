@@ -413,12 +413,19 @@ func renderDOCXInspection(path string, doc docxInspection) string {
 	return strings.Join(lines, "\n")
 }
 
-func inspectPDF(path string, maxPages, maxChars int) (pdfInspection, error) {
+func inspectPDF(path string, maxPages, maxChars int) (out pdfInspection, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("inspect pdf: %v", recovered)
+			out = pdfInspection{}
+		}
+	}()
+
 	reader, err := pdf.Open(path)
 	if err != nil {
 		return pdfInspection{}, fmt.Errorf("open pdf: %w", err)
 	}
-	out := pdfInspection{
+	out = pdfInspection{
 		PageCount: reader.NumPage(),
 	}
 	info := reader.Trailer().Key("Info")

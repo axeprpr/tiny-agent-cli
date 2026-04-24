@@ -434,8 +434,8 @@
       align-items: center;
     }
     .composer-input-zone {
+      position: relative;
       display: grid;
-      gap: 8px;
       min-width: 0;
     }
     textarea {
@@ -461,6 +461,11 @@
     }
     .slash-menu {
       display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      right: 0;
+      z-index: 12;
       border-radius: 14px;
       border: 1px solid var(--line);
       background: rgba(255,255,255,0.9);
@@ -480,7 +485,7 @@
       color: var(--text);
       display: grid;
       grid-template-columns: minmax(150px, 190px) 1fr;
-      align-items: center;
+      align-items: baseline;
       min-height: 0;
       padding: 10px 12px;
       gap: 8px;
@@ -494,7 +499,8 @@
       background: rgba(13,111,157,0.12);
     }
     .slash-item .cmd {
-      font: 700 12px/1.2 var(--font-mono);
+      display: block;
+      font: 700 12px/1.25 var(--font-mono);
       color: #0b4f70;
       min-width: 0;
       white-space: nowrap;
@@ -502,8 +508,9 @@
       text-overflow: ellipsis;
     }
     .slash-item .desc {
+      display: block;
       color: var(--muted);
-      font: 600 12px/1.35 var(--font-ui);
+      font: 600 12px/1.25 var(--font-ui);
       overflow-wrap: anywhere;
     }
     @media (max-width: 760px) {
