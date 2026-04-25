@@ -1,19 +1,30 @@
 # tacli
 
-`tacli` is a small terminal coding agent for one workspace, one binary, and one OpenAI-compatible model endpoint.
+`tacli` is a small coding agent for one workspace, one binary, and one OpenAI-compatible model endpoint.
 
 It keeps the runtime narrow:
 
 - Go binary only
 - local workspace state under `.tacli/`
 - built-in tool runtime with permissions, hooks, audit, and background jobs
-- interactive chat plus one-shot task execution
+- terminal chat, one-shot execution, and a lightweight web dashboard
 
 Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
 ## Architecture
 
-### 1. System Overview
+## Features
+
+- Terminal-first runtime: `chat`, `run`, `status`, `plan`, `contract`, and background jobs in one binary
+- Web dashboard: browser chat UI with streaming output, approval prompts, tool-call cards, generated-file cards, and session state
+- File inspection: built-in DOCX/PDF tools, text file viewer, downloads, and sandboxed HTML preview for generated pages
+- Safe execution controls: permission modes, command rules, approval flow, audit log, and hook integration
+- Local persistence: conversations, transcripts, memory, task contract, todos, trace, and audit state under `.tacli/`
+- Narrow deployment model: one OpenAI-compatible endpoint, one workspace root, one local state directory
+
+## Architecture
+
+### 1. Runtime Overview
 
 ```mermaid
 flowchart LR
@@ -22,11 +33,12 @@ flowchart LR
     subgraph entry[Entrypoints]
         cli["cmd/tacli/main.go<br/>run / chat / status / init / models / version"]
         tui["cmd/tacli/chat_tui.go<br/>interactive terminal UI"]
+        dashboard["cmd/tacli/dashboard.go<br/>web dashboard + SSE state stream"]
         control["cmd/tacli/control.go<br/>plan / status / contract / skills / capabilities"]
     end
 
     subgraph runtime[Runtime Assembly]
-        chatrt["chatRuntime<br/>session paths, memory scopes, jobs, plugins"]
+        chatrt["chatRuntime<br/>session paths, memory scopes, jobs, plugins, approvals"]
         factory["internal/harness/factory.go<br/>build prompt context and wire dependencies"]
         prompt["PromptContext<br/>instructions + skills + capabilities + git + memory"]
     end
@@ -40,8 +52,8 @@ flowchart LR
     subgraph tooling[Tool Runtime]
         permission["permission policy<br/>tool policy + command rules"]
         hooks["hook runner<br/>pre/post tool hooks"]
-        audit["audit sink"]
-        tools["built-in tools<br/>todo / contract / files / edit / shell / web / MCP / bg jobs"]
+        audit["audit sink + dashboard tool feed"]
+        tools["built-in tools<br/>todo / contract / files / edit / shell / web / docs / MCP / bg jobs"]
     end
 
     subgraph state[Persistence]
@@ -52,11 +64,24 @@ flowchart LR
         disk["workspace + .tacli/"]
     end
 
+    subgraph webui[Dashboard UI]
+        sse["SSE state/events"]
+        approvals["approval bar"]
+        files["generated files + preview"]
+        preview["sandboxed HTML preview"]
+    end
+
     user --> cli
     user --> tui
+    user --> dashboard
     cli --> control
     cli --> chatrt
     tui --> chatrt
+    dashboard --> chatrt
+    dashboard --> sse
+    sse --> approvals
+    sse --> files
+    files --> preview
     chatrt --> factory
     factory --> prompt
     factory --> agent
@@ -81,7 +106,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant User
-    participant UI as CLI / TUI
+    participant UI as CLI / TUI / Dashboard
     participant Runtime as chatRuntime
     participant Factory as harness.Factory
     participant Session as agent.Session
@@ -115,7 +140,30 @@ sequenceDiagram
     Runtime-->>UI: stream / render result
 ```
 
-### 3. State and File Layout
+### 3. Dashboard File and Preview Flow
+
+```mermaid
+flowchart LR
+    user[Browser user]
+    dashboard["dashboard UI"]
+    runtime["chatRuntime"]
+    audit["tool audit events"]
+    files["generated file cards"]
+    preview["/api/preview/..."]
+    iframe["sandboxed iframe"]
+    workspace["workspace files"]
+
+    user --> dashboard
+    dashboard --> runtime
+    runtime --> audit
+    audit --> files
+    runtime --> workspace
+    files --> preview
+    preview --> workspace
+    preview --> iframe
+```
+
+### 4. State and File Layout
 
 ```mermaid
 flowchart TB
@@ -171,9 +219,10 @@ flowchart TB
 | Path | Responsibility |
 | --- | --- |
 | `cmd/tacli/` | CLI entrypoints, interactive chat runtime, TUI, slash-command parity, background job manager |
+| `cmd/tacli/dashboard.go` + `cmd/tacli/dashboard_assets/` | browser dashboard, SSE state stream, approvals, tool cards, file preview and downloads |
 | `internal/harness/` | dependency wiring, prompt context construction, model/agent/tool assembly |
 | `internal/agent/` | session loop, turn summaries, retries, compaction, finish gate, orchestration |
-| `internal/tools/` | tool registry, permission layer, hooks, audit, task contract, file/shell/web/MCP tools |
+| `internal/tools/` | tool registry, permission layer, hooks, audit, task contract, file/shell/web/doc inspection/MCP tools |
 | `internal/model/openaiapi/` | OpenAI-compatible HTTP client and streaming transport |
 | `internal/session/` | saved sessions and transcript persistence |
 | `internal/memory/` | persistent memory store |
@@ -224,6 +273,20 @@ tacli chat --dangerously
 tacli run --dangerously "go test ./..."
 ```
 
+Web dashboard:
+
+```bash
+tacli dashboard --host 127.0.0.1 --port 8421
+```
+
+Dashboard capabilities:
+
+- live streaming conversation state over SSE
+- approval actions for commands and writes
+- tool-call timeline with input/output samples
+- generated file cards with `View`, `Download`, and `Preview` for `.html`
+- sandboxed HTML preview via `/api/preview/...`
+
 ### 4. Useful Commands
 
 ```bash
@@ -251,3 +314,5 @@ Inside chat:
 - `tacli` persists local state under `.tacli/` by default.
 - `tacli plan` reads `plan.md` from the workspace root.
 - background jobs require `--dangerously` because they cannot pause for interactive approvals.
+- dashboard HTML preview is sandboxed and serves only an allowlisted set of static asset extensions.
+- malformed PDFs now fail as normal tool errors instead of crashing the dashboard process.

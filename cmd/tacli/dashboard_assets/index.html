@@ -561,12 +561,27 @@
       background: rgba(255,255,255,0.78);
       padding: 14px;
     }
+    .viewer-body.preview {
+      padding: 0;
+      background: #fff;
+      overflow: hidden;
+    }
     .viewer-body pre {
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
       font: 14px/1.52 var(--font-mono);
       color: var(--text);
+    }
+    .viewer-frame {
+      display: none;
+      width: 100%;
+      height: min(72vh, 900px);
+      border: 0;
+      background: #fff;
+    }
+    .viewer-frame.active {
+      display: block;
     }
     .approval-actions {
       display: flex;
@@ -676,8 +691,9 @@
         <h2 id="viewerTitle">File viewer</h2>
         <button class="ghost" id="closeViewer">Close</button>
       </div>
-      <div class="viewer-body">
+      <div class="viewer-body" id="viewerBody">
         <pre id="viewerContent"></pre>
+        <iframe class="viewer-frame" id="viewerFrame" sandbox="allow-scripts"></iframe>
       </div>
     </div>
   </div>
@@ -711,6 +727,7 @@
       approvalDetails: document.getElementById("approvalDetails"),
       approvalToggle: document.getElementById("approvalToggle"),
       attachmentStrip: document.getElementById("attachmentStrip"),
+      composerWrap: document.querySelector(".composer-wrap"),
       composer: document.getElementById("composer"),
       slashMenu: document.getElementById("slashMenu"),
       sendBtn: document.getElementById("sendBtn"),
@@ -720,7 +737,9 @@
       allowAlways: document.getElementById("allowAlways"),
       viewerModal: document.getElementById("viewerModal"),
       viewerTitle: document.getElementById("viewerTitle"),
+      viewerBody: document.getElementById("viewerBody"),
       viewerContent: document.getElementById("viewerContent"),
+      viewerFrame: document.getElementById("viewerFrame"),
       closeViewer: document.getElementById("closeViewer"),
     };
     const slashCommands = [
@@ -773,6 +792,9 @@
     }
 
     function fileCard(file) {
+      const previewButton = file.preview_url
+        ? `<button class="secondary" type="button" data-preview="${escapeHtml(file.preview_url)}">Preview</button>`
+        : "";
       const viewButton = file.is_text
         ? `<button class="secondary" type="button" data-view="${encodeURIComponent(file.path)}">View</button>`
         : "";
@@ -781,6 +803,7 @@
           <div class="file-name">${escapeHtml(file.path)}</div>
           <div class="meta-line">${formatBytes(file.size)}</div>
           <div class="file-actions">
+            ${previewButton}
             ${viewButton}
             <a class="button secondary" href="${file.download_url}">Download</a>
           </div>
@@ -1065,12 +1088,30 @@
       }
       const payload = await res.json();
       els.viewerTitle.textContent = payload.file?.path || path;
+      els.viewerFrame.classList.remove("active");
+      els.viewerFrame.src = "about:blank";
+      els.viewerContent.style.display = "block";
+      els.viewerBody.classList.remove("preview");
       els.viewerContent.textContent = payload.content || "";
+      els.viewerModal.classList.add("active");
+    }
+
+    function openPreview(path, previewUrl) {
+      els.viewerTitle.textContent = path;
+      els.viewerContent.style.display = "none";
+      els.viewerContent.textContent = "";
+      els.viewerBody.classList.add("preview");
+      els.viewerFrame.classList.add("active");
+      els.viewerFrame.src = previewUrl;
       els.viewerModal.classList.add("active");
     }
 
     function closeViewer() {
       els.viewerModal.classList.remove("active");
+      els.viewerBody.classList.remove("preview");
+      els.viewerFrame.classList.remove("active");
+      els.viewerFrame.src = "about:blank";
+      els.viewerContent.style.display = "block";
     }
 
     function connectEvents() {
@@ -1092,6 +1133,13 @@
     function autoResize() {
       els.composer.style.height = "auto";
       els.composer.style.height = Math.min(180, els.composer.scrollHeight) + "px";
+      syncComposerInset();
+    }
+
+    function syncComposerInset() {
+      if (!els.composerWrap) return;
+      const height = Math.ceil(els.composerWrap.getBoundingClientRect().height);
+      document.documentElement.style.setProperty("--composer-h", `${Math.max(96, height)}px`);
     }
 
     els.sendBtn.addEventListener("click", sendMessage);
@@ -1144,6 +1192,13 @@
       renderAttachments();
     });
     document.body.addEventListener("click", (event) => {
+      const previewButton = event.target.closest("[data-preview]");
+      if (previewButton) {
+        const card = previewButton.closest(".file-card");
+        const path = card?.querySelector(".file-name")?.textContent || "HTML preview";
+        openPreview(path, previewButton.dataset.preview);
+        return;
+      }
       const viewButton = event.target.closest("[data-view]");
       if (viewButton) {
         openViewer(decodeURIComponent(viewButton.dataset.view));
@@ -1160,11 +1215,13 @@
     els.denyApproval.addEventListener("click", () => resolveApproval("deny", els.denyApproval.dataset.id));
     els.allowOnce.addEventListener("click", () => resolveApproval("approve", els.allowOnce.dataset.id));
     els.allowAlways.addEventListener("click", () => resolveApproval("always", els.allowAlways.dataset.id));
+    window.addEventListener("resize", syncComposerInset);
 
     fetchState().then(connectEvents).catch((error) => {
       els.conversation.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
     autoResize();
+    syncComposerInset();
     updateSlashMenu();
   </script>
 </body>

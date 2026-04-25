@@ -1,19 +1,28 @@
 # tacli
 
-`tacli` 是一个尽量收敛复杂度的终端代码 Agent：一个二进制、一个工作区、一个 OpenAI 兼容模型接口。
+`tacli` 是一个尽量收敛复杂度的代码 Agent：一个二进制、一个工作区、一个 OpenAI 兼容模型接口。
 
 它的运行面很小：
 
 - 只有 Go 二进制
 - 本地状态统一放在 `.tacli/`
 - 内置工具运行时，带权限、Hook、审计和后台任务
-- 同时支持交互式聊天和单次任务执行
+- 同时支持终端聊天、单次任务执行和轻量 Web dashboard
 
 English version: [README.md](README.md)
 
+## 功能
+
+- 终端优先：`chat`、`run`、`status`、`plan`、`contract`、后台任务都在一个二进制里
+- Web dashboard：浏览器聊天界面，支持流式输出、审批条、工具卡片、生成文件卡片和会话状态
+- 文件检查：内置 DOCX/PDF 检查工具、文本查看、下载，以及对生成网页的沙箱 HTML 预览
+- 安全执行控制：权限模式、命令规则、审批流、审计日志和 Hook 集成
+- 本地持久化：会话、transcript、memory、task contract、todo、trace、audit 都落在 `.tacli/`
+- 简单部署：一个 OpenAI 兼容接口、一个工作区根目录、一个本地状态目录
+
 ## 架构
 
-### 1. 系统总览
+### 1. 运行时总览
 
 ```mermaid
 flowchart LR
@@ -22,11 +31,12 @@ flowchart LR
     subgraph entry[入口层]
         cli["cmd/tacli/main.go<br/>run / chat / status / init / models / version"]
         tui["cmd/tacli/chat_tui.go<br/>交互式终端 UI"]
+        dashboard["cmd/tacli/dashboard.go<br/>Web dashboard + SSE 状态流"]
         control["cmd/tacli/control.go<br/>plan / status / contract / skills / capabilities"]
     end
 
     subgraph runtime[运行时装配]
-        chatrt["chatRuntime<br/>会话路径、记忆作用域、后台任务、插件"]
+        chatrt["chatRuntime<br/>会话路径、记忆作用域、后台任务、插件、审批"]
         factory["internal/harness/factory.go<br/>构造 Prompt 上下文并装配依赖"]
         prompt["PromptContext<br/>instructions + skills + capabilities + git + memory"]
     end
@@ -40,8 +50,8 @@ flowchart LR
     subgraph tooling[工具运行时]
         permission["权限策略<br/>工具级策略 + 命令规则"]
         hooks["Hook Runner<br/>前后置 Hook"]
-        audit["审计"]
-        tools["内置工具<br/>todo / contract / files / edit / shell / web / MCP / bg jobs"]
+        audit["审计 + dashboard 工具事件流"]
+        tools["内置工具<br/>todo / contract / files / edit / shell / web / 文档检查 / MCP / bg jobs"]
     end
 
     subgraph state[持久化]
@@ -52,11 +62,24 @@ flowchart LR
         disk["workspace + .tacli/"]
     end
 
+    subgraph webui[Dashboard UI]
+        sse["SSE state/events"]
+        approvals["审批条"]
+        files["生成文件卡片"]
+        preview["沙箱 HTML 预览"]
+    end
+
     user --> cli
     user --> tui
+    user --> dashboard
     cli --> control
     cli --> chatrt
     tui --> chatrt
+    dashboard --> chatrt
+    dashboard --> sse
+    sse --> approvals
+    sse --> files
+    files --> preview
     chatrt --> factory
     factory --> prompt
     factory --> agent
@@ -81,7 +104,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant UI as CLI / TUI
+    participant UI as CLI / TUI / Dashboard
     participant Runtime as chatRuntime
     participant Factory as harness.Factory
     participant Session as agent.Session
@@ -115,7 +138,30 @@ sequenceDiagram
     Runtime-->>UI: 流式输出 / 渲染
 ```
 
-### 3. 状态与文件布局
+### 3. Dashboard 文件与预览流
+
+```mermaid
+flowchart LR
+    user[浏览器用户]
+    dashboard[dashboard UI]
+    runtime[chatRuntime]
+    audit[工具审计事件]
+    files[生成文件卡片]
+    preview[/api/preview/...]
+    iframe[sandbox iframe]
+    workspace[工作区文件]
+
+    user --> dashboard
+    dashboard --> runtime
+    runtime --> audit
+    audit --> files
+    runtime --> workspace
+    files --> preview
+    preview --> workspace
+    preview --> iframe
+```
+
+### 4. 状态与文件布局
 
 ```mermaid
 flowchart TB
@@ -171,9 +217,10 @@ flowchart TB
 | 路径 | 作用 |
 | --- | --- |
 | `cmd/tacli/` | CLI 入口、交互式聊天运行时、TUI、slash command 对齐、后台任务管理 |
+| `cmd/tacli/dashboard.go` + `cmd/tacli/dashboard_assets/` | 浏览器 dashboard、SSE 状态流、审批、工具卡片、文件预览与下载 |
 | `internal/harness/` | 依赖装配、Prompt 上下文构造、模型/Agent/工具初始化 |
 | `internal/agent/` | 会话循环、turn summary、重试、上下文压缩、finish gate、编排 |
-| `internal/tools/` | 工具注册表、权限层、Hook、审计、task contract、文件/命令/Web/MCP 工具 |
+| `internal/tools/` | 工具注册表、权限层、Hook、审计、task contract、文件/命令/Web/文档检查/MCP 工具 |
 | `internal/model/openaiapi/` | OpenAI 兼容模型客户端与流式传输 |
 | `internal/session/` | 会话和 transcript 持久化 |
 | `internal/memory/` | 持久化记忆 |
@@ -224,6 +271,20 @@ tacli chat --dangerously
 tacli run --dangerously "go test ./..."
 ```
 
+Web dashboard：
+
+```bash
+tacli dashboard --host 127.0.0.1 --port 8421
+```
+
+Dashboard 当前支持：
+
+- SSE 流式会话状态
+- 命令/写文件审批条
+- 工具调用时间线与输入输出摘要
+- 生成文件卡片里的 `View`、`Download`、`.html` 的 `Preview`
+- 通过 `/api/preview/...` 做沙箱 HTML 预览
+
 ### 4. 常用命令
 
 ```bash
@@ -251,3 +312,5 @@ tacli contract
 - 默认本地状态目录是 `.tacli/`
 - `tacli plan` 会读取工作区根目录的 `plan.md`
 - 后台任务需要 `--dangerously`，因为它们不能在中途等待交互式审批
+- dashboard 的 HTML 预览是沙箱化的，只允许一小部分静态资源扩展名
+- malformed PDF 现在会作为普通工具错误返回，不会再把 dashboard 进程打崩

@@ -16,6 +16,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,6 +62,7 @@ type dashboardFile struct {
 	IsText      bool   `json:"is_text"`
 	DownloadURL string `json:"download_url"`
 	ViewURL     string `json:"view_url,omitempty"`
+	PreviewURL  string `json:"preview_url,omitempty"`
 }
 
 type dashboardToolEvent struct {
@@ -424,6 +426,7 @@ func (s *dashboardServer) routes() http.Handler {
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/file", s.handleFileView)
 	mux.HandleFunc("/api/download", s.handleFileDownload)
+	mux.HandleFunc("/api/preview/", s.handleFilePreview)
 	mux.HandleFunc("/api/approve", s.handleApprove)
 	return mux
 }
@@ -668,6 +671,50 @@ func (s *dashboardServer) handleFileDownload(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", file.Name))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, absPath)
+}
+
+func (s *dashboardServer) handleFilePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/preview/"))
+	raw = strings.TrimPrefix(raw, "/")
+	if raw == "" {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	absPath, normalized, err := resolveWorkspacePath(s.runtime.cfg.WorkDir, decoded)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !dashboardFileLooksPreviewAsset(normalized) {
+		http.Error(w, "file type is not previewable", http.StatusBadRequest)
+		return
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	contentType := strings.TrimSpace(mime.TypeByExtension(strings.ToLower(filepath.Ext(normalized))))
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	if dashboardFileLooksPreviewHTML(normalized) {
+		contentType = "text/html; charset=utf-8"
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'none'; media-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+	}
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", contentType)
+	_, _ = w.Write(data)
 }
 
 func (s *dashboardServer) handleApprove(w http.ResponseWriter, r *http.Request) {
@@ -1260,6 +1307,37 @@ func dashboardFileLooksImage(path string) bool {
 	}
 }
 
+func dashboardFileLooksPreviewHTML(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(filepath.Ext(path))) {
+	case ".html", ".htm":
+		return true
+	default:
+		return false
+	}
+}
+
+func dashboardFileLooksPreviewAsset(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(filepath.Ext(path))) {
+	case ".html", ".htm", ".css", ".js", ".mjs", ".json", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".map":
+		return true
+	default:
+		return false
+	}
+}
+
+func dashboardPreviewURL(path string) string {
+	parts := strings.Split(strings.TrimSpace(filepath.ToSlash(path)), "/")
+	escaped := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		escaped = append(escaped, url.PathEscape(part))
+	}
+	return "/api/preview/" + strings.Join(escaped, "/")
+}
+
 func buildDashboardImageDataURL(root, rel string) (string, error) {
 	abs, _, err := resolveWorkspacePath(root, rel)
 	if err != nil {
@@ -1313,6 +1391,9 @@ func buildDashboardFile(root, rel string) (dashboardFile, error) {
 	}
 	if isText {
 		file.ViewURL = "/api/file?path=" + normalized
+	}
+	if dashboardFileLooksPreviewHTML(normalized) {
+		file.PreviewURL = dashboardPreviewURL(normalized)
 	}
 	return file, nil
 }

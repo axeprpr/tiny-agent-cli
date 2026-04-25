@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"tiny-agent-cli/internal/config"
 	"tiny-agent-cli/internal/tools"
 )
 
@@ -177,5 +180,41 @@ func TestFileLooksText(t *testing.T) {
 	}
 	if fileLooksText(binPath) {
 		t.Fatalf("expected binary file to be rejected")
+	}
+}
+
+func TestBuildDashboardFileSetsPreviewURLForHTML(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "preview.html"), []byte("<!doctype html><h1>demo</h1>"), 0o644); err != nil {
+		t.Fatalf("write html: %v", err)
+	}
+	file, err := buildDashboardFile(root, "preview.html")
+	if err != nil {
+		t.Fatalf("build file: %v", err)
+	}
+	if file.PreviewURL != "/api/preview/preview.html" {
+		t.Fatalf("unexpected preview url: %q", file.PreviewURL)
+	}
+}
+
+func TestHandleFilePreviewServesHTML(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "preview.html"), []byte("<!doctype html><h1>demo</h1>"), 0o644); err != nil {
+		t.Fatalf("write html: %v", err)
+	}
+	server := &dashboardServer{
+		runtime: &chatRuntime{cfg: config.Config{WorkDir: root}},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/preview/preview.html", nil)
+	rec := httptest.NewRecorder()
+	server.handleFilePreview(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("unexpected content type: %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "<h1>demo</h1>") {
+		t.Fatalf("unexpected body: %q", rec.Body.String())
 	}
 }
