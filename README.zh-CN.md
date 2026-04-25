@@ -147,8 +147,8 @@ flowchart LR
     runtime[chatRuntime]
     audit[工具审计事件]
     files[生成文件卡片]
-    preview[/api/preview/...]
-    iframe[sandbox iframe]
+    preview["预览路由<br/>/api/preview/..."]
+    iframe["sandbox iframe"]
     workspace[工作区文件]
 
     user --> dashboard

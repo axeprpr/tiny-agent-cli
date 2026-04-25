@@ -149,7 +149,7 @@ flowchart LR
     runtime["chatRuntime"]
     audit["tool audit events"]
     files["generated file cards"]
-    preview["/api/preview/..."]
+    preview["preview route<br/>/api/preview/..."]
     iframe["sandboxed iframe"]
     workspace["workspace files"]
 
