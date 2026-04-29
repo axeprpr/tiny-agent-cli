@@ -52,6 +52,21 @@ func TestBuildSystemPromptIncludesRoleGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptPlanRoleIncludesGrillingGuidance(t *testing.T) {
+	prompt := BuildSystemPrompt(PromptContext{
+		SessionMode: "background:plan",
+	})
+	for _, want := range []string{
+		"Role guidance (plan):",
+		"Pressure-test ambiguous branches before locking the plan",
+		"ask focused questions one at a time",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptIncludesSkills(t *testing.T) {
 	prompt := BuildSystemPrompt(PromptContext{
 		Skills: []PromptSkill{
@@ -130,6 +145,7 @@ func TestBuildSystemPromptIncludesCoreToolSelectionGuidance(t *testing.T) {
 		"If the user asks for a repository, package, or official documentation page, prefer GitHub",
 		"After any tool call, check whether the evidence is sufficient before answering.",
 		"must create a concrete plan before the first mutating action",
+		"ask focused questions that collapse one decision branch at a time",
 		"If a mutating action fails, do not immediately try a different mutating path.",
 		"If the user rejects a write, command, or permission request, stop and return control to the user.",
 		"blocked work without a terminal handoff",

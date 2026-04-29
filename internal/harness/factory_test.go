@@ -64,6 +64,18 @@ func TestBuildPromptContextUsesSortedToolNamesAndRole(t *testing.T) {
 	if len(ctx.Capabilities) == 0 {
 		t.Fatalf("expected bundled capabilities in prompt context")
 	}
+	joinedSkills := strings.ToLower(strings.Join(func() []string {
+		names := make([]string, 0, len(ctx.Skills))
+		for _, item := range ctx.Skills {
+			names = append(names, item.Name)
+		}
+		return names
+	}(), " "))
+	for _, want := range []string{"grill-me", "tdd", "to-prd", "git-guardrails"} {
+		if !strings.Contains(joinedSkills, want) {
+			t.Fatalf("expected bundled skill %q in prompt context, got %#v", want, ctx.Skills)
+		}
+	}
 }
 
 func TestRoleFromSessionMode(t *testing.T) {

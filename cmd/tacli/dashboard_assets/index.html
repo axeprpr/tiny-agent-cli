@@ -791,9 +791,18 @@
       }
     }
 
+    function previewUrlForPath(path) {
+      if (!path) return "";
+      const lowerPath = path.toLowerCase();
+      if (!(lowerPath.endsWith(".html") || lowerPath.endsWith(".htm"))) return "";
+      const parts = path.split("/").filter(Boolean).map((part) => encodeURIComponent(part));
+      return `/api/preview/${parts.join("/")}`;
+    }
+
     function fileCard(file) {
-      const previewButton = file.preview_url
-        ? `<button class="secondary" type="button" data-preview="${escapeHtml(file.preview_url)}">Preview</button>`
+      const previewUrl = previewUrlForPath(file.path);
+      const previewButton = previewUrl
+        ? `<button class="secondary" type="button" data-preview-path="${escapeHtml(file.path)}">Preview</button>`
         : "";
       const viewButton = file.is_text
         ? `<button class="secondary" type="button" data-view="${encodeURIComponent(file.path)}">View</button>`
@@ -1192,11 +1201,10 @@
       renderAttachments();
     });
     document.body.addEventListener("click", (event) => {
-      const previewButton = event.target.closest("[data-preview]");
+      const previewButton = event.target.closest("[data-preview-path]");
       if (previewButton) {
-        const card = previewButton.closest(".file-card");
-        const path = card?.querySelector(".file-name")?.textContent || "HTML preview";
-        openPreview(path, previewButton.dataset.preview);
+        const path = previewButton.dataset.previewPath || "HTML preview";
+        openPreview(path, previewUrlForPath(path));
         return;
       }
       const viewButton = event.target.closest("[data-view]");

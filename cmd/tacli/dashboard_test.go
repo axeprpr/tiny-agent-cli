@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"tiny-agent-cli/internal/config"
-	"tiny-agent-cli/internal/tools"
 )
 
 func TestResolveWorkspacePath(t *testing.T) {
@@ -68,90 +67,6 @@ func TestBuildDashboardTaskContentIncludesImageParts(t *testing.T) {
 	}
 	if got[0].Text == "" || got[1].ImageURL == nil || !strings.HasPrefix(got[1].ImageURL.URL, "data:image/png;base64,") {
 		t.Fatalf("unexpected multimodal payload: %#v", got)
-	}
-}
-
-func TestCreatedWorkspaceFilesSortsNewestFirst(t *testing.T) {
-	before := map[string]workspaceFileState{
-		"a.txt": {Size: 1, ModUnix: 10},
-	}
-	after := map[string]workspaceFileState{
-		"a.txt": {Size: 2, ModUnix: 20},
-		"b.txt": {Size: 1, ModUnix: 30},
-	}
-	got := createdWorkspaceFiles(before, after)
-	if len(got) != 1 {
-		t.Fatalf("unexpected changed files: %#v", got)
-	}
-	if got[0] != "b.txt" {
-		t.Fatalf("unexpected order: %#v", got)
-	}
-}
-
-func TestCollectDashboardArtifactPathsMergesExplicitAndCreated(t *testing.T) {
-	got := collectDashboardArtifactPaths(map[string]struct{}{
-		"build/report.pptx": {},
-		"docs/plan.md":      {},
-	}, []string{"build/report.pptx", "exports/summary.pdf"})
-	if len(got) != 3 {
-		t.Fatalf("unexpected artifact paths: %#v", got)
-	}
-	for _, want := range []string{"build/report.pptx", "docs/plan.md", "exports/summary.pdf"} {
-		found := false
-		for _, item := range got {
-			if item == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("missing artifact path %q in %#v", want, got)
-		}
-	}
-}
-
-func TestCollectDashboardArtifactPathsSkipsInternalAndLockFiles(t *testing.T) {
-	got := collectDashboardArtifactPaths(map[string]struct{}{
-		".openclaw/agents/main/sessions/a.jsonl.lock": {},
-		".codex/logs.sqlite-shm":                      {},
-		"exports/summary.pdf":                         {},
-	}, []string{
-		".tacli/uploads/2026/demo.png",
-		"notes/tmp.lock",
-		"docs/report.md",
-	})
-	if len(got) != 2 {
-		t.Fatalf("unexpected filtered paths: %#v", got)
-	}
-	for _, want := range []string{"docs/report.md", "exports/summary.pdf"} {
-		found := false
-		for _, item := range got {
-			if item == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("missing surfaced path %q in %#v", want, got)
-		}
-	}
-}
-
-func TestToolArtifactPathsOnlyTracksExplicitFileWrites(t *testing.T) {
-	got := toolArtifactPaths(tools.ToolAuditEvent{
-		Tool:      "write_file",
-		Status:    "ok",
-		InputJSON: `{"path":"slides/output.pptx","content":"..."}`,
-	})
-	if len(got) != 1 || got[0] != "slides/output.pptx" {
-		t.Fatalf("unexpected tracked artifact paths: %#v", got)
-	}
-	if got := toolArtifactPaths(tools.ToolAuditEvent{
-		Tool:      "run_command",
-		Status:    "ok",
-		InputJSON: `{"command":"touch out.txt"}`,
-	}); len(got) != 0 {
-		t.Fatalf("expected no artifact paths for run_command, got %#v", got)
 	}
 }
 

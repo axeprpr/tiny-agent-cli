@@ -285,6 +285,56 @@ func TestRunSkillsListsWorkspaceSkill(t *testing.T) {
 	}
 }
 
+func TestRunSkillsListsMattStyleFrontmatterSkill(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".agents", "skills", "grill-me"), 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	content := `--- name: grill-me description: Pressure-test a plan one question at a time. ---
+
+Ask exactly one focused question per turn.`
+	if err := os.WriteFile(filepath.Join(dir, ".agents", "skills", "grill-me", "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	defer stdoutR.Close()
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	defer stderrR.Close()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	defer func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+	}()
+
+	code := runSkills([]string{"--workdir", dir})
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+
+	stdoutBytes, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	stderrBytes, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("runSkills exit code = %d, stderr=%q", code, string(stderrBytes))
+	}
+	text := string(stdoutBytes)
+	if !strings.Contains(text, "grill-me [local] enabled: Pressure-test a plan one question at a time.") {
+		t.Fatalf("expected parsed frontmatter description in output, got %q", text)
+	}
+}
+
 func testWorkspaceConfig(workDir, stateDir string) config.Config {
 	return config.Config{
 		WorkDir:      workDir,

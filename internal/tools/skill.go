@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -146,7 +147,14 @@ func parseSkillMarkdown(fallbackName, path, text string) Skill {
 	name := strings.TrimSpace(fallbackName)
 	desc := ""
 	var toolDefs []string
-	for _, raw := range strings.Split(text, "\n") {
+	meta, body := splitSkillFrontmatter(text)
+	if metaName := strings.TrimSpace(meta["name"]); metaName != "" {
+		name = metaName
+	}
+	if metaDesc := strings.TrimSpace(meta["description"]); metaDesc != "" {
+		desc = metaDesc
+	}
+	for _, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -185,12 +193,137 @@ func parseSkillMarkdown(fallbackName, path, text string) Skill {
 	return Skill{
 		Name:            strings.TrimSpace(name),
 		Description:     strings.TrimSpace(desc),
-		Instructions:    strings.TrimSpace(text),
+		Instructions:    firstNonEmptySkillValue(strings.TrimSpace(body), strings.TrimSpace(text)),
 		Path:            strings.TrimSpace(path),
 		Source:          "local",
 		ToolDefinitions: uniqueSkillToolNames(toolDefs),
 		Enabled:         true,
 	}
+}
+
+var frontmatterKeyPattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)\s*:`)
+
+func splitSkillFrontmatter(text string) (map[string]string, string) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "---") {
+		return nil, text
+	}
+	if strings.HasPrefix(trimmed, "---\n") || strings.HasPrefix(trimmed, "---\r\n") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) < 3 {
+			return nil, text
+		}
+		end := -1
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) == "---" {
+				end = i
+				break
+			}
+		}
+		if end == -1 {
+			return nil, text
+		}
+		meta := parseFrontmatterBlock(strings.Join(lines[1:end], "\n"))
+		body := strings.Join(lines[end+1:], "\n")
+		return meta, body
+	}
+	rest := trimmed[3:]
+	end := strings.Index(rest, "---")
+	if end == -1 {
+		return nil, text
+	}
+	meta := parseFrontmatterBlock(rest[:end])
+	body := rest[end+3:]
+	return meta, body
+}
+
+func parseFrontmatterBlock(block string) map[string]string {
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return nil
+	}
+	if !strings.Contains(block, "\n") {
+		return parseInlineFrontmatter(block)
+	}
+	out := make(map[string]string)
+	currentKey := ""
+	var currentValues []string
+	flush := func() {
+		if currentKey == "" || len(currentValues) == 0 {
+			return
+		}
+		out[currentKey] = strings.TrimSpace(strings.Join(currentValues, " "))
+	}
+	for _, raw := range strings.Split(block, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := strings.ToLower(strings.TrimSpace(line[:idx]))
+			if isFrontmatterKey(key) {
+				flush()
+				currentKey = key
+				currentValues = currentValues[:0]
+				if value := strings.TrimSpace(line[idx+1:]); value != "" {
+					currentValues = append(currentValues, value)
+				}
+				continue
+			}
+		}
+		if currentKey == "" {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		if value != "" {
+			currentValues = append(currentValues, value)
+		}
+	}
+	flush()
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func parseInlineFrontmatter(line string) map[string]string {
+	matches := frontmatterKeyPattern.FindAllStringSubmatchIndex(line, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for i, match := range matches {
+		key := strings.ToLower(strings.TrimSpace(line[match[2]:match[3]]))
+		if !isFrontmatterKey(key) {
+			continue
+		}
+		valueStart := match[1]
+		valueEnd := len(line)
+		if i+1 < len(matches) {
+			valueEnd = matches[i+1][0]
+		}
+		value := strings.TrimSpace(line[valueStart:valueEnd])
+		if value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func isFrontmatterKey(key string) bool {
+	if strings.TrimSpace(key) == "" {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func BundledSkills() []Skill {
@@ -227,6 +360,15 @@ func uniqueSkillToolNames(items []string) []string {
 	return out
 }
 
+func firstNonEmptySkillValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 var bundledSkills = []Skill{
 	{
 		Name:            "memory",
@@ -240,7 +382,7 @@ var bundledSkills = []Skill{
 	{
 		Name:            "planning",
 		Description:     "Use plan.md as the source of truth for the current development plan.",
-		Instructions:    "Read plan.md before implementation-heavy tasks and keep work aligned with the listed phases.",
+		Instructions:    "Read plan.md before implementation-heavy tasks and keep work aligned with the listed phases. If the path forward is still ambiguous, resolve missing constraints and open questions before locking the plan.",
 		Path:            "bundled:planning",
 		Source:          "bundled",
 		ToolDefinitions: []string{"read_file", "list_files"},
@@ -303,10 +445,46 @@ var bundledSkills = []Skill{
 	{
 		Name:            "skill-creator",
 		Description:     "Create or refine skills with crisp purpose, boundaries, and tool usage guidance.",
-		Instructions:    "When defining a skill, make the trigger conditions explicit, keep instructions tight, and separate policy from implementation steps. Include expected tools, likely failure modes, and when the skill should be skipped.",
+		Instructions:    "When defining a skill, make the trigger conditions explicit, keep instructions tight, and separate policy from implementation steps. The description must clearly state what the skill is for and when it should trigger, because that is what the agent uses for selection. Include expected tools, likely failure modes, when the skill should be skipped, and prefer reusable scripts or templates over long prose when the workflow is deterministic.",
 		Path:            "bundled:skill-creator",
 		Source:          "bundled",
 		ToolDefinitions: []string{"write_file", "edit_file", "read_file"},
+		Enabled:         true,
+	},
+	{
+		Name:            "grill-me",
+		Description:     "Pressure-test a plan, architecture, or requirement set by asking one high-leverage question at a time until the next step is unambiguous.",
+		Instructions:    "Use this skill before implementation when the task still has major branching decisions, hidden assumptions, or unclear constraints. Ask exactly one focused question at a time. Prefer questions that expose missing interfaces, failure modes, ownership boundaries, acceptance criteria, or out-of-scope lines. Stop grilling once the next implementation step is specific enough to execute.",
+		Path:            "bundled:grill-me",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "update_task_contract"},
+		Enabled:         true,
+	},
+	{
+		Name:            "tdd",
+		Description:     "Use red-green-refactor with the smallest failing test at the public interface before broadening the implementation.",
+		Instructions:    "For features and bug fixes that benefit from test-first development, start with the smallest failing test that demonstrates the intended behavior through a public interface. Make that test pass with the minimum code change, then refactor while keeping the tests green. Prefer behavior-focused coverage over tests that mirror internals, and say explicitly when strict TDD is not a good fit for the task.",
+		Path:            "bundled:tdd",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "edit_file", "write_file", "run_command"},
+		Enabled:         true,
+	},
+	{
+		Name:            "to-prd",
+		Description:     "Turn rough ideas into a buildable PRD or implementation brief with scope, constraints, open questions, and acceptance criteria.",
+		Instructions:    "When the user wants a PRD, spec, or clearer implementation brief, capture the objective, target users, user-visible scope, constraints, non-goals, open questions, delivery slices, and acceptance criteria. Keep it concrete enough that another engineer could implement from the document without reopening basic scope questions.",
+		Path:            "bundled:to-prd",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "write_file", "edit_file", "update_task_contract"},
+		Enabled:         true,
+	},
+	{
+		Name:            "git-guardrails",
+		Description:     "Add or review git safety rails that block destructive commands and make risky repository operations explicit.",
+		Instructions:    "Use this skill when the task involves protecting a repository from destructive git actions. Prefer hooks, policies, or wrappers that block resets, cleans, force-pushes, or protected-branch commits unless the user explicitly authorizes them. Keep the safe path obvious, the escape hatch deliberate, and the failure message actionable.",
+		Path:            "bundled:git-guardrails",
+		Source:          "bundled",
+		ToolDefinitions: []string{"read_file", "edit_file", "write_file", "run_command"},
 		Enabled:         true,
 	},
 	{

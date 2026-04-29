@@ -43,7 +43,6 @@ const (
 	defaultDashboardPort      = 8421
 	maxDashboardPreviewBytes  = 256 * 1024
 	maxDashboardRecentFiles   = 20
-	maxDashboardArtifactFiles = 12
 	maxDashboardUploadMemory  = 64 << 20
 	dashboardStateEvent       = "state"
 	dashboardPingInterval     = 20 * time.Second
@@ -160,11 +159,6 @@ func (h *dashboardHub) Broadcast(env dashboardEnvelope) {
 		default:
 		}
 	}
-}
-
-type workspaceFileState struct {
-	Size    int64
-	ModUnix int64
 }
 
 type approvalDecision struct {
@@ -383,7 +377,6 @@ type dashboardServer struct {
 	approver        *webApprover
 	entries         []dashboardEntry
 	recentFiles     []dashboardFile
-	runArtifacts    map[string]struct{}
 	pendingApproval *dashboardApproval
 	busy            bool
 	nextEntryID     int
@@ -739,10 +732,6 @@ func (s *dashboardServer) runConversationTask(taskText string, content any) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	before, _ := captureWorkspaceSnapshot(s.runtime.cfg.WorkDir)
-	s.mu.Lock()
-	s.runArtifacts = make(map[string]struct{})
-	s.mu.Unlock()
 	assistantID := ""
 	output, err := s.runtime.executeTaskContentStreaming(context.Background(), taskText, content, func(token string) {
 		s.appendAssistantToken(&assistantID, token)
@@ -752,12 +741,8 @@ func (s *dashboardServer) runConversationTask(taskText string, content any) {
 			s.appendAssistantToken(&assistantID, token)
 		})
 	}
-	after, _ := captureWorkspaceSnapshot(s.runtime.cfg.WorkDir)
-	createdFiles := createdWorkspaceFiles(before, after)
 
 	s.mu.Lock()
-	artifactPaths := collectDashboardArtifactPaths(s.runArtifacts, createdFiles)
-	fileCards := s.buildFileCards(artifactPaths)
 	finalText := strings.TrimSpace(output)
 	if err != nil {
 		if finalText == "" {
@@ -783,18 +768,6 @@ func (s *dashboardServer) runConversationTask(taskText string, content any) {
 	if assistantID != "" {
 		s.updateAssistantEntryLocked(assistantID, finalText, false)
 	}
-	if len(fileCards) > 0 {
-		s.addEntryLocked(dashboardEntry{
-			Type:      "files",
-			Role:      "system",
-			Text:      "Generated or updated files",
-			HTML:      renderMarkdownHTML("Generated or updated files"),
-			Files:     fileCards,
-			CreatedAt: nowText(),
-		})
-		s.mergeRecentFilesLocked(fileCards)
-	}
-	s.runArtifacts = nil
 	s.busy = false
 	s.mu.Unlock()
 	s.broadcastState()
@@ -844,7 +817,6 @@ func (s *dashboardServer) scheduleBroadcast() {
 
 func (s *dashboardServer) addToolEvent(event tools.ToolAuditEvent) {
 	s.mu.Lock()
-	s.recordArtifactPathsLocked(toolArtifactPaths(event))
 	s.addEntryLocked(dashboardEntry{
 		Type: "tool",
 		Role: "system",
@@ -989,18 +961,6 @@ func (s *dashboardServer) saveUploadedFile(item *multipart.FileHeader) (dashboar
 	return buildDashboardFile(s.runtime.cfg.WorkDir, rel)
 }
 
-func (s *dashboardServer) buildFileCards(paths []string) []dashboardFile {
-	out := make([]dashboardFile, 0, len(paths))
-	for _, path := range paths {
-		file, err := buildDashboardFile(s.runtime.cfg.WorkDir, path)
-		if err != nil {
-			continue
-		}
-		out = append(out, file)
-	}
-	return out
-}
-
 func (s *dashboardServer) resolveFileFromQuery(r *http.Request) (dashboardFile, string, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get("path"))
 	if raw == "" {
@@ -1070,167 +1030,6 @@ func (s *dashboardServer) mergeRecentFilesLocked(items []dashboardFile) {
 		merged = merged[:maxDashboardRecentFiles]
 	}
 	s.recentFiles = merged
-}
-
-func (s *dashboardServer) recordArtifactPathsLocked(paths []string) {
-	if len(paths) == 0 {
-		return
-	}
-	if s.runArtifacts == nil {
-		s.runArtifacts = make(map[string]struct{}, len(paths))
-	}
-	for _, path := range paths {
-		path = strings.TrimSpace(filepath.ToSlash(path))
-		if path == "" {
-			continue
-		}
-		s.runArtifacts[path] = struct{}{}
-	}
-}
-
-func captureWorkspaceSnapshot(root string) (map[string]workspaceFileState, error) {
-	root = filepath.Clean(root)
-	snap := make(map[string]workspaceFileState)
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if path == root {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			switch rel {
-			case ".git", ".tacli", ".openclaw", ".codex", ".claude":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		snap[rel] = workspaceFileState{
-			Size:    info.Size(),
-			ModUnix: info.ModTime().UnixNano(),
-		}
-		return nil
-	})
-	return snap, err
-}
-
-func createdWorkspaceFiles(before, after map[string]workspaceFileState) []string {
-	if len(after) == 0 {
-		return nil
-	}
-	type pair struct {
-		path string
-		mod  int64
-	}
-	var items []pair
-	for path, now := range after {
-		if _, ok := before[path]; !ok {
-			items = append(items, pair{path: path, mod: now.ModUnix})
-		}
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].mod == items[j].mod {
-			return items[i].path < items[j].path
-		}
-		return items[i].mod > items[j].mod
-	})
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		out = append(out, item.path)
-	}
-	return out
-}
-
-func collectDashboardArtifactPaths(explicit map[string]struct{}, created []string) []string {
-	seen := make(map[string]struct{}, len(explicit)+len(created))
-	out := make([]string, 0, len(explicit)+len(created))
-	for path := range explicit {
-		path = strings.TrimSpace(filepath.ToSlash(path))
-		if path == "" {
-			continue
-		}
-		if !shouldSurfaceDashboardArtifact(path) {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		out = append(out, path)
-	}
-	for _, path := range created {
-		path = strings.TrimSpace(filepath.ToSlash(path))
-		if path == "" {
-			continue
-		}
-		if !shouldSurfaceDashboardArtifact(path) {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		out = append(out, path)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	if len(out) > maxDashboardArtifactFiles {
-		out = out[:maxDashboardArtifactFiles]
-	}
-	return out
-}
-
-func toolArtifactPaths(event tools.ToolAuditEvent) []string {
-	if strings.TrimSpace(event.Status) != "ok" {
-		return nil
-	}
-	switch strings.TrimSpace(event.Tool) {
-	case "write_file", "edit_file":
-	default:
-		return nil
-	}
-	var payload struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(event.InputJSON), &payload); err != nil {
-		return nil
-	}
-	path := strings.TrimSpace(filepath.ToSlash(payload.Path))
-	if path == "" || !shouldSurfaceDashboardArtifact(path) {
-		return nil
-	}
-	return []string{path}
-}
-
-func shouldSurfaceDashboardArtifact(path string) bool {
-	path = strings.TrimSpace(filepath.ToSlash(path))
-	if path == "" {
-		return false
-	}
-	lower := strings.ToLower(path)
-	switch {
-	case strings.HasPrefix(lower, ".openclaw/"),
-		strings.HasPrefix(lower, ".codex/"),
-		strings.HasPrefix(lower, ".claude/"),
-		strings.HasPrefix(lower, ".tacli/"):
-		return false
-	case strings.HasSuffix(lower, ".lock"),
-		strings.HasSuffix(lower, ".swp"),
-		strings.HasSuffix(lower, ".tmp"):
-		return false
-	default:
-		return true
-	}
 }
 
 func buildDashboardTask(text string, attachments []dashboardFile) string {

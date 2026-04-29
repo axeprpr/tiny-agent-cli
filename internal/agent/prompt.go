@@ -70,6 +70,7 @@ Prefer short answers.
 - For workspace tasks: inspect first, edit second, verify third.
 - Run the smallest useful command or edit that moves the task forward.
 - For non-trivial, multi-step, install/scaffold/deploy, or service-start tasks, you must create a concrete plan before the first mutating action. Call update_task_contract early with a semantic task kind, concrete deliverables, and concrete acceptance checks, and use update_todo when helpful.
+- When the task still has major ambiguity, ask focused questions that collapse one decision branch at a time before committing to a plan or code change.
 - If a mutating action fails, do not immediately try a different mutating path. First diagnose the failure using read-only actions or update the task contract/todo with the failure cause and next step.
 - If the user rejects a write, command, or permission request, stop and return control to the user. Do not try alternative mutating paths automatically.
 - Do not finish while the task contract or todo list still contains pending work, or blocked work without a terminal handoff. For environment or permission limits, use blocked + terminal + reason + handoff, and record the strongest evidence_kind you can for each acceptance check.
@@ -140,7 +141,7 @@ func renderRoleSection(ctx PromptContext) string {
 	case "explore":
 		return "Role guidance (explore):\n- Primary objective: inspect and map the codebase quickly.\n- Prefer read-only tools and commands.\n- Do not edit files unless explicitly requested."
 	case "plan":
-		return "Role guidance (plan):\n- Primary objective: produce a concrete execution plan.\n- Break work into testable steps with clear ordering.\n- Stay read-only apart from updating task tracking artifacts such as todo items or the task contract."
+		return "Role guidance (plan):\n- Primary objective: produce a concrete execution plan.\n- Break work into testable steps with clear ordering.\n- Pressure-test ambiguous branches before locking the plan: ask focused questions one at a time until tradeoffs and next actions are explicit.\n- Stay read-only apart from updating task tracking artifacts such as todo items or the task contract."
 	case "implement":
 		return "Role guidance (implement):\n- Primary objective: make targeted code changes.\n- Prefer minimal diffs and verify affected behavior.\n- Report changed files and remaining risks."
 	case "verify":
